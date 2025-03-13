@@ -2,7 +2,7 @@
 
 ## Introduction
 
-Cora is a Python JAX-based library that integrates predictive coding with transformer architectures for video prediction. It is built on top of the [PCX library](https://github.com/liukidar/pcax), which provides a highly configurable framework for developing predictive coding networks. Cora aims to explore the potential advantages of predictive coding with transformer architectures, particularly in terms of parallel local updates and video prediction.
+Cora is a JAX-based library that integrates predictive coding with transformer architectures for video prediction. It is built on top of the [PCX library](https://github.com/liukidar/pcax), which provides a highly configurable framework for developing predictive coding networks. Cora aims to explore the potential advantages of predictive coding with transformer architectures, particularly in terms of parallel local updates and video prediction.
 
 ## Installation
 
