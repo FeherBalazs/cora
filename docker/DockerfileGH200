@@ -1,0 +1,64 @@
+# https://hub.docker.com/r/nvidia/cuda/tags
+# Select the tag that matches the CUDA version on the host.
+# Make sure to select a CuDNN image!
+# See the compatibility matrix here: https://docs.nvidia.com/deploy/cuda-compatibility/index.html#use-the-right-compat-package
+# Also make sure to change the fix at the very end of this file.
+FROM nvidia/cuda:12.2.2-cudnn8-devel-ubuntu22.04
+
+# Prevent interactive prompts during build
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install Python 3.11 and pip3
+RUN apt update \
+    && apt install --fix-missing -y software-properties-common \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt install --fix-missing -y python3.11 python3.11-venv python3.11-dev python3-pip curl vim less openssh-client \
+    && rm -f /usr/bin/python /usr/bin/python3 \
+    && ln -s $(which python3.11) /usr/bin/python \
+    && ln -s $(which python3.11) /usr/bin/python3
+
+# Switch to a non-root user
+# Dev containers should substitute for the current user on startup but that doesn't work: https://code.visualstudio.com/remote/advancedcontainers/add-nonroot-user
+RUN groupadd -g 1000 pcax \
+    && useradd -m -u 1000 -g pcax pcax \
+    # Allow the user to install packages
+    && chmod -R a+rwx /usr/local /usr/include/python3.11
+USER pcax:pcax
+WORKDIR /home/pcax/workspace
+
+# Install Poetry
+RUN curl -sSL https://install.python-poetry.org | python3 -
+
+# Add poetry to PATH
+ENV PATH="$PATH:/home/pcax/.local/bin:" \
+    # Disable keyring so poetry doesn't get stuck
+    # See this issue: https://github.com/python-poetry/poetry/issues/5250
+    # and this PR: https://github.com/python-poetry/poetry/pull/5251
+    PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring \
+    # Prevent JAX from allocating 90% of GPU memory:
+    XLA_PYTHON_CLIENT_PREALLOCATE="false" \
+    # Set XLA version to match CUDA driver
+    XLA_CUDA_VERSION="12.4.0"
+
+RUN poetry config virtualenvs.create false
+
+# Copy the entire project
+COPY --chown=pcax:pcax . .
+
+# Install dependencies
+RUN poetry install --no-root
+
+# Install PyTorch (CPU version as we are using JAX for GPU PyTorch is only for dataloader utilities) and local package
+RUN pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cpu \
+    && pip install -e ./
+
+# Install specific versions with GPU support
+RUN pip install matplotlib \
+    && pip install --upgrade pip \
+    && pip uninstall -y jax jaxlib \
+    && pip install "jax[cuda12_pip]==0.4.33" -f https://storage.googleapis.com/jax-releases/cuda12_pip.html \
+    && pip install "jaxlib==0.4.33" -f https://storage.googleapis.com/jax-releases/cuda12_pip.html \
+    && pip install equinox==0.11.7 optax==0.2.3
+
+
+

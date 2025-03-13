@@ -1,0 +1,45 @@
+[tool.poetry]
+name = "pcx"
+version = "0.6.2.post3"
+packages = [{ include = "pcx" }]
+description = "PCX is a Python JAX-based library designed to develop highly configurable predictive coding networks."
+authors = ["Luca Pinchetti <luca.pinchetti@cs.ox.ac.uk>"]
+repository = "https://github.com/liukidar/pcx"
+documentation = "https://pcx.readthedocs.io/en/latest/"
+license = "Apache License 2.0"
+readme = "README.md"
+keywords = ["predictive coding", "machine learning", "neuroscience"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+equinox = "^0.11.7"
+optax = "^0.2.3"
+jax = "^0.4.33"
+
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.6.7"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 120
+indent-width = 4
+target-version = "py312"
+
+[tool.ruff.lint]
+ignore = []
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
