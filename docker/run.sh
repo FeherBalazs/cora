@@ -2,7 +2,7 @@
 
 set -ex
 
-docker image build -t pcax:latest -f ./DockerfileGH200 ..
+docker image build -t cora:latest -f ./DockerfileGH200 ..
 docker run --gpus all -it \
-  -v /home/ubuntu/balazs/pcx:/home/pcax/workspace \
-  pcax:latest /bin/bash
+  -v /home/ubuntu/balazs/cora:/home/cora/workspace \
+  cora:latest /bin/bash
