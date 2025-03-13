@@ -19,18 +19,18 @@ RUN apt update \
 
 # Switch to a non-root user
 # Dev containers should substitute for the current user on startup but that doesn't work: https://code.visualstudio.com/remote/advancedcontainers/add-nonroot-user
-RUN groupadd -g 1000 pcax \
-    && useradd -m -u 1000 -g pcax pcax \
+RUN groupadd -g 1000 cora \
+    && useradd -m -u 1000 -g cora cora \
     # Allow the user to install packages
     && chmod -R a+rwx /usr/local /usr/include/python3.11
-USER pcax:pcax
-WORKDIR /home/pcax/workspace
+USER cora:cora
+WORKDIR /home/cora/workspace
 
 # Install Poetry
 RUN curl -sSL https://install.python-poetry.org | python3 -
 
 # Add poetry to PATH
-ENV PATH="$PATH:/home/pcax/.local/bin:" \
+ENV PATH="$PATH:/home/cora/.local/bin:" \
     # Disable keyring so poetry doesn't get stuck
     # See this issue: https://github.com/python-poetry/poetry/issues/5250
     # and this PR: https://github.com/python-poetry/poetry/pull/5251
@@ -43,7 +43,7 @@ ENV PATH="$PATH:/home/pcax/.local/bin:" \
 RUN poetry config virtualenvs.create false
 
 # Copy the entire project
-COPY --chown=pcax:pcax . .
+COPY --chown=cora:cora . .
 
 # Install dependencies
 RUN poetry install --no-root
