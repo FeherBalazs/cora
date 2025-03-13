@@ -2,26 +2,25 @@
 
 ## Introduction
 
-Cora is a Python JAX-based library that integrates predictive coding with transformer architectures for video prediction and general learning efficiency. It is built on top of the [PCX library](https://github.com/liukidar/pcax), which provides a highly configurable framework for developing predictive coding networks. Cora aims to explore the potential advantages of predictive coding with transformer architectures, particularly in terms of parallel local updates and video prediction.
+Cora is a Python JAX-based library that integrates predictive coding with transformer architectures for video prediction. It is built on top of the [PCX library](https://github.com/liukidar/pcax), which provides a highly configurable framework for developing predictive coding networks. Cora aims to explore the potential advantages of predictive coding with transformer architectures, particularly in terms of parallel local updates and video prediction.
 
 ## Installation
 
-Cora is designed to run on Lambda Labs' GH200 instances using a Docker-based setup. Follow these steps to get started:
+Cora is designed to run using a Docker-based setup. Follow these steps to get started:
 
-1. **Set up a Lambda Labs account** and create a GH200 instance.
-2. **Clone the Cora repository**:  
+1. **Clone the Cora repository**:  
 
    ```bash
    git clone https://github.com/your-username/cora.git
    ```
-   
-3. **Navigate to the repository directory**:
+
+2. **Navigate to the repository directory**:
 
       ```bash
       cd cora
       ```
 
-4. **Build and run the Docker image**:
+3. **Build and run the Docker image**:
 
       ```bash
       ./docker/run.sh
