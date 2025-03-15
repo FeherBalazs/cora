@@ -21,14 +21,8 @@ import pcx.functional as pxf
 from flax import nnx
 from jax.typing import DTypeLike
 
-from jflux.modules.layers import (
-    DoubleStreamBlock,
-    EmbedND,
-    LastLayer,
-    MLPEmbedder,
-    SingleStreamBlock,
-    timestep_embedding,
-)
+# Import PCX-compatible transformer components
+from pcx_transformer import PCXDoubleStreamBlock, PCXEmbedND, PCXMLPEmbedder
 
 STATUS_FORWARD = "forward"
 STATUS_REFINE = "refine"
@@ -103,7 +97,7 @@ class TransformerDecoder(pxc.EnergyModule):
         # Freeze the output Vode's hidden state
         self.vodes[-1].h.frozen = True
         
-        # Initialize Transformer components
+        # Initialize Transformer components using PCX-compatible wrappers
         
         # Input projection from latent to hidden size
         self.latent_proj = pxnn.Linear(
@@ -112,7 +106,7 @@ class TransformerDecoder(pxc.EnergyModule):
         )
         
         # Positional embedding
-        self.pe_embedder = EmbedND(
+        self.pe_embedder = PCXEmbedND(
             dim=self.hidden_size // self.num_heads,
             theta=self.theta,
             axes_dim=self.axes_dim
@@ -122,13 +116,13 @@ class TransformerDecoder(pxc.EnergyModule):
         self.transformer_blocks = []
         for i in range(num_blocks):
             self.transformer_blocks.append(
-                DoubleStreamBlock(
+                PCXDoubleStreamBlock(
                     hidden_size=self.hidden_size,
                     num_heads=self.num_heads,
                     mlp_ratio=self.mlp_ratio,
+                    qkv_bias=True,
                     rngs=self.rngs,
-                    param_dtype=self.param_dtype,
-                    qkv_bias=True
+                    param_dtype=self.param_dtype
                 )
             )
         
@@ -137,9 +131,6 @@ class TransformerDecoder(pxc.EnergyModule):
             in_features=self.hidden_size,
             out_features=image_shape[0]  # Output channels
         )
-        
-        # Reshape layer to produce final image
-        self.final_reshape = lambda x: x.reshape(image_shape)
 
     def __call__(self, y: jax.Array | None = None):
         # Get the top-level latent from the first Vode
