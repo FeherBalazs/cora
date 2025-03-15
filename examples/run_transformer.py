@@ -15,7 +15,7 @@ from torchvision import datasets, transforms
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 # Import the TransformerDecoder and utility functions
-from decoder_transformer import (
+from src.decoder_transformer import (
     TransformerDecoder, 
     TransformerConfig,
     create_config_by_dataset,
@@ -25,7 +25,7 @@ from decoder_transformer import (
     visualize_reconstruction
 )
 # Import PCX-compatible transformer components (though not directly used in this example)
-from pcx_transformer import PCXDoubleStreamBlock, PCXEmbedND
+from src.pcx_transformer import PCXDoubleStreamBlock, PCXEmbedND
 
 # Set up basic parameters
 BATCH_SIZE = 16
