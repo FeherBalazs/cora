@@ -8,6 +8,8 @@ import jax
 import jax.numpy as jnp
 import optax
 import pcx.utils as pxu
+import argparse
+from torchvision import datasets, transforms
 
 # Add the src directory to the path
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
@@ -84,25 +86,63 @@ def generate_synthetic_data(image_shape, num_samples=1000):
     
     return data
 
-def create_dataloaders(config, batch_size):
-    """Create training and validation dataloaders"""
-    # Generate synthetic data
-    print("Generating synthetic data...")
-    all_data = generate_synthetic_data(image_shape=config.image_shape, num_samples=1200)
+def load_cifar10(batch_size, data_dir='./data'):
+    """Load the CIFAR-10 dataset using torchvision"""
+    # CIFAR-10 preprocessing - normalization to [0,1] range
+    transform = transforms.Compose([
+        transforms.ToTensor(),  # Converts to [0,1] and CHW format
+    ])
     
-    # Split into train and validation
-    train_data = all_data[:1000]
-    val_data = all_data[1000:]
+    # Download and load CIFAR-10 training set
+    train_dataset = datasets.CIFAR10(
+        root=data_dir, 
+        train=True,
+        download=True, 
+        transform=transform
+    )
     
-    # Create PyTorch datasets
-    train_dataset = TensorDataset(torch.from_numpy(train_data), torch.from_numpy(train_data))
-    val_dataset = TensorDataset(torch.from_numpy(val_data), torch.from_numpy(val_data))
+    # Download and load CIFAR-10 test set
+    test_dataset = datasets.CIFAR10(
+        root=data_dir, 
+        train=False,
+        download=True, 
+        transform=transform
+    )
     
     # Create dataloaders
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     
-    return train_loader, val_loader
+    return train_loader, test_loader
+
+def create_dataloaders(config, batch_size, use_real_data=False, data_dir='./data'):
+    """Create training and validation dataloaders"""
+    if use_real_data:
+        if config.image_shape[0] == 3 and config.image_shape[1] == 32 and config.image_shape[2] == 32:
+            print("Loading real CIFAR-10 data...")
+            return load_cifar10(batch_size, data_dir)
+        else:
+            print(f"Real data not supported for shape {config.image_shape}. Using synthetic data instead.")
+            use_real_data = False
+    
+    if not use_real_data:
+        # Generate synthetic data
+        print("Generating synthetic data...")
+        all_data = generate_synthetic_data(image_shape=config.image_shape, num_samples=1200)
+        
+        # Split into train and validation
+        train_data = all_data[:1000]
+        val_data = all_data[1000:]
+        
+        # Create PyTorch datasets
+        train_dataset = TensorDataset(torch.from_numpy(train_data), torch.from_numpy(train_data))
+        val_dataset = TensorDataset(torch.from_numpy(val_data), torch.from_numpy(val_data))
+        
+        # Create dataloaders
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+        
+        return train_loader, val_loader
 
 def visualize_results(model, optim_h, dataloader, num_samples=4):
     """Visualize original and reconstructed images"""
@@ -191,19 +231,44 @@ def visualize_inpainting(model, optim_h, dataloader, corrupt_ratio=0.5, num_samp
     plt.tight_layout()
     plt.show()
 
+def parse_args():
+    parser = argparse.ArgumentParser(description='Train a transformer-based predictive coding model')
+    parser.add_argument('--dataset', type=str, default='cifar10', choices=['fashionmnist', 'cifar10', 'imagenet'],
+                        help='Dataset to use (default: cifar10)')
+    parser.add_argument('--use-real-data', action='store_true', default=False,
+                        help='Use real dataset instead of synthetic data')
+    parser.add_argument('--batch-size', type=int, default=BATCH_SIZE,
+                        help=f'Batch size for training (default: {BATCH_SIZE})')
+    parser.add_argument('--latent-dim', type=int, default=LATENT_DIM,
+                        help=f'Latent dimension size (default: {LATENT_DIM})')
+    parser.add_argument('--num-blocks', type=int, default=6,
+                        help='Number of transformer blocks (default: 6)')
+    parser.add_argument('--epochs', type=int, default=NUM_EPOCHS,
+                        help=f'Number of training epochs (default: {NUM_EPOCHS})')
+    parser.add_argument('--inference-steps', type=int, default=INFERENCE_STEPS,
+                        help=f'Number of inference steps (default: {INFERENCE_STEPS})')
+    parser.add_argument('--data-dir', type=str, default='./data',
+                        help='Directory to store datasets (default: ./data)')
+    return parser.parse_args()
+
 def main():
-    # Select dataset to use
-    dataset_name = "cifar10"  # Options: "fashionmnist", "cifar10", "imagenet"
+    # Parse command line arguments
+    args = parse_args()
     
     # Create configuration based on dataset
     config = create_config_by_dataset(
-        dataset_name=dataset_name,
-        latent_dim=LATENT_DIM,
-        num_blocks=6
+        dataset_name=args.dataset,
+        latent_dim=args.latent_dim,
+        num_blocks=args.num_blocks
     )
     
-    print(f"Creating dataloaders for {dataset_name}...")
-    train_loader, val_loader = create_dataloaders(config=config, batch_size=BATCH_SIZE)
+    print(f"Creating dataloaders for {args.dataset} (using {'real' if args.use_real_data else 'synthetic'} data)...")
+    train_loader, val_loader = create_dataloaders(
+        config=config, 
+        batch_size=args.batch_size, 
+        use_real_data=args.use_real_data,
+        data_dir=args.data_dir
+    )
     
     print("Initializing model...")
     # Create model with configuration
@@ -225,15 +290,15 @@ def main():
     )
     
     # Train model
-    print(f"Training for {NUM_EPOCHS} epochs...")
-    for epoch in range(NUM_EPOCHS):
-        print(f"Epoch {epoch+1}/{NUM_EPOCHS}")
+    print(f"Training for {args.epochs} epochs...")
+    for epoch in range(args.epochs):
+        print(f"Epoch {epoch+1}/{args.epochs}")
         
         # Train for one epoch
-        train(train_loader, INFERENCE_STEPS, model=model, optim_w=optim_w, optim_h=optim_h)
+        train(train_loader, args.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h)
         
         # Evaluate on validation set
-        val_loss = eval(val_loader, INFERENCE_STEPS, model=model, optim_h=optim_h)
+        val_loss = eval(val_loader, args.inference_steps, model=model, optim_h=optim_h)
         print(f"Validation loss: {val_loss:.6f}")
     
     print("Training complete!")
