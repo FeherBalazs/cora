@@ -5,9 +5,10 @@ multiprocessing.set_start_method('spawn', force=True)
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Dict, Any
 from functools import partial
 from contextlib import contextmanager 
+from dataclasses import dataclass, field
 
 import jax
 import jax.numpy as jnp
@@ -31,44 +32,54 @@ import jax.random as jrandom
 key = jrandom.PRNGKey(42)  # Same seed in both versions
 
 
-class TransformerDecoder(pxc.EnergyModule):
-    def __init__(
-        self,
-        latent_dim: int,              # Dimensionality of the top-level latent
-        image_shape: tuple,           # Output image shape (channels, height, width)
-        hidden_size: int = 512,       # Hidden size for transformer layers
-        num_heads: int = 8,           # Number of attention heads
-        num_blocks: int = 6,          # Number of double stream transformer blocks
-        mlp_ratio: float = 4.0,       # MLP ratio for transformer blocks
-        act_fn: Callable[[jax.Array], jax.Array] = jax.nn.gelu,  # Activation function
-        param_dtype: DTypeLike = jnp.float32,  # Parameter data type
-        use_noise: bool = True,       # True: initialize latent as noise; False: zeros
-    ) -> None:
-        super().__init__()
-        self.image_shape = px.static(image_shape)
-        self.output_dim = image_shape[0] * image_shape[1] * image_shape[2]
-        self.latent_dim = latent_dim
-        self.hidden_size = hidden_size
-        self.num_heads = num_heads
-        self.num_blocks = num_blocks
-        self.mlp_ratio = mlp_ratio
-        self.act_fn = px.static(act_fn)
-        self.use_noise = use_noise
-        self.param_dtype = param_dtype
-
-        # Calculate spatial dimensions for transformer processing
-        # We'll reshape the latent into a sequence with spatial dimensions
-        self.h_init = 8
-        self.w_init = 8
+@dataclass
+class TransformerConfig:
+    """Configuration for the TransformerDecoder model."""
+    # Input/output dimensions
+    latent_dim: int = 512
+    image_shape: tuple = (3, 32, 32)  # (channels, height, width)
+    
+    # Architecture settings
+    hidden_size: int = 512
+    num_heads: int = 8
+    num_blocks: int = 6
+    mlp_ratio: float = 4.0
+    
+    # Spatial dimensions for transformer
+    h_init: int = 8
+    w_init: int = 8
+    
+    # Training settings
+    use_noise: bool = True
+    param_dtype: DTypeLike = jnp.float32
+    act_fn: Callable[[jax.Array], jax.Array] = jax.nn.gelu
+    
+    # Positional embedding settings
+    theta: int = 10000
+    
+    # Computed properties
+    seq_len: int = field(init=False)
+    channels_init: int = field(init=False)
+    axes_dim: List[int] = field(init=False)
+    
+    def __post_init__(self):
         self.seq_len = self.h_init * self.w_init
         self.channels_init = self.latent_dim // self.seq_len
         
+        # Ensure latent_dim is compatible with spatial dimensions
         if self.channels_init * self.seq_len != self.latent_dim:
-            raise ValueError("latent_dim must be divisible by h_init * w_init")
-
-        # Create positional embeddings for spatial coordinates
+            raise ValueError(f"latent_dim {self.latent_dim} must be divisible by h_init * w_init = {self.seq_len}")
+        
+        # Set up positional embedding dimensions
         self.axes_dim = [self.hidden_size // self.num_heads // 2, self.hidden_size // self.num_heads // 2]
-        self.theta = 10000
+
+
+class TransformerDecoder(pxc.EnergyModule):
+    def __init__(self, config: TransformerConfig) -> None:
+        super().__init__()
+        self.config = config
+        self.image_shape = px.static(config.image_shape)
+        self.output_dim = config.image_shape[0] * config.image_shape[1] * config.image_shape[2]
         
         # Initialize nnx random key
         self.rngs = nnx.Rngs(0)
@@ -79,12 +90,12 @@ class TransformerDecoder(pxc.EnergyModule):
             pxc.Vode(
                 energy_fn=None,
                 ruleset={pxc.STATUS.INIT: ("h, u <- u:to_init",)},
-                tforms={"to_init": lambda n, k, v, rkg: jrandom.normal(px.RKG(), (self.latent_dim,)) * 0.01 if self.use_noise else jnp.zeros((self.latent_dim,))}
+                tforms={"to_init": lambda n, k, v, rkg: jrandom.normal(px.RKG(), (config.latent_dim,)) * 0.01 if config.use_noise else jnp.zeros((config.latent_dim,))}
             )
         ]
         
         # Create Vodes for each transformer block output
-        for _ in range(num_blocks):
+        for _ in range(config.num_blocks):
             self.vodes.append(
                 pxc.Vode(
                     ruleset={STATUS_FORWARD: ("h -> u",)}
@@ -101,35 +112,35 @@ class TransformerDecoder(pxc.EnergyModule):
         
         # Input projection from latent to hidden size
         self.latent_proj = pxnn.Linear(
-            in_features=self.channels_init,
-            out_features=self.hidden_size
+            in_features=config.channels_init,
+            out_features=config.hidden_size
         )
         
         # Positional embedding
         self.pe_embedder = PCXEmbedND(
-            dim=self.hidden_size // self.num_heads,
-            theta=self.theta,
-            axes_dim=self.axes_dim
+            dim=config.hidden_size // config.num_heads,
+            theta=config.theta,
+            axes_dim=config.axes_dim
         )
         
         # Create transformer blocks
         self.transformer_blocks = []
-        for i in range(num_blocks):
+        for i in range(config.num_blocks):
             self.transformer_blocks.append(
                 PCXDoubleStreamBlock(
-                    hidden_size=self.hidden_size,
-                    num_heads=self.num_heads,
-                    mlp_ratio=self.mlp_ratio,
+                    hidden_size=config.hidden_size,
+                    num_heads=config.num_heads,
+                    mlp_ratio=config.mlp_ratio,
                     qkv_bias=True,
                     rngs=self.rngs,
-                    param_dtype=self.param_dtype
+                    param_dtype=config.param_dtype
                 )
             )
         
         # Output projection to image space
         self.out_proj = pxnn.Linear(
-            in_features=self.hidden_size,
-            out_features=image_shape[0]  # Output channels
+            in_features=config.hidden_size,
+            out_features=config.image_shape[0]  # Output channels
         )
 
     def __call__(self, y: jax.Array | None = None):
@@ -137,7 +148,7 @@ class TransformerDecoder(pxc.EnergyModule):
         x = self.vodes[0](jnp.empty(()))  # Shape: (latent_dim,)
         
         # Reshape latent to sequence form
-        x = x.reshape((self.seq_len, self.channels_init))  # Shape: (seq_len, channels_init)
+        x = x.reshape((self.config.seq_len, self.config.channels_init))  # Shape: (seq_len, channels_init)
         
         # Project to hidden dimension
         x = self.latent_proj(x)  # Shape: (seq_len, hidden_size)
@@ -146,8 +157,8 @@ class TransformerDecoder(pxc.EnergyModule):
         # Create coordinate grid for the sequence
         coords = jnp.stack(
             jnp.meshgrid(
-                jnp.arange(self.h_init),
-                jnp.arange(self.w_init),
+                jnp.arange(self.config.h_init),
+                jnp.arange(self.config.w_init),
                 indexing='ij'
             ),
             axis=-1
@@ -157,10 +168,10 @@ class TransformerDecoder(pxc.EnergyModule):
         pe = pe.squeeze(1)  # Shape: (seq_len, pe_dim)
         
         # Create dummy text stream (all zeros)
-        txt = jnp.zeros((self.seq_len, self.hidden_size))
+        txt = jnp.zeros((self.config.seq_len, self.config.hidden_size))
         
         # Create dummy vector conditioning (all zeros)
-        vec = jnp.zeros((self.hidden_size,))
+        vec = jnp.zeros((self.config.hidden_size,))
         
         # Pass through transformer blocks
         for i, block in enumerate(self.transformer_blocks):
@@ -171,11 +182,11 @@ class TransformerDecoder(pxc.EnergyModule):
         x = self.out_proj(x)  # Shape: (seq_len, channels)
         
         # Reshape to image format (channels, height, width)
-        x = x.reshape((self.h_init, self.w_init, self.image_shape[0]))  # Shape: (h, w, channels)
+        x = x.reshape((self.config.h_init, self.config.w_init, self.image_shape[0]))  # Shape: (h, w, channels)
         x = jnp.transpose(x, (2, 0, 1))  # Shape: (channels, h, w)
         
         # Use spatial upsampling to reach target image size
-        if self.h_init != self.image_shape[1] or self.w_init != self.image_shape[2]:
+        if self.config.h_init != self.image_shape[1] or self.config.w_init != self.image_shape[2]:
             # Use simple resize to desired dimensions
             x = jax.image.resize(
                 x,
@@ -371,7 +382,7 @@ def eval_on_batch_partial(use_corruption: bool, corrupt_ratio: float, T: int, x:
     return loss, x_hat
 
 
-def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corruption=False, corrupt_ratio=0.5, target_class: int = None, num_images: int = 2):
+def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corruption=False, corrupt_ratio=0.5, target_class=None, num_images=2):
     import matplotlib.pyplot as plt
     from datetime import datetime
 
@@ -388,10 +399,14 @@ def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corr
         orig_images.append(jnp.reshape(x[0], model.image_shape.get()))
         
         # Handle label as scalar or 1-element array
-        labels_list.append(label[0].item() if len(label.shape) > 0 else label.item())
+        if hasattr(label, 'item'):
+            labels_list.append(label[0].item() if len(label.shape) > 0 else label.item())
+        else:
+            labels_list.append(None)
+            
         for T in T_values:
             x_hat = eval_on_batch_partial(use_corruption=use_corruption, corrupt_ratio=corrupt_ratio, T=T, x=x, model=model, optim_h=optim_h)
-            x_hat_single = jnp.reshape(x_hat[0], model.image_shape.get())
+            x_hat_single = jnp.reshape(x_hat[1][0], model.image_shape.get())
             recon_images[T].append(x_hat_single)
     
     # Create subplots
@@ -408,7 +423,7 @@ def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corr
             axes[i, 0].imshow(jnp.clip(jnp.squeeze(orig_images[i]), 0.0, 1.0), cmap='gray')
         else:  # RGB
             axes[i, 0].imshow(jnp.clip(jnp.transpose(orig_images[i], (1, 2, 0)), 0.0, 1.0))
-        axes[i, 0].set_title(f'Original (Label: {labels_list[i]})')
+        axes[i, 0].set_title(f'Original {labels_list[i] if labels_list[i] is not None else ""}')
         axes[i, 0].axis('off')
         
         for j, T in enumerate(T_values):
@@ -422,67 +437,57 @@ def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corr
     plt.tight_layout()
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    plt.savefig(f"../results/reconstruction_{timestamp}.png")
+    os.makedirs("results", exist_ok=True)
+    plt.savefig(f"results/reconstruction_{timestamp}.png")
     plt.close()
     return orig_images, recon_images
 
 
-if __name__ == '__main__':
-    # Added dataset selection and configuration
-    dataset_name = "cifar10"  # Change to "cifar10" or "imagenet" "fashionmnist" as needed
-    root_path = "../datasets/"  # Adjust to your dataset root path
-    batch_size = 100
-    nm_epochs = 20
-    target_class = None
-    num_images = 5
-    train_subset_n = 1000
-    test_subset_n = 1000
-    
-    latent_dim = 4096
-    n_feat = 128
-    
-    # Define image_shape and output_dim based on dataset
+def create_config_by_dataset(dataset_name: str, latent_dim: int = 512, num_blocks: int = 6):
+    """Create a TransformerConfig based on the dataset name."""
+    # Define image_shape and other dataset-specific settings
     if dataset_name == "fashionmnist":
-        image_shape = (1, 28, 28)
-        output_dim = 28 * 28
+        return TransformerConfig(
+            latent_dim=latent_dim,
+            image_shape=(1, 28, 28),
+            hidden_size=256,
+            num_heads=8,
+            num_blocks=num_blocks,
+            h_init=8,
+            w_init=8
+        )
     elif dataset_name == "cifar10":
-        image_shape = (3, 32, 32)
-        output_dim = 32 * 32 * 3
+        return TransformerConfig(
+            latent_dim=latent_dim,
+            image_shape=(3, 32, 32),
+            hidden_size=256,
+            num_heads=8,
+            num_blocks=num_blocks,
+            h_init=8,
+            w_init=8
+        )
     elif dataset_name == "imagenet":
-        image_shape = (3, 224, 224)
-        output_dim = 224 * 224 * 3
+        return TransformerConfig(
+            latent_dim=latent_dim,
+            image_shape=(3, 224, 224),
+            hidden_size=384,
+            num_heads=8,
+            num_blocks=num_blocks,
+            h_init=16,
+            w_init=16
+        )
     else:
         raise ValueError(f"Unsupported dataset: {dataset_name}")
-    
 
-    model = TransformerDecoder(
-        latent_dim=latent_dim,
-        image_shape=image_shape,
-        n_feat=n_feat,
-        act_fn=jax.nn.swish,
-        use_noise=False,  # Start with noise; set to False for learned embeddings
+
+if __name__ == "__main__":
+    # Just an example of how to use the configuration system
+    # This configuration setup is now compatible with multiple datasets
+    config = create_config_by_dataset(
+        dataset_name="cifar10",
+        latent_dim=512,
+        num_blocks=6
     )
     
-    optim_h = pxu.Optim(lambda: optax.sgd(5e-1, momentum=0.1))
-    optim_w = pxu.Optim(lambda: optax.adamw(1e-4), pxu.M(pxnn.LayerParam)(model))
-    
-    # Updated get_dataloaders call to include dataset_name and root_path
-    train_dataloader, test_dataloader = get_dataloaders(
-        dataset_name=dataset_name,
-        batch_size=batch_size,
-        root_path=root_path,
-        train_subset_n=train_subset_n,
-        test_subset_n=test_subset_n,
-        target_class=target_class
-    )
-    
-    x, _ = next(iter(train_dataloader))
-    with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
-        forward(x.numpy(), model=model)
-    
-    for e in range(nm_epochs):
-        train(train_dataloader, T=8, model=model, optim_w=optim_w, optim_h=optim_h)
-        l = eval(test_dataloader, T=8, model=model, optim_h=optim_h)
-        print(f"Epoch {e + 1}/{nm_epochs} - Test Loss: {l:.4f}")
-    
-    visualize_reconstruction(model, optim_h, train_dataloader, T_values=[0,1,2,3,4,5,6,7,8,9,10,11,12,14,16,32,64], use_corruption=False, corrupt_ratio=0.25, target_class=target_class, num_images=num_images)
+    # Create model with config
+    model = TransformerDecoder(config)
