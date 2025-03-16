@@ -145,8 +145,7 @@ def create_dataloaders(config, batch_size, use_real_data=False, data_dir='./data
         return train_loader, val_loader
 
 def visualize_results(model, optim_h, dataloader, num_samples=4):
-    """Visualize original and reconstructed images"""
-    # Get some random samples from the dataloader
+    """Visualize original images and their reconstructions."""
     images, _ = next(iter(dataloader))
     images = images[:num_samples].numpy()
     
@@ -159,6 +158,11 @@ def visualize_results(model, optim_h, dataloader, num_samples=4):
         model=model, 
         optim_h=optim_h
     )
+    
+    # Handle the case when reconstructed is None
+    if reconstructed is None:
+        print("Unable to generate reconstructions. Skipping visualization.")
+        return
     
     # Visualize results
     fig, axes = plt.subplots(2, num_samples, figsize=(num_samples * 3, 6))
@@ -196,6 +200,11 @@ def visualize_inpainting(model, optim_h, dataloader, corrupt_ratio=0.5, num_samp
         model=model, 
         optim_h=optim_h
     )
+    
+    # Handle the case when reconstructed is None
+    if reconstructed is None:
+        print("Unable to generate inpaintings. Skipping visualization.")
+        return
     
     # Create corrupted images for visualization
     corrupted = images.copy()
@@ -276,14 +285,14 @@ def main():
     
     # Create optimizers
     optim_w = pxu.Optim(
-        core_optim=optax.chain(
+        lambda: optax.chain(
             optax.clip_by_global_norm(1.0),
             optax.adamw(learning_rate=LR_WEIGHTS, weight_decay=1e-4)
         )
     )
     
     optim_h = pxu.Optim(
-        core_optim=optax.chain(
+        lambda: optax.chain(
             optax.clip_by_global_norm(1.0),
             optax.adam(learning_rate=LR_HIDDEN)
         )
