@@ -1,9 +1,6 @@
-# https://hub.docker.com/r/nvidia/cuda/tags
-# Select the tag that matches the CUDA version on the host.
-# Make sure to select a CuDNN image!
-# See the compatibility matrix here: https://docs.nvidia.com/deploy/cuda-compatibility/index.html#use-the-right-compat-package
-# Also make sure to change the fix at the very end of this file.
-FROM nvidia/cuda:12.2.2-cudnn8-devel-ubuntu22.04
+# Base image for NVIDIA Grace Hopper (GH200) Superchip
+# Using ARM64 architecture with CUDA for Hopper GPUs
+FROM nvidia/cuda:12.2.2-devel-ubuntu22.04
 
 # Prevent interactive prompts during build
 ENV DEBIAN_FRONTEND=noninteractive
@@ -26,42 +23,49 @@ RUN groupadd -g 1000 cora \
 USER cora:cora
 WORKDIR /home/cora/workspace
 
-# Install Poetry
-RUN curl -sSL https://install.python-poetry.org | python3 -
+# Install pip and setuptools first
+RUN python -m pip install --upgrade pip setuptools wheel
 
-# Add poetry to PATH
-ENV PATH="$PATH:/home/cora/.local/bin:" \
-    # Disable keyring so poetry doesn't get stuck
-    # See this issue: https://github.com/python-poetry/poetry/issues/5250
-    # and this PR: https://github.com/python-poetry/poetry/pull/5251
-    PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring \
+# Install UV package manager using pip (more reliable method for Docker)
+RUN python -m pip install uv
+
+# Add UV to PATH and set environment variables for Hopper GPUs
+ENV PATH="$PATH:/home/cora/.local/bin" \
     # Prevent JAX from allocating 90% of GPU memory:
     XLA_PYTHON_CLIENT_PREALLOCATE="false" \
-    # Set XLA version to match CUDA driver
-    XLA_CUDA_VERSION="12.4.0"
-
-RUN poetry config virtualenvs.create false
+    # Set XLA version to match CUDA driver for GH200
+    XLA_CUDA_VERSION="12.2.0" \
+    # Enable tensor cores on Hopper
+    CUDA_DEVICE_MAX_CONNECTIONS=1
 
 # Copy the entire project
 COPY --chown=cora:cora . .
 
-# Install dependencies
-RUN poetry install --no-root
+# Install common dependencies first
+RUN python -m uv pip install tomli matplotlib pytest pytest-randomly pytest-cov pytest-xdist
 
-# Install PyTorch (CPU version as we are using JAX for GPU PyTorch is only for dataloader utilities) and local package
-RUN pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cpu \
-    && pip install -e ./
+# Install PyTorch with CPU support
+RUN python -m uv pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision torchaudio
 
-# Install specific versions with GPU support
-RUN pip install matplotlib \
-    && pip install --upgrade pip \
-    && pip uninstall -y jax jaxlib \
-    && pip install "jax[cuda12_pip]==0.5.2" -f https://storage.googleapis.com/jax-releases/cuda12_pip.html \
-    && pip install "jaxlib==0.5.2" -f https://storage.googleapis.com/jax-releases/cuda12_pip.html \
-    && pip install equinox==0.11.12 optax==0.2.4 flax==0.10.4 jaxtyping==0.2.38
+# For GH200, we need to use specific JAX builds
+# First uninstall any existing JAX installations that might conflict
+RUN python -m uv pip uninstall -y jax jaxlib || true
 
-# For debugging and testing
-RUN pip install pytest pytest-randomly pytest-cov pytest-xdist
+# Install JAX with CUDA support for Hopper GPUs
+# JAX 0.5.2 has proper Hopper support
+# This is the only JAX installation - it will not be overridden later
+# as we explicitly exclude it from the requirements.txt generation
+RUN python -m uv pip install "jax[cuda12]==0.5.2" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+
+# Install remaining dependencies from pyproject.toml
+RUN python -m pip install tomli \
+    && python -c "import tomli; open('requirements.txt', 'w').write('\n'.join([f'{k}{v}' for k, v in tomli.loads(open('pyproject.toml', 'rb').read())['tool']['poetry']['dependencies'].items() if k not in ['python', 'jax', 'jaxlib', 'torch', 'torchvision', 'torchaudio', 'matplotlib']]))" \
+    && python -m uv pip install -r requirements.txt \
+    && python -c "import tomli; open('dev-requirements.txt', 'w').write('\n'.join([f'{k}{v}' for k, v in tomli.loads(open('pyproject.toml', 'rb').read())['tool']['poetry']['group']['dev']['dependencies'].items() if k not in ['pytest', 'pytest-randomly', 'pytest-cov', 'pytest-xdist']]))" \
+    && python -m uv pip install -r dev-requirements.txt
+
+# Install local package in development mode
+RUN python -m uv pip install -e ./
 
 
 

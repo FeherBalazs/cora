@@ -19,12 +19,22 @@ classifiers = [
 
 [tool.poetry.dependencies]
 python = "^3.10"
-equinox = "^0.11.7"
-optax = "^0.2.3"
-jax = "^0.4.33"
+equinox = "==0.11.12"
+optax = "==0.2.4"
+jax = "==0.5.2"
+flax = "==0.10.4"
+jaxtyping = "==0.2.38"
+matplotlib = "*"
+torch = "*"
+torchvision = "*"
+torchaudio = "*"
 
 [tool.poetry.group.dev.dependencies]
 ruff = "^0.6.7"
+pytest = "*"
+pytest-randomly = "*"
+pytest-cov = "*"
+pytest-xdist = "*"
 
 [build-system]
 requires = ["poetry-core"]
