@@ -7,6 +7,7 @@ import pcx.utils as pxu
 from typing import Callable, Optional, Dict, Any
 from jax.typing import DTypeLike
 import jax.tree_util as jtu
+from pcx.core import Module
 
 from flax import nnx
 from jflux.modules.layers import (
@@ -17,7 +18,7 @@ from jflux.modules.layers import (
     MLPEmbedder,
 )
 
-class PCXWrapper(pxc.Module):
+class PCXWrapper(Module):
     """
     Base wrapper for jflux components to make them compatible with PCX's parameter system.
     This wrapper converts flax nnx parameters to PCX LayerParam objects.
@@ -26,19 +27,39 @@ class PCXWrapper(pxc.Module):
     def __init__(self, module):
         super().__init__()
         # Convert all jax arrays in the module to LayerParam objects
-        self.module = jtu.tree_map(
-            lambda w: pxnn.LayerParam(w) if isinstance(w, jax.Array) else w,
-            module,
-            is_leaf=lambda w: isinstance(w, jax.Array)
-        )
+        # Use different tree handling based on JAX version
+        if hasattr(jax, 'tree'):
+            # JAX 0.5+ - Handle None values properly 
+            self.module = px.static(jax.tree.map(
+                lambda w: pxnn.LayerParam(w) if isinstance(w, jax.Array) else w,
+                module,
+                is_leaf=lambda w: w is None or isinstance(w, jax.Array)
+            ))
+        else:
+            # JAX 0.4.x
+            self.module = px.static(jtu.tree_map(
+                lambda w: pxnn.LayerParam(w) if isinstance(w, jax.Array) else w,
+                module,
+                is_leaf=lambda w: isinstance(w, jax.Array)
+            ))
         
     def __call__(self, *args, **kwargs):
         # Convert all LayerParam objects back to jax arrays for the call
-        module_with_arrays = jtu.tree_map(
-            lambda w: w.get() if isinstance(w, pxnn.LayerParam) else w,
-            self.module,
-            is_leaf=lambda w: isinstance(w, pxnn.LayerParam)
-        )
+        # Use different tree handling based on JAX version
+        if hasattr(jax, 'tree'):
+            # JAX 0.5+ - Handle None values properly
+            module_with_arrays = jax.tree.map(
+                lambda w: w.get() if isinstance(w, pxnn.LayerParam) else w,
+                self.module,
+                is_leaf=lambda w: w is None or isinstance(w, pxnn.LayerParam)
+            )
+        else:
+            # JAX 0.4.x
+            module_with_arrays = jtu.tree_map(
+                lambda w: w.get() if isinstance(w, pxnn.LayerParam) else w,
+                self.module,
+                is_leaf=lambda w: isinstance(w, pxnn.LayerParam)
+            )
         
         # Call the module with the arrays
         result = module_with_arrays(*args, **kwargs)

@@ -76,15 +76,15 @@ class Decoder(pxc.EnergyModule):
             ),
             # Vode after first upsampling layer
             pxc.Vode(
-                ruleset={STATUS_FORWARD: ("h -> u",)}
+                ruleset={"forward": ("h -> u",)}
                 ),
             # Vode after second upsampling layer
             pxc.Vode(
-                ruleset={STATUS_FORWARD: ("h -> u",)}
+                ruleset={"forward": ("h -> u",)}
                 ),
             # Vode after third upsampling layer
             pxc.Vode(
-                ruleset={STATUS_FORWARD: ("h -> u",)}
+                ruleset={"forward": ("h -> u",)}
                 ),
             # Output Vode (sensory layer)
             pxc.Vode()

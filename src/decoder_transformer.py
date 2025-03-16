@@ -3,6 +3,7 @@ import multiprocessing
 multiprocessing.set_start_method('spawn', force=True) 
 
 import warnings
+import os
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 from typing import Callable, List, Optional, Dict, Any
@@ -25,8 +26,8 @@ from jax.typing import DTypeLike
 # Import PCX-compatible transformer components
 from pcx_transformer import PCXDoubleStreamBlock, PCXEmbedND, PCXMLPEmbedder
 
-STATUS_FORWARD = "forward"
-STATUS_REFINE = "refine"
+STATUS_FORWARD = px.static("forward")
+STATUS_REFINE = px.static("refine")
 
 import jax.random as jrandom
 key = jrandom.PRNGKey(42)  # Same seed in both versions
@@ -77,28 +78,28 @@ class TransformerConfig:
 class TransformerDecoder(pxc.EnergyModule):
     def __init__(self, config: TransformerConfig) -> None:
         super().__init__()
-        self.config = config
+        self.config = px.static(config)
         self.image_shape = px.static(config.image_shape)
-        self.output_dim = config.image_shape[0] * config.image_shape[1] * config.image_shape[2]
+        self.output_dim = px.static(config.image_shape[0] * config.image_shape[1] * config.image_shape[2])
         
         # Initialize nnx random key
-        self.rngs = nnx.Rngs(0)
+        self.rngs = px.static(nnx.Rngs(0))
 
         # Define Vodes for predictive coding
-        self.vodes = [
+        self.vodes = px.static([
             # Top-level latent Vode
             pxc.Vode(
                 energy_fn=None,
                 ruleset={pxc.STATUS.INIT: ("h, u <- u:to_init",)},
-                tforms={"to_init": lambda n, k, v, rkg: jrandom.normal(px.RKG(), (config.latent_dim,)) * 0.01 if config.use_noise else jnp.zeros((config.latent_dim,))}
+                tforms={"to_init": px.static(lambda n, k, v, rkg: jrandom.normal(px.RKG(), (config.latent_dim,)) * 0.01 if config.use_noise else jnp.zeros((config.latent_dim,)))}
             )
-        ]
+        ])
         
         # Create Vodes for each transformer block output
         for _ in range(config.num_blocks):
             self.vodes.append(
                 pxc.Vode(
-                    ruleset={STATUS_FORWARD: ("h -> u",)}
+                    ruleset={"forward": ("h -> u",)}
                 )
             )
         
@@ -124,7 +125,7 @@ class TransformerDecoder(pxc.EnergyModule):
         )
         
         # Create transformer blocks
-        self.transformer_blocks = []
+        self.transformer_blocks = px.static([])
         for i in range(config.num_blocks):
             self.transformer_blocks.append(
                 PCXDoubleStreamBlock(
@@ -147,6 +148,10 @@ class TransformerDecoder(pxc.EnergyModule):
         # Get the top-level latent from the first Vode
         x = self.vodes[0](jnp.empty(()))  # Shape: (latent_dim,)
         
+        # Check if x is None (can happen during initialization or with certain JAX transformations)
+        if x is None:
+            return None
+            
         # Reshape latent to sequence form
         x = x.reshape((self.config.seq_len, self.config.channels_init))  # Shape: (seq_len, channels_init)
         
@@ -266,11 +271,11 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
     for _ in range(T):
         with pxu.step(model, clear_params=pxc.VodeParam.Cache):
             (h_energy, y_), h_grad = inference_step(model=model)
-        optim_h.step(model, h_grad["model"])
+        optim_h.step(model, h_grad["model"], allow_none=True)
 
         with pxu.step(model, clear_params=pxc.VodeParam.Cache):
             (w_energy, y_), w_grad = learning_step(model=model)
-        optim_w.step(model, w_grad["model"], scale_by=1.0/x.shape[0])
+        optim_w.step(model, w_grad["model"], scale_by=1.0/x.shape[0], allow_none=True)
     
     optim_h.clear()
 
@@ -301,12 +306,16 @@ def eval_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_h: p
         with pxu.step(model, clear_params=pxc.VodeParam.Cache):
             (h_energy, y_), h_grad = inference_step(model=model)
 
-        optim_h.step(model, h_grad["model"])
+        optim_h.step(model, h_grad["model"], allow_none=True)
     
     optim_h.clear()
 
     with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
         x_hat = forward(None, model=model)
+
+    # Handle the case when x_hat is None
+    if x_hat is None:
+        return jnp.array(float('nan')), None
 
     loss = jnp.square(jnp.clip(x_hat.flatten(), 0.0, 1.0) - x.flatten()).mean()
 
@@ -318,9 +327,12 @@ def eval(dl, T, *, model: TransformerDecoder, optim_h: pxu.Optim):
 
     for x, y in dl:
         e, y_hat = eval_on_batch(T, x.numpy(), model=model, optim_h=optim_h)
-        losses.append(e)
+        # Only append valid losses
+        if not jnp.isnan(e):
+            losses.append(e)
 
-    return jnp.mean(jnp.array(losses))
+    # Return mean loss or NaN if no valid losses
+    return jnp.mean(jnp.array(losses)) if losses else jnp.array(float('nan'))
 
 
 def eval_on_batch_partial(use_corruption: bool, corrupt_ratio: float, T: int, x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim):
@@ -340,6 +352,10 @@ def eval_on_batch_partial(use_corruption: bool, corrupt_ratio: float, T: int, x:
     
     # Apply mask to input image
     if use_corruption:
+        # Convert numpy array to JAX array if needed
+        if isinstance(x, np.ndarray):
+            x = jnp.array(x)
+            
         x_corrupted = x.copy()
         for c in range(channels):
             x_corrupted = x_corrupted.at[c, corrupt_height:, :].set(0.0)
@@ -363,14 +379,17 @@ def eval_on_batch_partial(use_corruption: bool, corrupt_ratio: float, T: int, x:
             with pxu.step(model, clear_params=pxc.VodeParam.Cache):
                 (h_energy, y_), h_grad = inference_step(model=model)
                 
-            optim_h.step(model, h_grad["model"])
+            optim_h.step(model, h_grad["model"], allow_none=True)
         
         optim_h.clear()
         
         with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
             x_hat = forward(None, model=model)
     
-    # If using corruption, compute loss only on corrupted region
+    # Handle the case when x_hat is None
+    if x_hat is None:
+        return jnp.array(float('nan')), None
+
     if use_corruption:
         x_flat = x[:, corrupt_height:, :].flatten()
         x_hat_flat = x_hat[:, corrupt_height:, :].flatten()
@@ -400,13 +419,27 @@ def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corr
         
         # Handle label as scalar or 1-element array
         if hasattr(label, 'item'):
-            labels_list.append(label[0].item() if len(label.shape) > 0 else label.item())
+            try:
+                # Try to get the first element if it's a multi-element tensor
+                if len(label.shape) > 0 and label.shape[0] > 0:
+                    labels_list.append(int(label[0]))
+                else:
+                    labels_list.append(int(label))
+            except (ValueError, TypeError, RuntimeError):
+                # If we can't convert to a scalar, just use None
+                labels_list.append(None)
         else:
             labels_list.append(None)
             
         for T in T_values:
-            x_hat = eval_on_batch_partial(use_corruption=use_corruption, corrupt_ratio=corrupt_ratio, T=T, x=x, model=model, optim_h=optim_h)
-            x_hat_single = jnp.reshape(x_hat[1][0], model.image_shape.get())
+            loss, x_hat = eval_on_batch_partial(use_corruption=use_corruption, corrupt_ratio=corrupt_ratio, T=T, x=x, model=model, optim_h=optim_h)
+            
+            # Handle the case when x_hat is None
+            if x_hat is None:
+                recon_images[T].append(None)
+                continue
+                
+            x_hat_single = jnp.reshape(x_hat[0], model.image_shape.get())
             recon_images[T].append(x_hat_single)
     
     # Create subplots
@@ -427,6 +460,16 @@ def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corr
         axes[i, 0].axis('off')
         
         for j, T in enumerate(T_values):
+            # Handle the case when recon_images[T][i] is None
+            if recon_images[T][i] is None:
+                axes[i, j+1].text(0.5, 0.5, "Failed to generate", 
+                                 horizontalalignment='center',
+                                 verticalalignment='center',
+                                 transform=axes[i, j+1].transAxes)
+                axes[i, j+1].set_title(f'T={T}')
+                axes[i, j+1].axis('off')
+                continue
+                
             if model.image_shape.get()[0] == 1:  # Grayscale
                 axes[i, j+1].imshow(jnp.clip(jnp.squeeze(recon_images[T][i]), 0.0, 1.0), cmap='gray')
             else:  # RGB
