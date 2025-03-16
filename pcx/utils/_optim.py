@@ -88,25 +88,28 @@ class Optim(BaseModule):
 
             def _map_grad(_, g):
                 nonlocal _is_valid_grads
-                if get(g) is None:
+                if g is None or get(g) is None:
                     _is_valid_grads = False
-
                     return g
 
-                return set(g, g * scale_by)
+                # Only scale if the value is a number or array
+                value = get(g)
+                if hasattr(value, 'shape') or isinstance(value, (int, float)):
+                    return set(g, value * scale_by)
+                return g
         else:
 
             def _map_grad(_, g):
                 nonlocal _is_valid_grads
-                if get(g) is None:
+                if g is None or get(g) is None:
                     _is_valid_grads = False
-
                 return g
 
         grads = jtu.tree_map(
             _map_grad,
             self.filter.get(),
             grads,
+            is_leaf=lambda x: x is None
         )
 
         if _is_valid_grads is False:
@@ -118,7 +121,12 @@ class Optim(BaseModule):
             lambda _, x: x,
             self.filter.get(),
             module,
+            is_leaf=lambda x: x is None
         )
+
+        # Check if optax_opt is None
+        if self.optax_opt is None or self.optax_opt.get() is None:
+            return None
 
         updates, state = self.optax_opt.update(
             grads,
@@ -144,7 +152,7 @@ class Optim(BaseModule):
             lambda u, p: set(p, eqx.apply_updates(get(p), get(u))),
             updates,
             module,
-            is_leaf=lambda x: isinstance(x, BaseParam),
+            is_leaf=lambda x: x is None
         )
 
     def init(self, parameters: PyTree) -> None:
@@ -237,7 +245,7 @@ class OptimTree(BaseModule):
             self.state.get(),
             grads,
             module,
-            is_leaf=lambda x: isinstance(x, Optim),
+            is_leaf=lambda x: x is None
         )
 
         return updates
@@ -249,7 +257,7 @@ class OptimTree(BaseModule):
             self.state.get(),
             updates,
             module,
-            is_leaf=lambda x: isinstance(x, Optim),
+            is_leaf=lambda x: x is None or isinstance(x, Optim)
         )
 
     def clear(self) -> None:

@@ -30,16 +30,34 @@ class _BaseParamMeta(abc.ABCMeta):
     def __new__(mcs, name, bases, dct):
         _cls = super().__new__(mcs, name, bases, dct)
 
-        jax.tree_util.register_pytree_with_keys(
-            _cls,
-            flatten_func=_BaseParamMeta.flatten_parameter,
-            flatten_with_keys=_BaseParamMeta.flatten_parameter_with_keys,
-            unflatten_func=functools.partial(
-                _BaseParamMeta.unflatten_parameter, cls=_cls
-            ),
-        )
+        # Check for JAX 0.5+ API
+        if hasattr(jax, 'tree') and hasattr(jax.tree, 'register_pytree_type'):
+            # JAX 0.5+ API
+            jax.tree.register_pytree_type(
+                _cls,
+                flatten_func=lambda x: ((x._value,), {k: v for k, v in x.__dict__.items() if k != '_value'}),
+                unflatten_func=lambda aux_data, children: _BaseParamMeta._create_param(_cls, aux_data, children),
+            )
+        else:
+            # Legacy JAX 0.4.x API
+            jax.tree_util.register_pytree_with_keys(
+                _cls,
+                flatten_func=_BaseParamMeta.flatten_parameter,
+                flatten_with_keys=_BaseParamMeta.flatten_parameter_with_keys,
+                unflatten_func=functools.partial(
+                    _BaseParamMeta.unflatten_parameter, cls=_cls
+                ),
+            )
 
         return _cls
+
+    @staticmethod
+    def _create_param(cls, aux_data, children):
+        """Helper for the new JAX 0.5+ unflatten API"""
+        _param = object.__new__(cls)
+        _param.__dict__ = dict(aux_data)  # Copy aux_data to avoid modifying the original
+        _param._value = children[0]
+        return _param
 
     @staticmethod
     def flatten_parameter(param: "BaseParam") -> Tuple[Any, Dict[str, Any]]:
@@ -53,7 +71,18 @@ class _BaseParamMeta(abc.ABCMeta):
         _aux_data = dict.copy(param.__dict__)
         del _aux_data["_value"]
 
-        return ((jax.tree_util.GetAttrKey("value"), param._value),), _aux_data
+        # Handle JAX 0.5+ API changes for GetAttrKey
+        try:
+            # Try JAX 0.5+ API first
+            if hasattr(jax, 'tree') and hasattr(jax.tree, 'KeyPath'):
+                key_class = jax.tree.KeyPath
+            else:
+                key_class = jax.tree_util.GetAttrKey
+            
+            return ((key_class("value"), param._value),), _aux_data
+        except (AttributeError, ImportError):
+            # Fallback for compatibility
+            return ((jax.tree_util.GetAttrKey("value"), param._value),), _aux_data
 
     @staticmethod
     def unflatten_parameter(
@@ -351,15 +380,22 @@ def get(x: Any | BaseParam) -> Any:
 
 
 def set(obj: Any, x: Any | BaseParam) -> Any | BaseParam:
-    """Set the value of the input object and returns it if it is a BaseParam, otherwise return the new value itself.
-    Used in ambiguous situations to ensure that the input object is correctly updated.
+    """Set the value of a parameter or a regular object.
+
+    Args:
+        obj (Any): the object to set.
+        x (Any | BaseParam): the value to set.
 
     Returns:
-        Any | BaseParam: the updated input object if it is a BaseParam, otherwise the new value itself.
+        Any | BaseParam: the updated object.
     """
-    if isinstance(obj, BaseParam):
+    if obj is None:
+        return get(x)  # If obj is None, just return the value of x
+    
+    if hasattr(obj, "set"):
         obj.set(get(x))
     else:
-        obj = set(x)
+        # If obj doesn't have a set method, just return the value of x
+        return get(x)
 
     return obj

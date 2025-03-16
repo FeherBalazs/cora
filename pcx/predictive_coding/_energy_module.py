@@ -5,6 +5,7 @@ import functools
 from types import UnionType
 
 import jax
+import jax.numpy as jnp
 
 from ..core._module import Module
 from ..core._tree import tree_apply
@@ -36,14 +37,19 @@ class EnergyModule(Module):
         self._status = static(None)
 
     def energy(self) -> jax.Array:
-        """Return the total energy of the module as the recursive sum of all the energies of its submodules.
+        """Compute the total energy of the module.
+
         Note that differently from the Vodes, the energy is not cached.
 
         Returns:
             jax.Array: total energy of the module.
         """
+        submodules = list(self.submodules(cls=EnergyModule))
+        if not submodules:
+            return jnp.array(0.0)  # Return zero energy if there are no submodules
+            
         return functools.reduce(
-            lambda x, y: x + y, (m.energy() for m in self.submodules(cls=EnergyModule))
+            lambda x, y: x + y, (m.energy() for m in submodules)
         )
 
     def clear_params(self, filter: Callable[[Any], bool] | Type) -> None:

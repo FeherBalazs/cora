@@ -4,6 +4,7 @@ __all__ = ["tree_extract", "tree_inject", "tree_ref", "tree_unref"]
 from typing import Any, Tuple, Sequence, Callable
 from jaxtyping import PyTree
 
+import jax
 import jax.tree_util as jtu
 import equinox as eqx
 
@@ -79,6 +80,17 @@ class _BaseParamRef(StaticParam):
         super().__init__(n)
 
 
+# Helper to use the appropriate tree functions based on JAX version
+def _get_tree_functions():
+    """Return the appropriate tree functions based on JAX version."""
+    if hasattr(jax, 'tree'):
+        # JAX 0.5+
+        return jax.tree.map, jax.tree.leaves, jax.tree.leaves_with_path
+    else:
+        # JAX 0.4.x
+        return jtu.tree_map, jtu.tree_leaves, jtu.tree_leaves_with_path
+
+
 # Core #################################################################################################################
 
 
@@ -115,13 +127,14 @@ def tree_apply(
             matching 'filter_fn' is encountered. Normally is set to False for performance reasons when targeting
             parameters (that are leaves of the pytree).
     """
+    _, tree_leaves, _ = _get_tree_functions()
 
     def _wrap_fn(x):
         if r := filter_fn(x):
             fn(x)
         return r
 
-    leaves = jtu.tree_leaves(tree, is_leaf=_wrap_fn)
+    leaves = tree_leaves(tree, is_leaf=_wrap_fn)
 
     if recursive:
         for leaf in leaves:
@@ -155,8 +168,10 @@ def tree_extract(
         Sequence[Any]: list of extracted values.
     """
     assert is_pytree is True, "Not implemented for non-pytrees."
+    
+    tree_map, _, _ = _get_tree_functions()
 
-    # We use jtu.tree_map to apply extract_fn to the dynamically identified leaves of the pytree.
+    # We use tree_map to apply extract_fn to the dynamically identified leaves of the pytree.
     _values = []
 
     def _map_fn(x, *rest):
@@ -165,7 +180,18 @@ def tree_extract(
 
         return x
 
-    jtu.tree_map(_map_fn, pydag, *rest, is_leaf=lambda x: isinstance(x, BaseParam))
+    # Handle None values differently in JAX 0.5+
+    if hasattr(jax, 'tree'):
+        # JAX 0.5+ - special handling for None values
+        def safe_is_leaf(x):
+            if x is None:
+                return True
+            return isinstance(x, BaseParam)
+        
+        tree_map(_map_fn, pydag, *rest, is_leaf=safe_is_leaf)
+    else:
+        # JAX 0.4.x
+        tree_map(_map_fn, pydag, *rest, is_leaf=lambda x: isinstance(x, BaseParam))
 
     return tuple(_values)
 
@@ -198,28 +224,63 @@ def tree_inject(
         PyTree: pytree with values injected via 'inject_fn'.
     """
     assert is_pytree is True, "Not implemented for non-pytrees."
+    
+    _, tree_leaves, _ = _get_tree_functions()
 
     if values is None:
-        values = filter(
-            filter_fn,
-            jtu.tree_leaves(params, is_leaf=lambda x: isinstance(x, BaseParam)),
-        )
+        # Handle different tree handling in JAX 0.5+
+        if hasattr(jax, 'tree'):
+            # JAX 0.5+ - special handling for None values
+            def safe_is_leaf(x):
+                if x is None:
+                    return True
+                return isinstance(x, BaseParam)
+            
+            values = filter(
+                filter_fn,
+                tree_leaves(params, is_leaf=safe_is_leaf),
+            )
+        else:
+            # JAX 0.4.x
+            values = filter(
+                filter_fn,
+                tree_leaves(params, is_leaf=lambda x: isinstance(x, BaseParam)),
+            )
     else:
         assert params is None, "Cannot specify both 'values' and 'params'"
 
-    # We use jtu.tree_leaves to apply inject_fn to the dynamically identified leaves of the pytree.
+    # We use tree_leaves to apply inject_fn to the dynamically identified leaves of the pytree.
     _values_it = iter(values)
 
     def _inject_param(x: Any):
         if isinstance(x, BaseParam):
             if filter_fn(x):
-                inject_fn(x, next(_values_it).get())
-
+                try:
+                    next_val = next(_values_it)
+                    # Handle different types of values
+                    if hasattr(next_val, 'get'):
+                        inject_fn(x, next_val.get())
+                    else:
+                        inject_fn(x, next_val)
+                except StopIteration:
+                    if strict:
+                        raise ValueError("Not enough values to inject into the pytree.")
             return True
         else:
             return False
 
-    jtu.tree_leaves(pydag, is_leaf=_inject_param)
+    # Handle None values differently in JAX 0.5+
+    if hasattr(jax, 'tree'):
+        # JAX 0.5+ - special handling for None values
+        def safe_is_leaf(x):
+            if x is None:
+                return True
+            return _inject_param(x)
+        
+        tree_leaves(pydag, is_leaf=safe_is_leaf)
+    else:
+        # JAX 0.4.x
+        tree_leaves(pydag, is_leaf=_inject_param)
 
     if strict is True:
         # This is to assert the user didn't mess up with the pytree structure.

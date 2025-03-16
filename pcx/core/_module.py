@@ -54,16 +54,33 @@ class _BaseModuleMeta(abc.ABCMeta):
     def __new__(mcs, name, bases, dct):
         _cls = super().__new__(mcs, name, bases, dct)
 
-        jax.tree_util.register_pytree_with_keys(
-            _cls,
-            flatten_func=_BaseModuleMeta.flatten_module,
-            flatten_with_keys=_BaseModuleMeta.flatten_module_with_keys,
-            unflatten_func=functools.partial(
-                _BaseModuleMeta.unflatten_module, cls=_cls
-            ),
-        )
+        # Check for JAX 0.5+ API
+        if hasattr(jax, 'tree') and hasattr(jax.tree, 'register_pytree_type'):
+            # JAX 0.5+ API
+            jax.tree.register_pytree_type(
+                _cls,
+                flatten_func=lambda x: (tuple(x.__dict__.values()), tuple(x.__dict__.keys())),
+                unflatten_func=lambda aux_data, children: _BaseModuleMeta._create_module(_cls, aux_data, children),
+            )
+        else:
+            # Legacy JAX 0.4.x API
+            jax.tree_util.register_pytree_with_keys(
+                _cls,
+                flatten_func=_BaseModuleMeta.flatten_module,
+                flatten_with_keys=_BaseModuleMeta.flatten_module_with_keys,
+                unflatten_func=functools.partial(
+                    _BaseModuleMeta.unflatten_module, cls=_cls
+                ),
+            )
 
         return _cls
+        
+    @staticmethod
+    def _create_module(cls, aux_data, children):
+        """Helper for the new JAX 0.5+ unflatten API"""
+        _module = object.__new__(cls)
+        _module.__dict__ = dict(zip(aux_data, children))
+        return _module
 
     @staticmethod
     def flatten_module(module: "BaseModule") -> Tuple[Tuple[Any, ...], Tuple[str, ...]]:
@@ -73,15 +90,34 @@ class _BaseModuleMeta(abc.ABCMeta):
     def flatten_module_with_keys(
         module: "BaseModule",
     ) -> Tuple[Tuple[Tuple[str, Any], ...], Tuple[str, ...]]:
-        return (
-            tuple(
-                zip(
-                    map(lambda k: jtu.GetAttrKey(k), module.__dict__.keys()),
-                    module.__dict__.values(),
-                )
-            ),
-            tuple(module.__dict__.keys()),
-        )
+        # Handle JAX 0.5+ API changes for GetAttrKey
+        try:
+            # Try JAX 0.5+ API first
+            if hasattr(jax, 'tree') and hasattr(jax.tree, 'KeyPath'):
+                key_class = jax.tree.KeyPath
+            else:
+                key_class = jtu.GetAttrKey
+            
+            return (
+                tuple(
+                    zip(
+                        map(lambda k: key_class(k), module.__dict__.keys()),
+                        module.__dict__.values(),
+                    )
+                ),
+                tuple(module.__dict__.keys()),
+            )
+        except (AttributeError, ImportError):
+            # Fallback for compatibility
+            return (
+                tuple(
+                    zip(
+                        map(lambda k: jtu.GetAttrKey(k), module.__dict__.keys()),
+                        module.__dict__.values(),
+                    )
+                ),
+                tuple(module.__dict__.keys()),
+            )
 
     @staticmethod
     def unflatten_module(
@@ -174,13 +210,13 @@ class Module(BaseModule):
             return
 
     def train(self) -> None:
-        """Set the module in train mode."""
-        self.mode(Module.MODE.TRAIN)
+        """Set the module to training mode."""
+        self.mode(self.MODE.TRAIN)
 
         # Set equinox inference mode to False. Note that all attributes of an equinox module are automatically
         # converted to parameters, either static or dynamic, so we can access them via `.set()`/`.get()`.
         tree_apply(
-            lambda eqx_m: eqx_m.inference.set(False),
+            lambda eqx_m: eqx_m.inference.set(False) if hasattr(eqx_m.inference, "set") else None,
             lambda x: hasattr(x, "inference"),
             self,
             False,
@@ -188,11 +224,11 @@ class Module(BaseModule):
 
     def eval(self) -> None:
         """Set the module in eval mode."""
-        self.mode(Module.MODE.EVAL)
+        self.mode(self.MODE.EVAL)
 
         # Set equinox inference mode to True.
         tree_apply(
-            lambda eqx_m: eqx_m.inference.set(True),
+            lambda eqx_m: eqx_m.inference.set(True) if hasattr(eqx_m.inference, "set") else None,
             lambda x: hasattr(x, "inference"),
             self,
             False,

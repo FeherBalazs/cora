@@ -234,8 +234,8 @@ class _BaseTransform(abc.ABC):
                 return mask
 
         # kwargs is reffed so we don't have to worry about (un)flattening its parameters,
-        # so no need to specify a is_leaf function.
-        mask = jtu.tree_map(map_fn, mask, kwargs)
+        # but we still need to handle None values correctly
+        mask = jtu.tree_map(map_fn, mask, kwargs, is_leaf=lambda x: x is None)
 
         # In case the custom mask overwrites the __RKG mask
         mask["__RKG"] = rkg_mask
@@ -373,6 +373,8 @@ class Vmap(_BaseTransform):
 
         # Compute vaxes dimension which is necessary to split the RKG key.
         def _extract_vaxes_dim(node, mask):
+            if mask is None:
+                return None
             for param in filter(
                 lambda _node: hasattr(_node, "shape"), jtu.tree_leaves(node)
             ):
@@ -380,17 +382,25 @@ class Vmap(_BaseTransform):
 
             return None
 
-        _vaxis_dim = jtu.tree_leaves(
+        _vaxis_leaves = jtu.tree_leaves(
             jtu.tree_map(
                 lambda mask, node: _extract_vaxes_dim(node, mask),
                 _in_axes_mask,
                 (*args, kwargs),
+                is_leaf=lambda x: x is None
             )
-        )[0]
+        )
+        
+        # Handle the case when there are no leaves or all leaves are None
+        _vaxis_dim = _vaxis_leaves[0] if _vaxis_leaves and _vaxis_leaves[0] is not None else None
 
         # Split the __RKG key over the vmap axis (and set the mask accordingly)
         _in_axes_mask[-1]["__RKG"] = 0
-        kwargs["__RKG"].key.set(kwargs["__RKG"].key.split(_vaxis_dim))
+        if _vaxis_dim is not None:
+            kwargs["__RKG"].key.set(kwargs["__RKG"].key.split(_vaxis_dim))
+        else:
+            # If we can't determine the vmap dimension, use a default value of 1
+            kwargs["__RKG"].key.set(kwargs["__RKG"].key.split(1))
 
         def _wrap_fn(*args):
             *_args, _kwargs = args
