@@ -56,9 +56,12 @@ RUN pip install torch torchvision torchaudio --extra-index-url https://download.
 RUN pip install matplotlib \
     && pip install --upgrade pip \
     && pip uninstall -y jax jaxlib \
-    && pip install "jax[cuda12_pip]==0.4.33" -f https://storage.googleapis.com/jax-releases/cuda12_pip.html \
-    && pip install "jaxlib==0.4.33" -f https://storage.googleapis.com/jax-releases/cuda12_pip.html \
-    && pip install equinox==0.11.7 optax==0.2.3
+    && pip install "jax[cuda12_pip]==0.5.2" -f https://storage.googleapis.com/jax-releases/cuda12_pip.html \
+    && pip install "jaxlib==0.5.2" -f https://storage.googleapis.com/jax-releases/cuda12_pip.html \
+    && pip install equinox==0.11.12 optax==0.2.4 flax==0.10.4 jaxtyping==0.2.38
+
+# For debugging and testing
+RUN pip install pytest pytest-randomly pytest-cov pytest-xdist
 
 
 
