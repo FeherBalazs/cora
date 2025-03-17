@@ -206,4 +206,41 @@ class PCXMLPEmbedder(PCXWrapper):
         self.hidden_dim = hidden_dim
         
     def __call__(self, x: jax.Array) -> jax.Array:
-        return super().__call__(x) 
+        return super().__call__(x)
+
+
+class PCXLastLayer(PCXWrapper):
+    """
+    PCX-compatible wrapper for the jflux LastLayer.
+    """
+    
+    def __init__(
+        self,
+        hidden_size: int,
+        patch_size: int,
+        out_channels: int,
+        rngs: Optional[nnx.Rngs] = None,
+        param_dtype: DTypeLike = jnp.float32,
+    ):
+        if rngs is None:
+            rngs = nnx.Rngs(0)
+            
+        # Create the original jflux LastLayer
+        original_layer = LastLayer(
+            hidden_size=hidden_size,
+            patch_size=patch_size,
+            out_channels=out_channels,
+            rngs=rngs,
+            param_dtype=param_dtype
+        )
+        
+        # Initialize the wrapper with the original layer
+        super().__init__(original_layer)
+        
+        # Store configuration for reference
+        self.hidden_size = hidden_size
+        self.patch_size = patch_size
+        self.out_channels = out_channels
+        
+    def __call__(self, x: jax.Array, vec: jax.Array) -> jax.Array:
+        return super().__call__(x, vec) 

@@ -1,5 +1,4 @@
 import multiprocessing
-# Set the start method to 'spawn' instead of 'fork'
 multiprocessing.set_start_method('spawn', force=True) 
 
 import warnings
@@ -21,9 +20,10 @@ import pcx.utils as pxu
 import pcx.functional as pxf
 from flax import nnx
 from jax.typing import DTypeLike
+from einops import rearrange
 
 # Import PCX-compatible transformer components
-from pcx_transformer import PCXSingleStreamBlock, PCXEmbedND, PCXMLPEmbedder
+from pcx_transformer import PCXSingleStreamBlock, PCXEmbedND, PCXMLPEmbedder, PCXLastLayer
 
 STATUS_FORWARD = "forward"
 STATUS_REFINE = "refine"
@@ -42,109 +42,80 @@ class TransformerConfig:
     # Architecture settings
     hidden_size: int = 256
     num_heads: int = 8
-    num_blocks: int = 3  # Reduced number of blocks for simplicity
+    num_blocks: int = 3
     mlp_ratio: float = 4.0
     
     # Patch settings
     patch_size: int = 4  # Size of patches (4x4)
     
+    # Positional embedding settings
+    axes_dim: list[int] = field(default_factory=lambda: [16, 16])
+    theta: int = 10_000
+    
     # Training settings
     use_noise: bool = True
     param_dtype: DTypeLike = jnp.float32
-    act_fn: Callable[[jax.Array], jax.Array] = jax.nn.gelu
-    
-    # Positional embedding settings
-    theta: int = 10000
-    
-    # Computed properties
-    num_patches: int = field(init=False)
-    patch_dim: int = field(init=False)
-    axes_dim: List[int] = field(init=False)
     
     def __post_init__(self):
-        # Calculate number of patches
-        h_patches = self.image_shape[1] // self.patch_size
-        w_patches = self.image_shape[2] // self.patch_size
-        self.num_patches = h_patches * w_patches
-        
-        # Calculate patch dimension
+        # Calculate patch dimensions
+        self.num_patches = (self.image_shape[1] // self.patch_size) * (self.image_shape[2] // self.patch_size)
         self.patch_dim = self.patch_size * self.patch_size * self.image_shape[0]
-        
-        # Ensure latent_dim is compatible with number of patches
-        if self.latent_dim != self.num_patches * self.patch_dim:
-            print(f"Warning: Adjusting latent_dim from {self.latent_dim} to {self.num_patches * self.patch_dim} to match patch dimensions")
-            self.latent_dim = self.num_patches * self.patch_dim
-        
-        # Set up positional embedding dimensions
-        self.axes_dim = [self.hidden_size // self.num_heads // 2, self.hidden_size // self.num_heads // 2]
 
 
 class TransformerDecoder(pxc.EnergyModule):
     def __init__(self, config: TransformerConfig) -> None:
         super().__init__()
         self.config = px.static(config)
-        self.image_shape = px.static(config.image_shape)
-        self.patch_size = px.static(config.patch_size)
-        self.num_patches = px.static(config.num_patches)
-        self.patch_dim = px.static(config.patch_dim)
         
-        # Verify patch dimensions match expectation
-        h_patches = config.image_shape[1] // config.patch_size
-        w_patches = config.image_shape[2] // config.patch_size
-        actual_num_patches = h_patches * w_patches
-        actual_patch_dim = config.patch_size * config.patch_size * config.image_shape[0]
-        
-        if config.num_patches != actual_num_patches or config.patch_dim != actual_patch_dim:
-            print(f"WARNING: Config patch dimensions don't match calculated dimensions:")
-            print(f"Config: num_patches={config.num_patches}, patch_dim={config.patch_dim}")
-            print(f"Calculated: num_patches={actual_num_patches}, patch_dim={actual_patch_dim}")
-            # Don't override config values as they may be needed for other parts of the code
-        
-        # Initialize nnx random key
+        # Initialize random key
         self.rngs = nnx.Rngs(0)
-
+        
+        print(f"Model initialized with {self.config.num_patches} patches, each with dimension {self.config.patch_dim}")
+        
         # Define Vodes for predictive coding
-        self.vodes = [
-            # Top-level latent Vode
-            pxc.Vode(
-                energy_fn=None,
-                ruleset={pxc.STATUS.INIT: ("h, u <- u:to_init",)},
-                tforms={"to_init": lambda n, k, v, rkg: jrandom.normal(px.RKG(), (config.latent_dim,)) * 0.01 if config.use_noise else jnp.zeros((config.latent_dim,))}
-            )
-        ]
+        # Top-level latent Vode
+        self.vodes = [pxc.Vode(
+            energy_fn=None,
+            ruleset={pxc.STATUS.INIT: ("h, u <- u:to_init",)},
+            tforms={"to_init": lambda n, k, v, rkg: jax.random.normal(px.RKG(), (config.latent_dim,)) * 0.01 if config.use_noise else jnp.zeros((config.latent_dim,))}
+        )]
         
         # Create Vodes for each transformer block output
         for _ in range(config.num_blocks):
-            self.vodes.append(
-                pxc.Vode(
-                    ruleset={STATUS_FORWARD: ("h -> u",)}
-                )
-            )
+            self.vodes.append(pxc.Vode(
+                ruleset={STATUS_FORWARD: ("h -> u",)}
+            ))
         
         # Output Vode (sensory layer)
         self.vodes.append(pxc.Vode())
+        self.vodes[-1].h.frozen = True  # Freeze the output Vode's hidden state
         
-        # Freeze the output Vode's hidden state
-        self.vodes[-1].h.frozen = True
+        # === jflux-inspired architecture components ===
         
-        # Initialize Transformer components using PCX-compatible wrappers
-        
-        # Patch embedding projection - use the verified actual_patch_dim
-        self.patch_proj = pxnn.Linear(
-            in_features=actual_patch_dim,
-            out_features=config.hidden_size
+        # Image input projection - using PCX Linear layer properly
+        self.img_in = pxnn.Linear(
+            in_features=self.config.patch_dim,
+            out_features=config.hidden_size,
+            bias=True  # Using bias=True for Equinox API
         )
         
-        # Positional embedding
+        # Latent vector processing via MLPEmbedder
+        self.vector_in = PCXMLPEmbedder(
+            in_dim=config.latent_dim,
+            hidden_dim=config.hidden_size
+        )
+        
+        # Positional embedding generator
         self.pe_embedder = PCXEmbedND(
             dim=config.hidden_size // config.num_heads,
             theta=config.theta,
             axes_dim=config.axes_dim
         )
         
-        # Create transformer blocks (using SingleStreamBlock instead of DoubleStreamBlock)
+        # Transformer blocks (already contain modulation internally)
         self.transformer_blocks = []
         for i in range(config.num_blocks):
+            # Create transformer block
             self.transformer_blocks.append(
                 PCXSingleStreamBlock(
                     hidden_size=config.hidden_size,
@@ -155,196 +126,123 @@ class TransformerDecoder(pxc.EnergyModule):
                 )
             )
         
-        # Output projection from hidden dimension back to patch
-        self.out_proj = pxnn.Linear(
-            in_features=config.hidden_size,
-            out_features=config.patch_dim
+        # Use PCXLastLayer for final layer processing
+        self.final_layer = PCXLastLayer(
+            hidden_size=config.hidden_size,
+            patch_size=config.patch_size,
+            out_channels=config.image_shape[0],  # Number of channels
+            rngs=self.rngs,
+            param_dtype=config.param_dtype
         )
 
-    def patchify(self, x):
-        """Convert image to sequence of patches.
+    def _patchify(self, x, batch_size=None):
+        """Simple patchify function. Converts image to sequence of patches."""
+        c, h, w = self.config.image_shape
+        p = self.config.patch_size
         
-        Args:
-            x: Image tensor of shape (channels, height, width) or (batch_size, channels, height, width)
-            
-        Returns:
-            Tensor of shape (num_patches, patch_dim) or (batch_size, num_patches, patch_dim)
-        """
-        # Get patch size and calculate dimensions directly
-        p = self.patch_size.get()
-        h_patches = self.image_shape.get()[1] // p
-        w_patches = self.image_shape.get()[2] // p
-        c = self.image_shape.get()[0]
-        
-        # Check if input is batched
-        batch_mode = len(x.shape) == 4
-        
-        if batch_mode:
-            # Handle batched input
-            batch_size = x.shape[0]
-            # Reshape to extract patches for each batch item
-            x = x.reshape((batch_size, c, h_patches, p, w_patches, p))
-            x = jnp.transpose(x, (0, 2, 4, 1, 3, 5))  # (batch_size, h_patches, w_patches, c, p, p)
-            x = x.reshape((batch_size, h_patches * w_patches, c * p * p))  # (batch_size, num_patches, patch_dim)
-        else:
+        if batch_size is None:
             # Handle single image
-            # Reshape to extract patches
-            x = x.reshape((c, h_patches, p, w_patches, p))
+            x = x.reshape((c, h // p, p, w // p, p))
             x = jnp.transpose(x, (1, 3, 0, 2, 4))  # (h_patches, w_patches, c, p, p)
-            x = x.reshape((h_patches * w_patches, c * p * p))  # (num_patches, patch_dim)
+            x = x.reshape((-1, p * p * c))  # (num_patches, patch_dim)
+        else:
+            # Handle batched input
+            x = x.reshape((batch_size, c, h // p, p, w // p, p))
+            x = jnp.transpose(x, (0, 2, 4, 1, 3, 5))  # (batch, h_patches, w_patches, c, p, p)
+            x = x.reshape((batch_size, -1, p * p * c))  # (batch, num_patches, patch_dim)
         
         return x
-
-    def unpatchify(self, x):
-        """Convert sequence of patches back to image.
+    
+    def _unpatchify(self, x, batch_size=None):
+        """Simple unpatchify function. Converts patches back to images."""
+        c, h, w = self.config.image_shape
+        p = self.config.patch_size
+        h_patches, w_patches = h // p, w // p
         
-        Args:
-            x: Tensor of shape (num_patches, patch_dim) or (batch_size, num_patches, patch_dim)
-            
-        Returns:
-            Image tensor of shape (channels, height, width) or (batch_size, channels, height, width)
-        """
-        # Get patch size and calculate dimensions directly
-        p = self.patch_size.get()
-        h_patches = self.image_shape.get()[1] // p
-        w_patches = self.image_shape.get()[2] // p
-        c = self.image_shape.get()[0]
-        
-        # Check if input is batched
-        batch_mode = len(x.shape) == 3
-        
-        if batch_mode:
-            # Handle batched input
-            batch_size = x.shape[0]
-            # Reshape back to image for each batch item
-            x = x.reshape((batch_size, h_patches, w_patches, c, p, p))
-            x = jnp.transpose(x, (0, 3, 1, 4, 2, 5))  # (batch_size, c, h_patches, p, w_patches, p)
-            x = x.reshape((batch_size, c, h_patches * p, w_patches * p))  # (batch_size, c, height, width)
-        else:
+        if batch_size is None:
             # Handle single sequence
-            # Reshape back to image
             x = x.reshape((h_patches, w_patches, c, p, p))
             x = jnp.transpose(x, (2, 0, 3, 1, 4))  # (c, h_patches, p, w_patches, p)
-            x = x.reshape((c, h_patches * p, w_patches * p))  # (c, height, width)
+            x = x.reshape((c, h, w))  # (c, h, w)
+        else:
+            # Handle batched input
+            x = x.reshape((batch_size, h_patches, w_patches, c, p, p))
+            x = jnp.transpose(x, (0, 3, 1, 4, 2, 5))  # (batch, c, h_patches, p, w_patches, p)
+            x = x.reshape((batch_size, c, h, w))  # (batch, c, h, w)
         
         return x
-
-    def generate_grid_coords(self, batch_size):
-        """Generate grid coordinates for patches in batch mode.
+    
+    def _create_patch_ids(self, batch_size):
+        """Creates patch position IDs for positional embeddings."""
+        # Calculate grid dimensions
+        h_patches = self.config.image_shape[1] // self.config.patch_size
+        w_patches = self.config.image_shape[2] // self.config.patch_size
         
-        Args:
-            batch_size: The batch size for which to generate coordinates
-            
-        Returns:
-            Grid coordinates with shape (batch_size, num_patches, 2)
-        """
-        # Calculate patch dimensions directly
-        h_patches = self.image_shape.get()[1] // self.patch_size.get()
-        w_patches = self.image_shape.get()[2] // self.patch_size.get()
+        # Create 2D grid of patch positions
+        patch_ids = jnp.zeros((h_patches, w_patches, 2))
+        patch_ids = patch_ids.at[..., 0].set(jnp.arange(h_patches)[:, None])
+        patch_ids = patch_ids.at[..., 1].set(jnp.arange(w_patches)[None, :])
         
-        # Create coordinate grid for one item
-        coords = jnp.stack(
-            jnp.meshgrid(
-                jnp.arange(h_patches),
-                jnp.arange(w_patches),
-                indexing='ij'
-            ),
-            axis=-1
-        ).reshape(-1, 2)  # Shape: (num_patches, 2)
+        # Reshape to sequence and add batch dimension
+        patch_ids = patch_ids.reshape(-1, 2)
+        patch_ids = jnp.tile(patch_ids[None], (batch_size, 1, 1))
         
-        # Repeat the coords for each item in the batch
-        coords = jnp.tile(coords[None, ...], (batch_size, 1, 1))
-        
-        return coords
+        return patch_ids
 
     def __call__(self, y: jax.Array | None = None):
-        # Get the top-level latent from the first Vode
-        x = self.vodes[0](jnp.empty(()))  # Shape: (latent_dim,) - NOT batched yet
+        # Get batch size
+        batch_size = 1 if y is None or len(y.shape) < 4 else y.shape[0]
         
-        # Determine batch size from the input y if provided, otherwise default to 1
-        if y is not None and hasattr(y, 'shape') and len(y.shape) > 3:
-            # If y is provided and has a batch dimension
-            batch_size = y.shape[0]
-        else:
-            # During inference without a provided y, we assume batch_size=1
-            # This will be overridden by vmap during training
-            batch_size = 1
+        # 1. Get the top-level latent from the first Vode
+        latent = self.vodes[0](jnp.empty(()))  # Shape: (latent_dim,)
         
-        # Calculate actual dimensions to avoid any mismatches
-        h_patches = self.image_shape.get()[1] // self.patch_size.get()
-        w_patches = self.image_shape.get()[2] // self.patch_size.get()
-        actual_num_patches = h_patches * w_patches
-        actual_patch_dim = self.patch_size.get() * self.patch_size.get() * self.image_shape.get()[0]
+        # 2. Process latent through MLPEmbedder to get conditioning vector
+        vec = self.vector_in(latent)  # (hidden_size,)
         
-        # Reshape latent to include batch dimension and then sequence of patches
-        x = jnp.tile(x[None, ...], (batch_size, 1))  # Shape: (batch_size, latent_dim)
+        # 3. Create empty image patches (zeros)
+        patch_seq = jnp.zeros((batch_size, self.config.num_patches, self.config.patch_dim))
         
-        # Verify that the latent dimension is compatible with our patch dimensions
-        expected_dim = actual_num_patches * actual_patch_dim
-        if x.shape[1] != expected_dim:
-            print(f"WARNING: Latent dimension {x.shape[1]} doesn't match expected dimension {expected_dim}")
-            print(f"actual_num_patches: {actual_num_patches}, actual_patch_dim: {actual_patch_dim}")
+        # 4. Project patches to hidden dimension - ONE SIMPLE STEP
+        # Apply linear layer to each patch in the sequence
+        x = jax.vmap(jax.vmap(self.img_in))(patch_seq)
         
-        # Reshape using the actual dimensions we just calculated
-        x = x.reshape((batch_size, actual_num_patches, actual_patch_dim))
+        # 5. Create position IDs and compute positional embeddings
+        patch_ids = self._create_patch_ids(batch_size)
+        pe = self.pe_embedder(patch_ids)
         
-        # Generate positional embeddings with batch dimension (using actual patch count)
-        coords = self.generate_grid_coords(batch_size)  # Shape: (batch_size, num_patches, 2)
-        
-        # Project patches to hidden dimension for all items in batch
-        x = jax.vmap(self.patch_proj)(x)  # Shape: (batch_size, num_patches, hidden_size)
-        
-        # Process coordinates through pe_embedder one item at a time to ensure correct shapes
-        def process_coords(item_coords):
-            # Process a single item's coordinates
-            pe = self.pe_embedder(item_coords)  # Shape: (num_patches, 1, pe_dim)
-            return pe.squeeze(1)  # Shape: (num_patches, pe_dim)
-            
-        # Apply the processing to each batch item's coordinates
-        pe = jax.vmap(process_coords)(coords)  # Shape: (batch_size, num_patches, pe_dim)
-        
-        # Create conditioning vector (all zeros)
-        vec = jnp.zeros((self.config.hidden_size,))
-        
-        # Process each sequence through transformer blocks
+        # 6. Process through transformer blocks
         for i, block in enumerate(self.transformer_blocks):
-            # Create a function that applies the block to a single sequence
-            def apply_block(seq, pos_enc):
-                return block(seq, vec, pos_enc)
+            # Apply transformer block (modulation happens inside)
+            x = block(x, vec, pe)
             
-            # Apply the transformer block to each sequence with its positional encoding
-            x = jax.vmap(apply_block)(x, pe)
-            x = self.vodes[i+1](x)  # Apply Vode
-            
-        # Project each sequence back to patch representation
-        x = jax.vmap(self.out_proj)(x)  # Shape: (batch_size, num_patches, patch_dim)
+            # Apply Vode
+            x = self.vodes[i+1](x)
         
-        # Reshape each item back to image format
-        x = jax.vmap(self.unpatchify)(x)  # Shape: (batch_size, channels, height, width)
+        # 7. Apply final layer processing using PCXLastLayer (handles modulation internally)
+        x = self.final_layer(x, vec)
         
-        # Apply final Vode
-        x = self.vodes[-1](x)  # Shape: (batch_size, channels, height, width)
+        # 8. Unpatchify back to image
+        x = self._unpatchify(x, batch_size)  # (batch, c, h, w)
         
+        # 9. Apply final Vode
+        x = self.vodes[-1](x)  # (batch, c, h, w)
+        
+        # 10. Set target if provided
         if y is not None:
-            # If target image is provided, set the sensory Vode's hidden state
             self.vodes[-1].set("h", y)
-            
-        return self.vodes[-1].get("u")  # Return the predicted image
+        
+        return self.vodes[-1].get("u")  # Return prediction
 
 
 @pxf.vmap(pxu.M(pxc.VodeParam | pxc.VodeParam.Cache).to((None, 0)), in_axes=0, out_axes=0)
 def forward(x, *, model: TransformerDecoder):
-    """Forward pass of the model. This function is vmapped for batch processing.
-    
-    The model's __call__ method now handles batched inputs automatically.
-    """
+    """Forward pass of the model."""
     return model(y=x)
 
 
 @pxf.vmap(pxu.M(pxc.VodeParam | pxc.VodeParam.Cache).to((None, 0)), out_axes=(None, 0), axis_name="batch")
 def energy(*, model: TransformerDecoder):
-    """Energy computation for the model. This function is vmapped for batch processing."""
-    # Using None as input since we're using the latent from the model's Vode
+    """Energy computation for the model."""
     y_ = model(y=None)
     return jax.lax.psum(model.energy(), "batch"), y_
 
@@ -465,8 +363,11 @@ def eval(dl, T, *, model: TransformerDecoder, optim_h: pxu.Optim):
 def eval_on_batch_partial(use_corruption: bool, corrupt_ratio: float, T: int, x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim):
     model.eval()
 
+    # Extract image shape information statically
+    image_shape = model.config.image_shape
+    channels, H, W = image_shape
+    
     # Create mask for corrupted regions
-    channels, H, W = model.image_shape.get()
     corrupt_height = int(corrupt_ratio * H)
     mask = jnp.ones((H, W), dtype=jnp.float32)
     
@@ -542,6 +443,10 @@ def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corr
     import matplotlib.pyplot as plt
     from datetime import datetime
 
+    # Extract image shape statically
+    image_shape = model.config.image_shape
+    num_channels = image_shape[0]
+    
     orig_images = []
     recon_images = {T: [] for T in T_values}
     labels_list = []
@@ -552,7 +457,7 @@ def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corr
         x, label = next(dataloader_iter)
         x = jnp.array(x.numpy())
         
-        orig_images.append(jnp.reshape(x[0], model.image_shape.get()))
+        orig_images.append(jnp.reshape(x[0], image_shape))
         
         # Handle label as scalar or 1-element array
         if hasattr(label, 'item'):
@@ -562,7 +467,7 @@ def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corr
             
         for T in T_values:
             x_hat = eval_on_batch_partial(use_corruption=use_corruption, corrupt_ratio=corrupt_ratio, T=T, x=x, model=model, optim_h=optim_h)
-            x_hat_single = jnp.reshape(x_hat[1][0], model.image_shape.get())
+            x_hat_single = jnp.reshape(x_hat[1][0], image_shape)
             recon_images[T].append(x_hat_single)
     
     # Create subplots
@@ -574,8 +479,8 @@ def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corr
     
     # Plot images
     for i in range(num_images):
-        # Check number of channels with .get()
-        if model.image_shape.get()[0] == 1:  # Grayscale
+        # Check number of channels
+        if num_channels == 1:  # Grayscale
             axes[i, 0].imshow(jnp.clip(jnp.squeeze(orig_images[i]), 0.0, 1.0), cmap='gray')
         else:  # RGB
             axes[i, 0].imshow(jnp.clip(jnp.transpose(orig_images[i], (1, 2, 0)), 0.0, 1.0))
@@ -583,7 +488,7 @@ def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corr
         axes[i, 0].axis('off')
         
         for j, T in enumerate(T_values):
-            if model.image_shape.get()[0] == 1:  # Grayscale
+            if num_channels == 1:  # Grayscale
                 axes[i, j+1].imshow(jnp.clip(jnp.squeeze(recon_images[T][i]), 0.0, 1.0), cmap='gray')
             else:  # RGB
                 axes[i, j+1].imshow(jnp.clip(jnp.transpose(recon_images[T][i], (1, 2, 0)), 0.0, 1.0))

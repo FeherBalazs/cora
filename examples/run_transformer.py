@@ -26,7 +26,7 @@ from src.decoder_transformer import (
     visualize_reconstruction
 )
 # Import PCX-compatible transformer components (though not directly used in this example)
-from src.pcx_transformer import PCXDoubleStreamBlock, PCXEmbedND
+from src.pcx_transformer import PCXDoubleStreamBlock, PCXEmbedND, PCXLastLayer
 
 # Set up basic parameters
 BATCH_SIZE = 16
