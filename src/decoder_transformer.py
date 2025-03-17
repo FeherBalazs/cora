@@ -199,12 +199,33 @@ class TransformerDecoder(pxc.EnergyModule):
         # 2. Process latent through MLPEmbedder to get conditioning vector
         vec = self.vector_in(latent)  # (hidden_size,)
         
+        # Add batch dimension to the conditioning vector for transformer blocks
+        vec = vec[None, :]  # Shape: (batch_size=1, hidden_size)
+        
+        # If we need to repeat for multiple items in the batch
+        if batch_size > 1:
+            # Replicate the same vector for each item in the batch
+            vec = jnp.repeat(vec, batch_size, axis=0)  # Shape: (batch_size, hidden_size)
+        
         # 3. Create empty image patches (zeros)
         patch_seq = jnp.zeros((batch_size, self.config.num_patches, self.config.patch_dim))
         
         # 4. Project patches to hidden dimension - ONE SIMPLE STEP
-        # Apply linear layer to each patch in the sequence
-        x = jax.vmap(jax.vmap(self.img_in))(patch_seq)
+        # Apply linear layer to each patch separately while maintaining batch dimension
+        # This double vmap: 
+        # - First vmap vectorizes over batch dimension
+        # - Second vmap vectorizes over patches within each batch
+        patch_dim = self.config.patch_dim
+        
+        # Create a function that applies the linear layer to a single patch
+        def process_single_patch(patch):
+            return self.img_in(patch)
+        
+        # Vectorize across batches and patches
+        batched_process = jax.vmap(jax.vmap(process_single_patch))
+        
+        # Apply to all patches in all batches and ensure shape is (batch_size, num_patches, hidden_size)
+        x = batched_process(patch_seq)
         
         # 5. Create position IDs and compute positional embeddings
         patch_ids = self._create_patch_ids(batch_size)
