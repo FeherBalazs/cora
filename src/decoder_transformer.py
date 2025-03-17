@@ -87,7 +87,7 @@ class TransformerDecoder(pxc.EnergyModule):
             ))
         
         # Output Vode (sensory layer)
-        self.vodes.append(pxc.Vode())
+        self.vodes.append(pxc.Vode(energy_fn=None))
         self.vodes[-1].h.frozen = True  # Freeze the output Vode's hidden state
         
         # === jflux-inspired architecture components ===
