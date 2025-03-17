@@ -4,11 +4,16 @@ import pcx as px
 import pcx.predictive_coding as pxc
 import pcx.nn as pxnn
 import pcx.utils as pxu
-from typing import Callable, Optional, Dict, Any
+from typing import Callable, Optional, Dict, Any, Type
 from jax.typing import DTypeLike
 import jax.tree_util as jtu
+from dataclasses import is_dataclass
 
 from flax import nnx
+from pcx.core._module import Module
+from pcx.core._parameter import BaseParam
+from pcx.core._static import StaticParam
+
 from jflux.modules.layers import (
     DoubleStreamBlock,
     SingleStreamBlock,
@@ -17,33 +22,58 @@ from jflux.modules.layers import (
     MLPEmbedder,
 )
 
-class PCXWrapper(pxc.Module):
+# Try to import the TransformerConfig class if available
+try:
+    from src.decoder_transformer import TransformerConfig
+    HAS_TRANSFORMER_CONFIG = True
+except ImportError:
+    HAS_TRANSFORMER_CONFIG = False
+    TransformerConfig = type(None)  # Fallback placeholder
+
+
+def is_px_static(obj):
+    """Check if an object has been marked as static by px.static()"""
+    # Objects marked with px.static typically have a special attribute or behavior
+    return hasattr(obj, '__static_hash__') or hasattr(obj, '_static') or hasattr(obj, '_StaticGuard__val')
+
+
+class PCXWrapper(Module):
     """
     Base wrapper for jflux components to make them compatible with PCX's parameter system.
     This wrapper converts flax nnx parameters to PCX LayerParam objects.
+    
+    This follows a similar approach to pcx.nn.Layer, adapted for Flax/nnx modules,
+    with special handling for configuration objects and px.static objects.
     """
     
-    def __init__(self, module):
+    def __init__(self, module, filter=lambda x: isinstance(x, jax.Array)):
         super().__init__()
-        # Convert all jax arrays in the module to LayerParam objects
+        
+        # Store the original module with parameters converted appropriately
+        # Using an approach similar to Layer in pcx/nn/_layer.py but adapted for Flax
         self.module = jtu.tree_map(
-            lambda w: pxnn.LayerParam(w) if isinstance(w, jax.Array) else w,
+            lambda w: pxnn.LayerParam(w) if filter(w) else StaticParam(w),
             module,
-            is_leaf=lambda w: isinstance(w, jax.Array)
+            is_leaf=lambda w: filter(w) or not hasattr(w, '__dict__') or 
+                             is_px_static(w) or  # Handle px.static objects
+                             (HAS_TRANSFORMER_CONFIG and isinstance(w, TransformerConfig)) or
+                             is_dataclass(type(w))  # Handle all dataclasses
         )
         
     def __call__(self, *args, **kwargs):
-        # Convert all LayerParam objects back to jax arrays for the call
+        # Convert all parameter objects back to their values for the call
+        # Following the same approach as in Layer.__call__
         module_with_arrays = jtu.tree_map(
-            lambda w: w.get() if isinstance(w, pxnn.LayerParam) else w,
+            lambda w: w.get() if isinstance(w, BaseParam) else w,
             self.module,
-            is_leaf=lambda w: isinstance(w, pxnn.LayerParam)
+            is_leaf=lambda w: isinstance(w, BaseParam) or 
+                             is_px_static(w) or  # Handle px.static objects
+                             (HAS_TRANSFORMER_CONFIG and isinstance(w, TransformerConfig)) or
+                             is_dataclass(type(w))  # Handle all dataclasses
         )
         
         # Call the module with the arrays
-        result = module_with_arrays(*args, **kwargs)
-        
-        return result
+        return module_with_arrays(*args, **kwargs)
 
 
 class PCXDoubleStreamBlock(PCXWrapper):
