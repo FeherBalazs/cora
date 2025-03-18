@@ -312,20 +312,26 @@ class TransformerDecoder(pxc.EnergyModule):
 
     def __call__(self, y: jax.Array | None = None):        
         # Get the initial sequence of patch embeddings from Vode 0
-        x = self.vodes[0].get("u")
+        # x = self.vodes[0].get("u")
+        x = self.vodes[0](jnp.empty(()))
         
         # Add positional embeddings - use 3D for video, 2D for images
         patch_ids = self._create_patch_ids(batch_size=1)
         pe = self.pe_embedder(patch_ids)
 
         # Get conditioning vector
-        cond_latent = self.conditioning_vode.get("u")
+        # cond_latent = self.conditioning_vode.get("u")
+        cond_latent = self.conditioning_vode(jnp.empty(()))
         vec = self.vector_in(cond_latent)
+        vec = jnp.expand_dims(vec, axis=0) if vec.ndim == 1 else vec    # SingleStreamBlock expects (batch, latent_dim)
         
         # Process through transformer blocks
         for i, block in enumerate(self.transformer_blocks):
             x = block(x, vec, pe) # Apply transformer block
             x = self.vodes[i+1](x) # Apply Vode
+        
+        # Apply final layer to transform from hidden dimension to patch dimension
+        x = self.final_layer(x, vec)
         
         # Unpatchify back to image or video
         x = self._unpatchify(x, batch_size=1)
