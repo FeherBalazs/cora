@@ -24,14 +24,22 @@ from src.decoder_transformer import (
     visualize_reconstruction
 )
 
+# Import the dataloader utility from utils_dataloader
+from src.utils_dataloader import get_dataloaders
+
 # Set up basic parameters
-BATCH_SIZE = 16
+BATCH_SIZE = 1
 LATENT_DIM = 512
 NUM_EPOCHS = 2
 NUM_BLOCKS = 3
 INFERENCE_STEPS = 1  # Number of inference steps for each batch
+
 LR_WEIGHTS = 1e-4
 LR_HIDDEN = 1e-2
+
+TRAIN_SUBSET = 100
+TEST_SUBSET = 100
+TARGET_CLASS = None
 
 def create_config(dataset="cifar10", latent_dim=512, num_blocks=3):
     """Create a TransformerConfig based on the dataset name."""
@@ -54,42 +62,6 @@ def create_config(dataset="cifar10", latent_dim=512, num_blocks=3):
         raise ValueError(f"Unsupported dataset: {dataset}")
 
 
-def create_dataloaders(config, batch_size, use_real_data=True, data_dir='./data'):
-    """Create training and validation dataloaders"""
-    from torchvision import datasets, transforms
-    
-    if use_real_data and config.image_shape[0] == 3 and config.image_shape[1] == 32 and config.image_shape[2] == 32:
-        print("Loading CIFAR-10 data...")
-        # CIFAR-10 preprocessing - normalization to [0,1] range
-        transform = transforms.Compose([
-            transforms.ToTensor(),  # Converts to [0,1] and CHW format
-        ])
-        
-        # Download and load CIFAR-10 training set
-        train_dataset = datasets.CIFAR10(
-            root=data_dir, 
-            train=True,
-            download=True, 
-            transform=transform
-        )
-        
-        # Download and load CIFAR-10 test set
-        val_dataset = datasets.CIFAR10(
-            root=data_dir, 
-            train=False,
-            download=True, 
-            transform=transform
-        )
-        
-        # Create dataloaders
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-        
-        return train_loader, val_loader
-    else:
-        raise ValueError("Only CIFAR-10 is supported currently.")
-
-
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a jflux-inspired transformer model for predictive coding')
     parser.add_argument('--batch-size', type=int, default=BATCH_SIZE,
@@ -104,6 +76,12 @@ def parse_args():
                         help=f'Number of inference steps (default: {INFERENCE_STEPS})')
     parser.add_argument('--data-dir', type=str, default='./data',
                         help='Directory to store datasets (default: ./data)')
+    parser.add_argument('--train-subset', type=int, default=TRAIN_SUBSET,
+                        help='Number of samples to use from the training set (default: all)')
+    parser.add_argument('--test-subset', type=int, default=TEST_SUBSET,
+                        help='Number of samples to use from the test set (default: all)')
+    parser.add_argument('--target-class', type=int, default=TARGET_CLASS,
+                        help='Filter the dataset to a specific class (0-9 for CIFAR-10) (default: all classes)')
     return parser.parse_args()
 
 
@@ -119,12 +97,24 @@ def main():
     )
     
     print(f"Creating dataloaders for CIFAR-10...")
-    train_loader, val_loader = create_dataloaders(
-        config=config, 
-        batch_size=args.batch_size, 
-        use_real_data=True,
-        data_dir=args.data_dir
+    
+    # Use the get_dataloaders function from utils_dataloader.py
+    train_loader, val_loader = get_dataloaders(
+        dataset_name="cifar10",
+        batch_size=args.batch_size,
+        root_path=args.data_dir,
+        train_subset_n=args.train_subset,
+        test_subset_n=args.test_subset,
+        target_class=args.target_class
     )
+    
+    # Print information about the dataset subsets
+    if args.train_subset is not None:
+        print(f"Using {args.train_subset} samples from the training set")
+    if args.test_subset is not None:
+        print(f"Using {args.test_subset} samples from the test set")
+    if args.target_class is not None:
+        print(f"Using only samples from class {args.target_class}")
     
     print("Initializing model...")
     # Create model with configuration
