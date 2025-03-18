@@ -30,18 +30,18 @@ from src.utils_dataloader import get_dataloaders
 # Set up basic parameters
 BATCH_SIZE = 1
 LATENT_DIM = 512
-NUM_EPOCHS = 2
+NUM_EPOCHS = 5
 NUM_BLOCKS = 3
 INFERENCE_STEPS = 1  # Number of inference steps for each batch
 
-LR_WEIGHTS = 1e-4
-LR_HIDDEN = 1e-2
+LR_WEIGHTS = 5e-5
+LR_HIDDEN = 0.1
 
 TRAIN_SUBSET = 100
 TEST_SUBSET = 100
 TARGET_CLASS = None
 
-def create_config(dataset="cifar10", latent_dim=512, num_blocks=3):
+def create_config(dataset="cifar10", latent_dim=LATENT_DIM, num_blocks=NUM_BLOCKS):
     """Create a TransformerConfig based on the dataset name."""
     if dataset == "cifar10":
         return TransformerConfig(
@@ -121,8 +121,14 @@ def main():
     model = TransformerDecoder(config)
     
     # Create optimizers
-    optim_h = pxu.Optim(lambda: optax.sgd(5e-1, momentum=0.1))
-    optim_w = pxu.Optim(lambda: optax.adamw(1e-4), pxu.M(pxnn.LayerParam)(model))
+    optim_h = pxu.Optim(lambda: optax.chain(
+            optax.clip_by_global_norm(1.0),  # Add gradient clipping
+            optax.sgd(LR_HIDDEN, momentum=0.1)
+        ))
+    optim_w = pxu.Optim(lambda: optax.chain(
+            optax.clip_by_global_norm(1.0),  # Add gradient clipping
+            optax.adamw(LR_WEIGHTS, weight_decay=1e-4)  # Add weight decay
+        ), pxu.M(pxnn.LayerParam)(model))
     
     # Train model
     print(f"Training for {args.epochs} epochs...")
@@ -144,7 +150,7 @@ def main():
         model, 
         optim_h, 
         val_loader, 
-        T_values=[1, 4, 8, 16, 32], 
+        T_values=[1, 4, 8], 
         use_corruption=False,
         num_images=4
     )
@@ -155,7 +161,7 @@ def main():
         model, 
         optim_h, 
         val_loader, 
-        T_values=[1, 4, 8, 16, 32], 
+        T_values=[1, 4, 8], 
         use_corruption=True,
         corrupt_ratio=0.5,
         num_images=4
