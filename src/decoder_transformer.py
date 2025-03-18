@@ -175,7 +175,7 @@ class TransformerDecoder(pxc.EnergyModule):
             rngs=self.rngs,
             param_dtype=config.param_dtype
         )
-
+    
     def _patchify(self, x, batch_size=None):
         """
         Converts images or videos to sequences of patches.
@@ -334,7 +334,7 @@ class TransformerDecoder(pxc.EnergyModule):
         x = self.final_layer(x, vec)
         
         # Unpatchify back to image or video
-        x = self._unpatchify(x, batch_size=1)
+        x = self._unpatchify(x, batch_size=None)
         
         # Apply sensory Vode
         x = self.vodes[-1](x)
