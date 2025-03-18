@@ -27,8 +27,9 @@ from src.decoder_transformer import (
 # Set up basic parameters
 BATCH_SIZE = 16
 LATENT_DIM = 512
-NUM_EPOCHS = 10
-INFERENCE_STEPS = 24  # Number of inference steps for each batch
+NUM_EPOCHS = 2
+NUM_BLOCKS = 3
+INFERENCE_STEPS = 1  # Number of inference steps for each batch
 LR_WEIGHTS = 1e-4
 LR_HIDDEN = 1e-2
 
@@ -38,6 +39,8 @@ def create_config(dataset="cifar10", latent_dim=512, num_blocks=3):
         return TransformerConfig(
             latent_dim=latent_dim,
             image_shape=(3, 32, 32),
+            num_frames=16,
+            is_video=False,
             hidden_size=256,
             num_heads=8,
             num_blocks=num_blocks,
@@ -49,6 +52,7 @@ def create_config(dataset="cifar10", latent_dim=512, num_blocks=3):
         )
     else:
         raise ValueError(f"Unsupported dataset: {dataset}")
+
 
 def create_dataloaders(config, batch_size, use_real_data=True, data_dir='./data'):
     """Create training and validation dataloaders"""
@@ -85,14 +89,15 @@ def create_dataloaders(config, batch_size, use_real_data=True, data_dir='./data'
     else:
         raise ValueError("Only CIFAR-10 is supported currently.")
 
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a jflux-inspired transformer model for predictive coding')
     parser.add_argument('--batch-size', type=int, default=BATCH_SIZE,
                         help=f'Batch size for training (default: {BATCH_SIZE})')
     parser.add_argument('--latent-dim', type=int, default=LATENT_DIM,
                         help=f'Latent dimension size (default: {LATENT_DIM})')
-    parser.add_argument('--num-blocks', type=int, default=3,
-                        help='Number of transformer blocks (default: 3)')
+    parser.add_argument('--num-blocks', type=int, default=NUM_BLOCKS,
+                        help=f'Number of transformer blocks (default: {NUM_BLOCKS})')
     parser.add_argument('--epochs', type=int, default=NUM_EPOCHS,
                         help=f'Number of training epochs (default: {NUM_EPOCHS})')
     parser.add_argument('--inference-steps', type=int, default=INFERENCE_STEPS,
@@ -100,6 +105,7 @@ def parse_args():
     parser.add_argument('--data-dir', type=str, default='./data',
                         help='Directory to store datasets (default: ./data)')
     return parser.parse_args()
+
 
 def main():
     # Parse command line arguments
