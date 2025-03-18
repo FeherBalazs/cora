@@ -11,30 +11,9 @@ Root Architectural Issue
 The key architectural principle we've identified is:
 The model should process one sample at a time with no internal batch handling
 Batching should be handled externally via vmap wrappers on forward/energy functions
-This matches how the CNN is implemented, which explains why it doesn't have the energy calculation issues
-This pattern should be consistent across all functions that interact with the model, including:
-Energy calculation
-Evaluation
-Visualization
-Training
+This matches how the src/decoder_cnn.py is implemented, which explains why it doesn't have the energy calculation issues
+
 When we provide consistent handling of batching across the codebase, the energy calculation issue should be resolved naturally without needing special energy functions or workarounds like energy_fn=None.
-
-1. Masked Energy Function:
-   - The masked_se_energy function still expects a batch dimension (h.ndim == 4) and has code to handle it
-   - Update it to work with single images (no batch dimension) consistently
-
-2. Visualization Function:
-   - The visualize_reconstruction function still expects batched output from eval_on_batch_partial
-   - It uses x_hat_single = jnp.reshape(x_hat[1][0], image_shape) which assumes x_hat has a batch dimension
-
-3. RngStream Error:
-   - Fix the error: AttributeError: 'RngStream' object has no attribute 'set'
-   - This occurs in the model.eval() method which tries to set inference mode on components that don't support it
-
-4. Forward/Energy Functions:
-   - Ensure all calls to these functions provide properly structured data matching the updated model architecture
-   - The model processes one sample at a time with no internal batch handling
-   - Batching is handled externally via vmap wrappers on forward/energy functions
 """
 
 from typing import Callable, List, Optional, Dict, Any
@@ -55,14 +34,13 @@ from flax import nnx
 from jax.typing import DTypeLike
 from einops import rearrange
 
-# Import PCX-compatible transformer components
 from pcx_transformer import PCXSingleStreamBlock, PCXEmbedND, PCXMLPEmbedder, PCXLastLayer
 
 STATUS_FORWARD = "forward"
 STATUS_REFINE = "refine"
 
 import jax.random as jrandom
-key = jrandom.PRNGKey(42)  # Same seed in both versions
+key = jrandom.PRNGKey(42)
 
 
 @dataclass
@@ -129,7 +107,7 @@ class TransformerDecoder(pxc.EnergyModule):
         self.img_in = pxnn.Linear(
             in_features=self.config.patch_dim,
             out_features=config.hidden_size,
-            bias=True  # Using bias=True for Equinox API
+            bias=True
         )
         
         # Latent vector processing via MLPEmbedder
@@ -145,7 +123,7 @@ class TransformerDecoder(pxc.EnergyModule):
             axes_dim=config.axes_dim
         )
         
-        # Transformer blocks (already contain modulation internally)
+        # Transformer blocks
         self.transformer_blocks = []
         for i in range(config.num_blocks):
             # Create transformer block
@@ -266,13 +244,13 @@ class TransformerDecoder(pxc.EnergyModule):
         
         # 6. Process through transformer blocks
         for i, block in enumerate(self.transformer_blocks):
-            # Apply transformer block (modulation happens inside)
+            # Apply transformer block
             x = block(x, vec, pe)
             
             # Apply Vode
             x = self.vodes[i+1](x)
         
-        # 7. Apply final layer processing using PCXLastLayer (handles modulation internally)
+        # 7. Apply final layer processing using PCXLastLayer
         x = self.final_layer(x, vec)
         
         # 8. Unpatchify back to image
