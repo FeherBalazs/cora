@@ -4,17 +4,6 @@ multiprocessing.set_start_method('spawn', force=True)
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-"""
-TODO: Remaining issues to fix:
-
-Root Architectural Issue
-The key architectural principle we've identified is:
-The model should process one sample at a time with no internal batch handling
-Batching should be handled externally via vmap wrappers on forward/energy functions
-This matches how the src/decoder_cnn.py is implemented, which explains why it doesn't have the energy calculation issues
-
-When we provide consistent handling of batching across the codebase, the energy calculation issue should be resolved naturally without needing special energy functions or workarounds like energy_fn=None.
-"""
 
 from typing import Callable, List, Optional, Dict, Any
 from functools import partial
@@ -48,7 +37,13 @@ class TransformerConfig:
     """Configuration for the TransformerDecoder model."""
     # Input/output dimensions
     latent_dim: int = 512
-    image_shape: tuple = (3, 32, 32)  # (channels, height, width)
+    # Image shape format: For images: (channels, height, width)
+    # For videos: (frames, channels, height, width)
+    image_shape: tuple = (3, 32, 32)
+    
+    # Video settings
+    num_frames: int = 16  # Default number of frames for video processing
+    is_video: bool = False  # Whether to use 3D positional encoding for video
     
     # Architecture settings
     hidden_size: int = 256
@@ -60,7 +55,7 @@ class TransformerConfig:
     patch_size: int = 4
     
     # Positional embedding settings
-    axes_dim: list[int] = field(default_factory=lambda: [16, 16])
+    axes_dim: list[int] = field(default_factory=lambda: [16, 16, 16])  # Default to [temporal_dim, height_dim, width_dim]
     theta: int = 10_000
     
     # Training settings
@@ -68,9 +63,29 @@ class TransformerConfig:
     param_dtype: DTypeLike = jnp.float32
     
     def __post_init__(self):
+        # Determine if we're dealing with video based on the shape of image_shape
+        if len(self.image_shape) == 4:
+            self.is_video = True
+            self.num_frames, c, h, w = self.image_shape
+        else:
+            c, h, w = self.image_shape
+            
         # Calculate patch dimensions
-        self.num_patches = (self.image_shape[1] // self.patch_size) * (self.image_shape[2] // self.patch_size)
-        self.patch_dim = self.patch_size * self.patch_size * self.image_shape[0]
+        h_patches = h // self.patch_size
+        w_patches = w // self.patch_size
+        
+        # For video, include temporal dimension in patch count
+        if self.is_video:
+            self.num_patches = self.num_frames * h_patches * w_patches
+        else:
+            self.num_patches = h_patches * w_patches
+            
+        self.patch_dim = self.patch_size * self.patch_size * c
+        
+        # Set positional embedding dimensions based on whether we're using video
+        if not self.is_video and len(self.axes_dim) == 3:
+            # If not using video but axes_dim has 3 elements, use only the last 2
+            self.axes_dim = self.axes_dim[1:]
 
 
 class TransformerDecoder(pxc.EnergyModule):
@@ -82,6 +97,7 @@ class TransformerDecoder(pxc.EnergyModule):
         self.rngs = nnx.Rngs(0)
         
         print(f"Model initialized with {self.config.num_patches} patches, each with dimension {self.config.patch_dim}")
+        print(f"Using {'video' if self.config.is_video else 'image'} mode with shape {self.config.image_shape}")
         
         # Define Vodes for predictive coding
         # Top-level latent Vode
@@ -101,7 +117,7 @@ class TransformerDecoder(pxc.EnergyModule):
                 ruleset={STATUS_FORWARD: ("h -> u",)}
             ))
         
-        # Output Vode (sensory layer)
+        # Output Vode (sensory layer) - shape depends on whether we're handling video or images
         self.vodes.append(pxc.Vode())
         self.vodes[-1].h.frozen = True  # Freeze the output Vode's hidden state
 
@@ -161,56 +177,136 @@ class TransformerDecoder(pxc.EnergyModule):
         )
 
     def _patchify(self, x, batch_size=None):
-        """Simple patchify function. Converts image to sequence of patches."""
-        c, h, w = self.config.image_shape
-        p = self.config.patch_size
-        
-        if batch_size is None:
-            # Handle single image
-            x = x.reshape((c, h // p, p, w // p, p))
-            x = jnp.transpose(x, (1, 3, 0, 2, 4))  # (h_patches, w_patches, c, p, p)
-            x = x.reshape((-1, p * p * c))  # (num_patches, patch_dim)
+        """
+        Converts images or videos to sequences of patches.
+        For images: Input shape (c, h, w) -> Output shape (num_patches, patch_dim)
+        For videos: Input shape (t, c, h, w) -> Output shape (t*h_patches*w_patches, patch_dim)
+        With batch: Prepends batch dimension to output
+        """
+        if self.config.is_video:
+            # Handle video data
+            t, c, h, w = self.config.image_shape
+            p = self.config.patch_size
+            
+            if batch_size is None:
+                # Handle single video sequence
+                x = x.reshape((t, c, h // p, p, w // p, p))
+                x = jnp.transpose(x, (0, 2, 4, 1, 3, 5))  # (t, h_patches, w_patches, c, p, p)
+                x = x.reshape((-1, p * p * c))  # (t*h_patches*w_patches, patch_dim)
+            else:
+                # Handle batched videos
+                x = x.reshape((batch_size, t, c, h // p, p, w // p, p))
+                x = jnp.transpose(x, (0, 1, 3, 5, 2, 4, 6))  # (batch, t, h_patches, w_patches, c, p, p)
+                x = x.reshape((batch_size, -1, p * p * c))  # (batch, t*h_patches*w_patches, patch_dim)
         else:
-            # Handle batched input
-            x = x.reshape((batch_size, c, h // p, p, w // p, p))
-            x = jnp.transpose(x, (0, 2, 4, 1, 3, 5))  # (batch, h_patches, w_patches, c, p, p)
-            x = x.reshape((batch_size, -1, p * p * c))  # (batch, num_patches, patch_dim)
+            # Handle image data (original implementation)
+            c, h, w = self.config.image_shape
+            p = self.config.patch_size
+            
+            if batch_size is None:
+                # Handle single image
+                x = x.reshape((c, h // p, p, w // p, p))
+                x = jnp.transpose(x, (1, 3, 0, 2, 4))  # (h_patches, w_patches, c, p, p)
+                x = x.reshape((-1, p * p * c))  # (num_patches, patch_dim)
+            else:
+                # Handle batched input
+                x = x.reshape((batch_size, c, h // p, p, w // p, p))
+                x = jnp.transpose(x, (0, 2, 4, 1, 3, 5))  # (batch, h_patches, w_patches, c, p, p)
+                x = x.reshape((batch_size, -1, p * p * c))  # (batch, num_patches, patch_dim)
         
         return x
     
     def _unpatchify(self, x, batch_size=None):
-        """Simple unpatchify function. Converts patches back to images."""
-        c, h, w = self.config.image_shape
+        """
+        Converts patches back to images or videos.
+        For images: Input shape (num_patches, patch_dim) -> Output shape (c, h, w)
+        For videos: Input shape (t*h_patches*w_patches, patch_dim) -> Output shape (t, c, h, w)
+        With batch: First dimension is batch_size
+        """
         p = self.config.patch_size
-        h_patches, w_patches = h // p, w // p
         
-        if batch_size is None:
-            # Handle single sequence
-            x = x.reshape((h_patches, w_patches, c, p, p))
-            x = jnp.transpose(x, (2, 0, 3, 1, 4))  # (c, h_patches, p, w_patches, p)
-            x = x.reshape((c, h, w))  # (c, h, w)
+        if self.config.is_video:
+            # Handle video data
+            t, c, h, w = self.config.image_shape
+            h_patches, w_patches = h // p, w // p
+            
+            if batch_size is None:
+                # Handle single video
+                x = x.reshape((t, h_patches, w_patches, c, p, p))
+                x = jnp.transpose(x, (0, 3, 1, 4, 2, 5))  # (t, c, h_patches, p, w_patches, p)
+                x = x.reshape((t, c, h, w))  # (t, c, h, w)
+            else:
+                # Handle batched videos
+                x = x.reshape((batch_size, t, h_patches, w_patches, c, p, p))
+                x = jnp.transpose(x, (0, 1, 4, 2, 5, 3, 6))  # (batch, t, c, h_patches, p, w_patches, p)
+                x = x.reshape((batch_size, t, c, h, w))  # (batch, t, c, h, w)
         else:
-            # Handle batched input
-            x = x.reshape((batch_size, h_patches, w_patches, c, p, p))
-            x = jnp.transpose(x, (0, 3, 1, 4, 2, 5))  # (batch, c, h_patches, p, w_patches, p)
-            x = x.reshape((batch_size, c, h, w))  # (batch, c, h, w)
+            # Handle image data (original implementation)
+            if len(self.config.image_shape) == 3:
+                c, h, w = self.config.image_shape
+            else:
+                _, c, h, w = self.config.image_shape
+            
+            h_patches, w_patches = h // p, w // p
+            
+            if batch_size is None:
+                # Handle single sequence
+                x = x.reshape((h_patches, w_patches, c, p, p))
+                x = jnp.transpose(x, (2, 0, 3, 1, 4))  # (c, h_patches, p, w_patches, p)
+                x = x.reshape((c, h, w))  # (c, h, w)
+            else:
+                # Handle batched input
+                x = x.reshape((batch_size, h_patches, w_patches, c, p, p))
+                x = jnp.transpose(x, (0, 3, 1, 4, 2, 5))  # (batch, c, h_patches, p, w_patches, p)
+                x = x.reshape((batch_size, c, h, w))  # (batch, c, h, w)
         
         return x
     
     def _create_patch_ids(self, batch_size):
-        """Creates patch position IDs for positional embeddings."""
+        """
+        Creates patch position IDs for positional embeddings.
+        For images: Returns positional IDs of shape (batch_size, num_patches, 2)
+        For videos: Returns positional IDs of shape (batch_size, num_patches, 3) with temporal dimension
+        """
         # Calculate grid dimensions
         h_patches = self.config.image_shape[1] // self.config.patch_size
         w_patches = self.config.image_shape[2] // self.config.patch_size
         
-        # Create 2D grid of patch positions
-        patch_ids = jnp.zeros((h_patches, w_patches, 2))
-        patch_ids = patch_ids.at[..., 0].set(jnp.arange(h_patches)[:, None])
-        patch_ids = patch_ids.at[..., 1].set(jnp.arange(w_patches)[None, :])
-        
-        # Reshape to sequence and add batch dimension
-        patch_ids = patch_ids.reshape(-1, 2)
-        patch_ids = jnp.tile(patch_ids[None], (batch_size, 1, 1))
+        if self.config.is_video:
+            # Create 3D grid of patch positions for video
+            # First dimension (channel 0) will be for time/frame index
+            # Other dimensions (channels 1,2) will be for spatial positions (height, width)
+            patch_ids = jnp.zeros((self.config.num_frames, h_patches, w_patches, 3))
+            
+            # Set temporal dimension (channel 0)
+            # Broadcasting the frame indices across all spatial positions
+            for t in range(self.config.num_frames):
+                patch_ids = patch_ids.at[t, :, :, 0].set(t)
+            
+            # Set spatial dimensions (channels 1,2)
+            patch_ids = patch_ids.at[..., 1].set(jnp.arange(h_patches)[None, :, None])
+            patch_ids = patch_ids.at[..., 2].set(jnp.arange(w_patches)[None, None, :])
+            
+            # Reshape to sequence and add batch dimension
+            # Going from (num_frames, h_patches, w_patches, 3) to (batch_size, num_frames*h_patches*w_patches, 3)
+            patch_ids = patch_ids.reshape(-1, 3)
+            patch_ids = jnp.tile(patch_ids[None], (batch_size, 1, 1))
+        else:
+            # Create 2D grid of patch positions for images
+            if len(self.config.axes_dim) == 2:
+                # Standard 2D positional encoding
+                patch_ids = jnp.zeros((h_patches, w_patches, 2))
+                patch_ids = patch_ids.at[..., 0].set(jnp.arange(h_patches)[:, None])
+                patch_ids = patch_ids.at[..., 1].set(jnp.arange(w_patches)[None, :])
+            else:
+                # Use 3D positional encoding with first channel as zeros (for future compatibility)
+                patch_ids = jnp.zeros((h_patches, w_patches, 3))
+                patch_ids = patch_ids.at[..., 1].set(jnp.arange(h_patches)[:, None])
+                patch_ids = patch_ids.at[..., 2].set(jnp.arange(w_patches)[None, :])
+            
+            # Reshape to sequence and add batch dimension
+            patch_ids = patch_ids.reshape(-1, patch_ids.shape[-1])
+            patch_ids = jnp.tile(patch_ids[None], (batch_size, 1, 1))
         
         return patch_ids
 
@@ -218,24 +314,24 @@ class TransformerDecoder(pxc.EnergyModule):
         # Get the initial sequence of patch embeddings from Vode 0
         x = self.vodes[0].get("u")
         
-        # Add positional embeddings
-        patch_ids = self._create_patch_ids(batch_size=1)  # Shape: (num_patches,)
-        pe = self.pe_embedder(patch_ids)  # Shape: (num_patches, hidden_size)
+        # Add positional embeddings - use 3D for video, 2D for images
+        patch_ids = self._create_patch_ids(batch_size=1)
+        pe = self.pe_embedder(patch_ids)
 
         # Get conditioning vector
         cond_latent = self.conditioning_vode.get("u")
         vec = self.vector_in(cond_latent)
         
-        # 6. Process through transformer blocks
+        # Process through transformer blocks
         for i, block in enumerate(self.transformer_blocks):
             x = block(x, vec, pe) # Apply transformer block
             x = self.vodes[i+1](x) # Apply Vode
         
-        # Unpatchify back to image
-        x = self._unpatchify(x, batch_size=1)  # Shape: (32, 32, 3) for CIFAR-10
+        # Unpatchify back to image or video
+        x = self._unpatchify(x, batch_size=1)
         
         # Apply sensory Vode
-        x = self.vodes[-1](x)  # Update sensory Vode's u
+        x = self.vodes[-1](x)
         
         # Set target if provided
         if y is not None:
