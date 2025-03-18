@@ -4,6 +4,39 @@ multiprocessing.set_start_method('spawn', force=True)
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
+"""
+TODO: Remaining issues to fix:
+
+Root Architectural Issue
+The key architectural principle we've identified is:
+The model should process one sample at a time with no internal batch handling
+Batching should be handled externally via vmap wrappers on forward/energy functions
+This matches how the CNN is implemented, which explains why it doesn't have the energy calculation issues
+This pattern should be consistent across all functions that interact with the model, including:
+Energy calculation
+Evaluation
+Visualization
+Training
+When we provide consistent handling of batching across the codebase, the energy calculation issue should be resolved naturally without needing special energy functions or workarounds like energy_fn=None.
+
+1. Masked Energy Function:
+   - The masked_se_energy function still expects a batch dimension (h.ndim == 4) and has code to handle it
+   - Update it to work with single images (no batch dimension) consistently
+
+2. Visualization Function:
+   - The visualize_reconstruction function still expects batched output from eval_on_batch_partial
+   - It uses x_hat_single = jnp.reshape(x_hat[1][0], image_shape) which assumes x_hat has a batch dimension
+
+3. RngStream Error:
+   - Fix the error: AttributeError: 'RngStream' object has no attribute 'set'
+   - This occurs in the model.eval() method which tries to set inference mode on components that don't support it
+
+4. Forward/Energy Functions:
+   - Ensure all calls to these functions provide properly structured data matching the updated model architecture
+   - The model processes one sample at a time with no internal batch handling
+   - Batching is handled externally via vmap wrappers on forward/energy functions
+"""
+
 from typing import Callable, List, Optional, Dict, Any
 from functools import partial
 from contextlib import contextmanager 
