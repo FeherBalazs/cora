@@ -10,6 +10,7 @@ from functools import partial
 from contextlib import contextmanager 
 from dataclasses import dataclass, field
 
+import os
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -22,6 +23,7 @@ import pcx.functional as pxf
 from flax import nnx
 from jax.typing import DTypeLike
 from einops import rearrange
+from pcx.core._parameter import get as param_get  # Import get function for parameter access
 
 from pcx_transformer import PCXSingleStreamBlock, PCXEmbedND, PCXMLPEmbedder, PCXLastLayer
 
@@ -42,7 +44,7 @@ class TransformerConfig:
     image_shape: tuple = (3, 32, 32)
     
     # Video settings
-    num_frames: int = 16  # Default number of frames for video processing
+    num_frames: int = 16  # Default number of frames for video
     is_video: bool = False  # Whether to use 3D positional encoding for video
     
     # Architecture settings
@@ -120,16 +122,9 @@ class TransformerDecoder(pxc.EnergyModule):
         # Output Vode (sensory layer) - shape depends on whether we're handling video or images
         self.vodes.append(pxc.Vode())
         self.vodes[-1].h.frozen = True  # Freeze the output Vode's hidden state
-
-        self.conditioning_vode = pxc.Vode(
-            energy_fn=None,
-            ruleset={pxc.STATUS.INIT: ("h, u <- u:to_init",)},
-            tforms={
-                "to_init": lambda n, k, v, rkg: jax.random.normal(
-                    px.RKG(), (config.latent_dim,)
-                ) * 0.01 if config.use_noise else jnp.zeros((config.latent_dim,))
-            }
-        )
+        
+        # Create a conditioning parameter using PCX's LayerParam class
+        self.cond_param = pxnn.LayerParam(jnp.zeros((config.latent_dim,), dtype=config.param_dtype))
         
         # === jflux-inspired architecture components ===
         
@@ -152,7 +147,7 @@ class TransformerDecoder(pxc.EnergyModule):
             theta=config.theta,
             axes_dim=config.axes_dim
         )
-        
+
         # Transformer blocks
         self.transformer_blocks = []
         for i in range(config.num_blocks):
@@ -319,10 +314,8 @@ class TransformerDecoder(pxc.EnergyModule):
         patch_ids = self._create_patch_ids(batch_size=1)
         pe = self.pe_embedder(patch_ids)
 
-        # Get conditioning vector
-        # cond_latent = self.conditioning_vode.get("u")
-        cond_latent = self.conditioning_vode(jnp.empty(()))
-        vec = self.vector_in(cond_latent)
+        # Use the learnable conditioning parameter directly with param_get
+        vec = self.vector_in(param_get(self.cond_param))
         vec = jnp.expand_dims(vec, axis=0) if vec.ndim == 1 else vec    # SingleStreamBlock expects (batch, latent_dim)
         
         # Process through transformer blocks
@@ -433,7 +426,7 @@ def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.
 
 @pxf.jit(static_argnums=0)
 def eval_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim):
-    model.eval()
+    # model.eval()
 
     inference_step = pxf.value_and_grad(pxu.M_hasnot(pxc.VodeParam, frozen=True).to([False, True]), has_aux=True)(
         energy
@@ -473,7 +466,7 @@ def eval(dl, T, *, model: TransformerDecoder, optim_h: pxu.Optim):
 
 
 def eval_on_batch_partial(use_corruption: bool, corrupt_ratio: float, T: int, x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim):
-    model.eval()
+    # model.eval()
 
     # Extract image shape information statically
     image_shape = model.config.image_shape
