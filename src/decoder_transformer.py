@@ -57,7 +57,7 @@ class TransformerConfig:
     mlp_ratio: float = 4.0
     
     # Patch settings
-    patch_size: int = 4  # Size of patches (4x4)
+    patch_size: int = 4
     
     # Positional embedding settings
     axes_dim: list[int] = field(default_factory=lambda: [16, 16])
@@ -88,7 +88,11 @@ class TransformerDecoder(pxc.EnergyModule):
         self.vodes = [pxc.Vode(
             energy_fn=None,
             ruleset={pxc.STATUS.INIT: ("h, u <- u:to_init",)},
-            tforms={"to_init": lambda n, k, v, rkg: jax.random.normal(px.RKG(), (config.latent_dim,)) * 0.01 if config.use_noise else jnp.zeros((config.latent_dim,))}
+            tforms={
+                "to_init": lambda n, k, v, rkg: jax.random.normal(
+                    px.RKG(), (config.num_patches, config.hidden_size)
+                ) * 0.01 if config.use_noise else jnp.zeros((config.num_patches, config.hidden_size))
+            }
         )]
         
         # Create Vodes for each transformer block output
@@ -98,7 +102,7 @@ class TransformerDecoder(pxc.EnergyModule):
             ))
         
         # Output Vode (sensory layer)
-        self.vodes.append(pxc.Vode(energy_fn=None))
+        self.vodes.append(pxc.Vode())
         self.vodes[-1].h.frozen = True  # Freeze the output Vode's hidden state
         
         # === jflux-inspired architecture components ===
@@ -200,66 +204,26 @@ class TransformerDecoder(pxc.EnergyModule):
         
         return patch_ids
 
-    def __call__(self, y: jax.Array | None = None):
-        # Get batch size
-        batch_size = 1 if y is None or len(y.shape) < 4 else y.shape[0]
+    def __call__(self, y: jax.Array | None = None):        
+        # Get the initial sequence of patch embeddings from Vode 0
+        x = self.vodes[0].get("u")
         
-        # 1. Get the top-level latent from the first Vode
-        latent = self.vodes[0](jnp.empty(()))  # Shape: (latent_dim,)
-        
-        # 2. Process latent through MLPEmbedder to get conditioning vector
-        vec = self.vector_in(latent)  # (hidden_size,)
-        
-        # Add batch dimension to the conditioning vector for transformer blocks
-        vec = vec[None, :]  # Shape: (batch_size=1, hidden_size)
-        
-        # If we need to repeat for multiple items in the batch
-        if batch_size > 1:
-            # Replicate the same vector for each item in the batch
-            vec = jnp.repeat(vec, batch_size, axis=0)  # Shape: (batch_size, hidden_size)
-        
-        # 3. Create empty image patches (zeros)
-        patch_seq = jnp.zeros((batch_size, self.config.num_patches, self.config.patch_dim))
-        
-        # 4. Project patches to hidden dimension - ONE SIMPLE STEP
-        # Apply linear layer to each patch separately while maintaining batch dimension
-        # This double vmap: 
-        # - First vmap vectorizes over batch dimension
-        # - Second vmap vectorizes over patches within each batch
-        patch_dim = self.config.patch_dim
-        
-        # Create a function that applies the linear layer to a single patch
-        def process_single_patch(patch):
-            return self.img_in(patch)
-        
-        # Vectorize across batches and patches
-        batched_process = jax.vmap(jax.vmap(process_single_patch))
-        
-        # Apply to all patches in all batches and ensure shape is (batch_size, num_patches, hidden_size)
-        x = batched_process(patch_seq)
-        
-        # 5. Create position IDs and compute positional embeddings
-        patch_ids = self._create_patch_ids(batch_size)
-        pe = self.pe_embedder(patch_ids)
+        # Add positional embeddings
+        patch_ids = self._create_patch_ids(batch_size=1)  # Shape: (num_patches,)
+        pe = self.pe_embedder(patch_ids)  # Shape: (num_patches, hidden_size)
         
         # 6. Process through transformer blocks
         for i, block in enumerate(self.transformer_blocks):
-            # Apply transformer block
-            x = block(x, vec, pe)
-            
-            # Apply Vode
-            x = self.vodes[i+1](x)
+            x = block(x, vec, pe) # Apply transformer block
+            x = self.vodes[i+1](x) # Apply Vode
         
-        # 7. Apply final layer processing using PCXLastLayer
-        x = self.final_layer(x, vec)
+        # Unpatchify back to image
+        x = self._unpatchify(x, batch_size=1)  # Shape: (32, 32, 3) for CIFAR-10
         
-        # 8. Unpatchify back to image
-        x = self._unpatchify(x, batch_size)  # (batch, c, h, w)
+        # Apply sensory Vode
+         x = self.vodes[-1](x)  # Update sensory Vode's u
         
-        # 9. Apply final Vode
-        x = self.vodes[-1](x)  # (batch, c, h, w)
-        
-        # 10. Set target if provided
+        # Set target if provided
         if y is not None:
             self.vodes[-1].set("h", y)
         
