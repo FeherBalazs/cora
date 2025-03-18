@@ -104,6 +104,16 @@ class TransformerDecoder(pxc.EnergyModule):
         # Output Vode (sensory layer)
         self.vodes.append(pxc.Vode())
         self.vodes[-1].h.frozen = True  # Freeze the output Vode's hidden state
+
+        self.conditioning_vode = pxc.Vode(
+            energy_fn=None,
+            ruleset={pxc.STATUS.INIT: ("h, u <- u:to_init",)},
+            tforms={
+                "to_init": lambda n, k, v, rkg: jax.random.normal(
+                    px.RKG(), (config.latent_dim,)
+                ) * 0.01 if config.use_noise else jnp.zeros((config.latent_dim,))
+            }
+        )
         
         # === jflux-inspired architecture components ===
         
@@ -211,6 +221,10 @@ class TransformerDecoder(pxc.EnergyModule):
         # Add positional embeddings
         patch_ids = self._create_patch_ids(batch_size=1)  # Shape: (num_patches,)
         pe = self.pe_embedder(patch_ids)  # Shape: (num_patches, hidden_size)
+
+        # Get conditioning vector
+        cond_latent = self.conditioning_vode.get("u")
+        vec = self.vector_in(cond_latent)
         
         # 6. Process through transformer blocks
         for i, block in enumerate(self.transformer_blocks):
@@ -221,7 +235,7 @@ class TransformerDecoder(pxc.EnergyModule):
         x = self._unpatchify(x, batch_size=1)  # Shape: (32, 32, 3) for CIFAR-10
         
         # Apply sensory Vode
-         x = self.vodes[-1](x)  # Update sensory Vode's u
+        x = self.vodes[-1](x)  # Update sensory Vode's u
         
         # Set target if provided
         if y is not None:
