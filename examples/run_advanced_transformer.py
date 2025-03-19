@@ -366,22 +366,22 @@ def main():
         model, 
         optim_h, 
         val_loader, 
-        T_values=[1, 4, 8], 
+        T_values=[1, 4, 8, 16, 32, 64, 128, 256, 512], 
         use_corruption=False,
         num_images=4
     )
     
-    # Visualize inpainting with different inference steps
-    print("Visualizing final inpainting with different inference steps...")
-    visualize_reconstruction(
-        model, 
-        optim_h, 
-        val_loader, 
-        T_values=[1, 4, 8], 
-        use_corruption=True,
-        corrupt_ratio=0.5,
-        num_images=4
-    )
+    # # Visualize inpainting with different inference steps
+    # print("Visualizing final inpainting with different inference steps...")
+    # visualize_reconstruction(
+    #     model, 
+    #     optim_h, 
+    #     val_loader, 
+    #     T_values=[1, 4, 8], 
+    #     use_corruption=True,
+    #     corrupt_ratio=0.5,
+    #     num_images=4
+    # )
 
 if __name__ == "__main__":
     main() 
