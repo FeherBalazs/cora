@@ -32,22 +32,24 @@ from src.decoder_transformer import (
     train_on_batch  # Add train_on_batch import
 )
 
-# Set up basic parameters - smaller model for faster debugging
-BATCH_SIZE = 2
-LATENT_DIM = 128
-NUM_EPOCHS = 5
-NUM_BLOCKS = 2
-INFERENCE_STEPS = 4
+# Set up basic parameters - pushing the model capacity higher
+BATCH_SIZE = 100  # Even larger batch size
+LATENT_DIM = 512  # Larger latent dimension
+NUM_EPOCHS = 20   # More epochs for convergence
+NUM_BLOCKS = 6    # More transformer blocks for capacity
+INFERENCE_STEPS = 8  # More inference steps
 
-# Learning rates
-LR_WEIGHTS = 5e-4
-LR_HIDDEN = 0.005
-WEIGHT_DECAY = 1e-4
+# Learning rates with schedule parameters
+PEAK_LR_WEIGHTS = 1e-3  # Higher peak learning rate
+PEAK_LR_HIDDEN = 0.01   # Higher peak learning rate
+WEIGHT_DECAY = 2e-4     # Slightly stronger weight decay
+WARMUP_EPOCHS = 5       # Warmup period
 
-# Dataset parameters
-TRAIN_SUBSET = 100  # Small subset for faster iterations
-TEST_SUBSET = 50
-TARGET_CLASS = None
+# Dataset parameters - using more data
+TRAIN_SUBSET = 50000  # Use the full training set (50,000 images)
+TEST_SUBSET = 1000   # Larger test set
+TARGET_CLASS = None  # Use all classes
+
 
 def create_config(dataset="cifar10", latent_dim=LATENT_DIM, num_blocks=NUM_BLOCKS):
     """Create a TransformerConfig based on the dataset name."""
@@ -57,10 +59,10 @@ def create_config(dataset="cifar10", latent_dim=LATENT_DIM, num_blocks=NUM_BLOCK
             image_shape=(3, 32, 32),
             num_frames=16,
             is_video=False,
-            hidden_size=128,
-            num_heads=4,
+            hidden_size=384,  # Larger hidden size
+            num_heads=12,     # More attention heads
             num_blocks=num_blocks,
-            mlp_ratio=2.0,
+            mlp_ratio=4.0,
             patch_size=4,
             axes_dim=[16, 16],
             theta=10_000,
@@ -91,9 +93,37 @@ def parse_args():
                         help='Filter the dataset to a specific class (0-9 for CIFAR-10) (default: all classes)')
     parser.add_argument('--debug-interval', type=int, default=1,
                         help='How often to log detailed debugging info (in epochs)')
+    parser.add_argument('--peak-lr-weights', type=float, default=PEAK_LR_WEIGHTS,
+                        help=f'Peak learning rate for weights (default: {PEAK_LR_WEIGHTS})')
+    parser.add_argument('--peak-lr-hidden', type=float, default=PEAK_LR_HIDDEN,
+                        help=f'Peak learning rate for hidden states (default: {PEAK_LR_HIDDEN})')
+    parser.add_argument('--weight-decay', type=float, default=WEIGHT_DECAY,
+                        help=f'Weight decay for AdamW optimizer (default: {WEIGHT_DECAY})')
+    parser.add_argument('--warmup-epochs', type=int, default=WARMUP_EPOCHS,
+                        help=f'Number of warmup epochs for learning rate (default: {WARMUP_EPOCHS})')
     parser.add_argument('--seed', type=int, default=42,
                       help='Random seed for reproducibility')
     return parser.parse_args()
+
+# Add a learning rate schedule function
+def create_learning_rate_schedule(base_lr, warmup_epochs, total_epochs, steps_per_epoch):
+    """Create a learning rate schedule with warmup and cosine decay."""
+    def lr_schedule(step):
+        # Convert step to epoch (as a scalar value)
+        epoch = step / steps_per_epoch
+        
+        # Use jnp.where instead of if/else for JAX tracing compatibility
+        warmup_lr = base_lr * (epoch / warmup_epochs)
+        
+        # Cosine decay calculation
+        decay_ratio = (epoch - warmup_epochs) / (total_epochs - warmup_epochs)
+        cosine_factor = 0.5 * (1.0 + jnp.cos(jnp.pi * decay_ratio))
+        decay_lr = base_lr * cosine_factor
+        
+        # Use jnp.where for conditional: warmup_lr if epoch < warmup_epochs else decay_lr
+        return jnp.where(epoch < warmup_epochs, warmup_lr, decay_lr)
+    
+    return lr_schedule
 
 def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=None, test_subset_n=None, target_class=None):
     """Get data loaders with simple augmentation for debugging."""
@@ -309,6 +339,68 @@ def debug_one_batch(model, optim_h, optim_w, batch, inference_steps, epoch):
         inference_steps, x, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch, step=0
     )
     
+    # Explicitly log energy and gradient information right after training
+    try:
+        print("Logging energy and gradient information...")
+        model_debugger.log_energy(0, h_energy, w_energy)
+        model_debugger.log_gradient_norms(0, h_grad, w_grad)
+        
+        # Manually flatten gradients for visualization
+        h_grad_flat = model_debugger._flatten_gradients(h_grad.get("model", {}))
+        w_grad_flat = model_debugger._flatten_gradients(w_grad.get("model", {}))
+        
+        if h_grad_flat is not None and w_grad_flat is not None:
+            # Log gradient statistics
+            h_grad_np = np.array(h_grad_flat)
+            w_grad_np = np.array(w_grad_flat)
+            
+            # Create gradient visualizations
+            debug_dir = "../debug_logs/gradients"
+            os.makedirs(debug_dir, exist_ok=True)
+            
+            plt.figure(figsize=(12, 6))
+            plt.subplot(1, 2, 1)
+            plt.hist(h_grad_np.flatten(), bins=50)
+            plt.title("Hidden Gradients Distribution")
+            
+            plt.subplot(1, 2, 2)
+            plt.hist(w_grad_np.flatten(), bins=50)
+            plt.title("Weight Gradients Distribution")
+            
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            plt.tight_layout()
+            plt.savefig(f"{debug_dir}/gradient_hist_epoch{epoch}_{timestamp}.png")
+            plt.close()
+            
+            # Calculate and log gradient statistics
+            h_grad_stats = {
+                'min': float(np.min(h_grad_np)),
+                'max': float(np.max(h_grad_np)),
+                'mean': float(np.mean(h_grad_np)),
+                'std': float(np.std(h_grad_np)),
+                'abs_mean': float(np.mean(np.abs(h_grad_np))),
+                'norm': float(np.linalg.norm(h_grad_np))
+            }
+            
+            w_grad_stats = {
+                'min': float(np.min(w_grad_np)),
+                'max': float(np.max(w_grad_np)),
+                'mean': float(np.mean(w_grad_np)),
+                'std': float(np.std(w_grad_np)),
+                'abs_mean': float(np.mean(np.abs(w_grad_np))),
+                'norm': float(np.linalg.norm(w_grad_np))
+            }
+            
+            # Save gradient statistics
+            import json
+            with open(os.path.join(debug_dir, f'gradient_stats_epoch{epoch}.json'), 'w') as f:
+                json.dump({'hidden_gradients': h_grad_stats, 'weight_gradients': w_grad_stats}, f, indent=2)
+            
+            print(f"Hidden gradients - min: {h_grad_stats['min']:.6f}, max: {h_grad_stats['max']:.6f}, mean: {h_grad_stats['mean']:.6f}, norm: {h_grad_stats['norm']:.6f}")
+            print(f"Weight gradients - min: {w_grad_stats['min']:.6f}, max: {w_grad_stats['max']:.6f}, mean: {w_grad_stats['mean']:.6f}, norm: {w_grad_stats['norm']:.6f}")
+    except Exception as e:
+        print(f"Error logging gradient information: {e}")
+    
     # Then do debugging operations separately (outside of JIT context)
     try:
         print("Collecting debugging information...")
@@ -468,6 +560,9 @@ def debug_one_batch(model, optim_h, optim_w, batch, inference_steps, epoch):
     except Exception as e:
         print(f"Error during patch debugging: {e}")
     
+    # Force save all logs immediately to ensure they're written to disk
+    model_debugger.save_all_logs()
+    
     # Restore previous logging state
     model_debugger.enable_logging = old_logging
     
@@ -520,9 +615,37 @@ def main():
     recon_mse = debug_plot_unpatchify_test(model)
     print(f"Patchify/Unpatchify test completed. MSE: {recon_mse}")
     
-    # Set up optimizers
-    optim_h = pxu.Optim(lambda: optax.sgd(LR_HIDDEN, momentum=0.9))
-    optim_w = pxu.Optim(lambda: optax.adamw(LR_WEIGHTS, weight_decay=WEIGHT_DECAY), pxu.M(pxnn.LayerParam)(model))
+    # Calculate steps per epoch for learning rate schedule
+    steps_per_epoch = len(train_loader)
+    
+    # Set up optimizers with learning rate schedule
+    weights_lr_schedule = create_learning_rate_schedule(
+        args.peak_lr_weights, 
+        args.warmup_epochs, 
+        args.epochs, 
+        steps_per_epoch
+    )
+    
+    hidden_lr_schedule = create_learning_rate_schedule(
+        args.peak_lr_hidden, 
+        args.warmup_epochs, 
+        args.epochs, 
+        steps_per_epoch
+    )
+    
+    # Print learning rate schedule information
+    print(f"Using learning rate schedule with:")
+    print(f"  - Peak weight LR: {args.peak_lr_weights}")
+    print(f"  - Peak hidden LR: {args.peak_lr_hidden}")
+    print(f"  - Warmup epochs: {args.warmup_epochs}")
+    print(f"  - Weight decay: {args.weight_decay}")
+    
+    # Create optimizers with schedule
+    optim_h = pxu.Optim(lambda: optax.sgd(hidden_lr_schedule, momentum=0.9))
+    optim_w = pxu.Optim(
+        lambda: optax.adamw(weights_lr_schedule, weight_decay=args.weight_decay), 
+        pxu.M(pxnn.LayerParam)(model)
+    )
     
     # Store validation losses to track progress
     val_losses = []
@@ -532,6 +655,11 @@ def main():
     for epoch in range(args.epochs):
         epoch_start = time.time()
         print(f"Epoch {epoch+1}/{args.epochs}")
+        
+        # Get current learning rates
+        current_w_lr = weights_lr_schedule(epoch * steps_per_epoch)
+        current_h_lr = hidden_lr_schedule(epoch * steps_per_epoch)
+        print(f"Current learning rates - Weights: {current_w_lr:.6f}, Hidden: {current_h_lr:.6f}")
         
         # Train for one epoch
         train(train_loader, args.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch)
