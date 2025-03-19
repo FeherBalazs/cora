@@ -25,7 +25,7 @@ from jax.typing import DTypeLike
 from einops import rearrange
 from pcx.core._parameter import get as param_get  # Import get function for parameter access
 
-from pcx_transformer import PCXSingleStreamBlock, PCXEmbedND, PCXMLPEmbedder, PCXLastLayer
+from pcx_transformer import PCXSingleStreamBlock, PCXSingleStreamBlockStandard, PCXEmbedND, PCXMLPEmbedder, PCXLastLayer, PCXLastLayerStandard
 
 STATUS_FORWARD = "forward"
 STATUS_REFINE = "refine"
@@ -255,14 +255,25 @@ class ModelDebugger:
         """Flatten gradient dictionary into a single array for norm calculation."""
         try:
             flat_arrays = []
-            for k, v in grad_dict.items():
-                if isinstance(v, dict):
-                    # Recursively flatten nested dictionaries
-                    nested_flat = self._flatten_gradients(v)
-                    if nested_flat is not None:
-                        flat_arrays.append(nested_flat)
-                elif isinstance(v, jnp.ndarray):
-                    flat_arrays.append(v.flatten())
+            
+            # If grad_dict is not a dictionary but has a get() method (like the model object)
+            if hasattr(grad_dict, 'get') and not isinstance(grad_dict, dict):
+                return self._flatten_gradients(grad_dict.get("model", {}))
+            
+            # Check if we have a model attribute and handle that case
+            if hasattr(grad_dict, 'model') and not isinstance(grad_dict, dict):
+                return self._flatten_gradients(grad_dict.model)
+            
+            # Handle dictionary case
+            if isinstance(grad_dict, dict):
+                for k, v in grad_dict.items():
+                    if isinstance(v, dict):
+                        # Recursively flatten nested dictionaries
+                        nested_flat = self._flatten_gradients(v)
+                        if nested_flat is not None:
+                            flat_arrays.append(nested_flat)
+                    elif isinstance(v, jnp.ndarray):
+                        flat_arrays.append(v.flatten())
             
             if flat_arrays:
                 return jnp.concatenate(flat_arrays)
@@ -402,8 +413,7 @@ class TransformerDecoder(pxc.EnergyModule):
         self.vodes[-1].h.frozen = True  # Freeze the output Vode's hidden state
         
         # Create a conditioning parameter using PCX's LayerParam class
-        # self.cond_param = pxnn.LayerParam(jnp.zeros((config.latent_dim,), dtype=config.param_dtype))
-        self.cond_param = pxnn.LayerParam(jnp.ones((config.latent_dim,), dtype=config.param_dtype) * 0.01)
+        # self.cond_param = pxnn.LayerParam(jnp.ones((config.latent_dim,), dtype=config.param_dtype) * 0.01)
         
         # === jflux-inspired architecture components ===
         
@@ -432,7 +442,7 @@ class TransformerDecoder(pxc.EnergyModule):
         for i in range(config.num_blocks):
             # Create transformer block
             self.transformer_blocks.append(
-                PCXSingleStreamBlock(
+                PCXSingleStreamBlockStandard(
                     hidden_size=config.hidden_size,
                     num_heads=config.num_heads,
                     mlp_ratio=config.mlp_ratio,
@@ -443,6 +453,14 @@ class TransformerDecoder(pxc.EnergyModule):
         
         # Use PCXLastLayer for final layer processing
         self.final_layer = PCXLastLayer(
+            hidden_size=config.hidden_size,
+            patch_size=config.patch_size,
+            out_channels=config.image_shape[0],  # Number of channels
+            rngs=self.rngs,
+            param_dtype=config.param_dtype
+        )
+
+        self.final_layer_standard = PCXLastLayerStandard(
             hidden_size=config.hidden_size,
             patch_size=config.patch_size,
             out_channels=config.image_shape[0],  # Number of channels
@@ -592,20 +610,21 @@ class TransformerDecoder(pxc.EnergyModule):
         patch_ids = self._create_patch_ids(batch_size=1)
         pe = self.pe_embedder(patch_ids)
 
-        # Use the learnable conditioning parameter directly with param_get
-        vec = self.vector_in(param_get(self.cond_param))
-        vec = jnp.expand_dims(vec, axis=0) if vec.ndim == 1 else vec    # SingleStreamBlock expects (batch, latent_dim)
+        # # Use the learnable conditioning parameter directly with param_get
+        # vec = self.vector_in(param_get(self.cond_param))
+        # vec = jnp.expand_dims(vec, axis=0) if vec.ndim == 1 else vec    # SingleStreamBlock expects (batch, latent_dim)
         
         # Process through transformer blocks
         for i, block in enumerate(self.transformer_blocks):
-            x = block(x, vec, pe) # Apply transformer block
+            x = block(x, vec=None, pe=pe) # Apply transformer block
             x = self.vodes[i+1](x) # Apply Vode
         
         # Apply final layer to transform from hidden dimension to patch dimension
-        x = self.final_layer(x, vec)
-
-        # Add normalization to constrain output values
-        x = jnp.tanh(x)  # Constrain to [-1, 1] range to match input
+        x = self.final_layer_standard(x)
+        
+        # Apply tanh activation to constrain output values to [-1, 1] range
+        # This matches the input normalization range and helps stabilize training
+        x = jnp.tanh(x)
         
         # Unpatchify back to image or video
         x = self._unpatchify(x, batch_size=None)
