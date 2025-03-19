@@ -448,7 +448,10 @@ class SingleStreamBlockStandard(nnx.Module):
     def __call__(self, x: Array, vec: Array, pe: Array) -> Array:
         # Standard layer normalization without modulation
         # Ignore the vec parameter - maintain API compatibility
-        x_norm = self.pre_norm(x)
+        # x_norm = self.pre_norm(x)
+
+        # Ignore normalization
+        x_norm = x
         
         # Since we always process single samples (no batch dimension) due to vmapping outside,
         # we'll always need to add a batch dimension for the attention operations
