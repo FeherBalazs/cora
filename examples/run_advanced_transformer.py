@@ -33,7 +33,7 @@ from src.utils_dataloader import get_dataloaders, TorchDataloader
 # Set up basic parameters - pushing the model capacity higher
 BATCH_SIZE = 128  # Even larger batch size
 LATENT_DIM = 512  # Larger latent dimension
-NUM_EPOCHS = 50   # More epochs for convergence
+NUM_EPOCHS = 20   # More epochs for convergence
 NUM_BLOCKS = 6    # More transformer blocks for capacity
 INFERENCE_STEPS = 8  # More inference steps
 
