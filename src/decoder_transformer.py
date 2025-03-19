@@ -307,7 +307,6 @@ class TransformerDecoder(pxc.EnergyModule):
 
     def __call__(self, y: jax.Array | None = None):        
         # Get the initial sequence of patch embeddings from Vode 0
-        # x = self.vodes[0].get("u")
         x = self.vodes[0](jnp.empty(()))
         
         # Add positional embeddings - use 3D for video, 2D for images
@@ -603,8 +602,8 @@ def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corr
     plt.tight_layout()
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    os.makedirs("results", exist_ok=True)
-    plt.savefig(f"results/reconstruction_{timestamp}.png")
+    os.makedirs("../results", exist_ok=True)
+    plt.savefig(f"../results/reconstruction_{timestamp}.png")
     plt.close()
     return orig_images, recon_images
 
