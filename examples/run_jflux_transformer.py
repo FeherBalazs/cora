@@ -28,17 +28,17 @@ from src.decoder_transformer import (
 from src.utils_dataloader import get_dataloaders
 
 # Set up basic parameters
-BATCH_SIZE = 1
-LATENT_DIM = 512
-NUM_EPOCHS = 5
-NUM_BLOCKS = 3
-INFERENCE_STEPS = 1  # Number of inference steps for each batch
+BATCH_SIZE = 32
+LATENT_DIM = 192
+NUM_EPOCHS = 20
+NUM_BLOCKS = 2
+INFERENCE_STEPS = 3
 
-LR_WEIGHTS = 5e-5
-LR_HIDDEN = 0.1
+LR_WEIGHTS = 2e-6
+LR_HIDDEN = 0.0003
 
-TRAIN_SUBSET = 100
-TEST_SUBSET = 100
+TRAIN_SUBSET = 1000
+TEST_SUBSET = 1000
 TARGET_CLASS = None
 
 def create_config(dataset="cifar10", latent_dim=LATENT_DIM, num_blocks=NUM_BLOCKS):
@@ -56,7 +56,7 @@ def create_config(dataset="cifar10", latent_dim=LATENT_DIM, num_blocks=NUM_BLOCK
             patch_size=4,
             axes_dim=[16, 16],
             theta=10_000,
-            use_noise=True
+            use_noise=False
         )
     else:
         raise ValueError(f"Unsupported dataset: {dataset}")
@@ -74,8 +74,8 @@ def parse_args():
                         help=f'Number of training epochs (default: {NUM_EPOCHS})')
     parser.add_argument('--inference-steps', type=int, default=INFERENCE_STEPS,
                         help=f'Number of inference steps (default: {INFERENCE_STEPS})')
-    parser.add_argument('--data-dir', type=str, default='./data',
-                        help='Directory to store datasets (default: ./data)')
+    parser.add_argument('--data-dir', type=str, default='../datasets/',
+                        help='Directory to store datasets (default: ../datasets/)')
     parser.add_argument('--train-subset', type=int, default=TRAIN_SUBSET,
                         help='Number of samples to use from the training set (default: all)')
     parser.add_argument('--test-subset', type=int, default=TEST_SUBSET,
@@ -144,28 +144,28 @@ def main():
     
     print("Training complete!")
     
-    # Visualize results with different inference steps
-    print("Visualizing reconstruction with different inference steps...")
-    visualize_reconstruction(
-        model, 
-        optim_h, 
-        val_loader, 
-        T_values=[1, 4, 8], 
-        use_corruption=False,
-        num_images=4
-    )
+    # # Visualize results with different inference steps
+    # print("Visualizing reconstruction with different inference steps...")
+    # visualize_reconstruction(
+    #     model, 
+    #     optim_h, 
+    #     val_loader, 
+    #     T_values=[1, 4, 8], 
+    #     use_corruption=False,
+    #     num_images=4
+    # )
     
-    # Visualize inpainting with different inference steps
-    print("Visualizing inpainting with different inference steps...")
-    visualize_reconstruction(
-        model, 
-        optim_h, 
-        val_loader, 
-        T_values=[1, 4, 8], 
-        use_corruption=True,
-        corrupt_ratio=0.5,
-        num_images=4
-    )
+    # # Visualize inpainting with different inference steps
+    # print("Visualizing inpainting with different inference steps...")
+    # visualize_reconstruction(
+    #     model, 
+    #     optim_h, 
+    #     val_loader, 
+    #     T_values=[1, 4, 8], 
+    #     use_corruption=True,
+    #     corrupt_ratio=0.5,
+    #     num_images=4
+    # )
 
 if __name__ == "__main__":
     main() 
