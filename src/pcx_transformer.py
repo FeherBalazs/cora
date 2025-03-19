@@ -17,6 +17,7 @@ from pcx.core._static import StaticParam
 from jflux.modules.layers import (
     DoubleStreamBlock,
     SingleStreamBlock,
+    SingleStreamBlockStandard,
     EmbedND,
     LastLayer,
     MLPEmbedder,
@@ -152,6 +153,45 @@ class PCXSingleStreamBlock(PCXWrapper):
         
     def __call__(self, x: jax.Array, vec: jax.Array, pe: jax.Array):
         return super().__call__(x, vec, pe)
+
+
+class PCXSingleStreamBlockStandard(PCXWrapper):
+    """
+    PCX-compatible wrapper for the jflux SingleStreamBlockStandard.
+    """
+    
+    def __init__(
+        self,
+        hidden_size: int,
+        num_heads: int,
+        mlp_ratio: float = 4.0,
+        qk_scale: Optional[float] = None,
+        rngs: Optional[nnx.Rngs] = None,
+        param_dtype: DTypeLike = jnp.float32,
+    ):
+        if rngs is None:
+            rngs = nnx.Rngs(0)
+            
+        # Create the original jflux SingleStreamBlockStandard
+        original_block = SingleStreamBlockStandard(
+            hidden_size=hidden_size,
+            num_heads=num_heads,
+            mlp_ratio=mlp_ratio,
+            qk_scale=qk_scale,
+            rngs=rngs,
+            param_dtype=param_dtype
+        )
+        
+        # Initialize the wrapper with the original block
+        super().__init__(original_block)
+        
+        # Store configuration for reference
+        self.hidden_size = hidden_size
+        self.num_heads = num_heads
+        self.mlp_ratio = mlp_ratio
+        
+    def __call__(self, x: jax.Array, pe: jax.Array) -> jax.Array:
+        return super().__call__(x, pe)
 
 
 class PCXEmbedND(PCXWrapper):

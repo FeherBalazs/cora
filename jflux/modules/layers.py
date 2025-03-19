@@ -395,6 +395,76 @@ class SingleStreamBlock(nnx.Module):
         return x + mod.gate * output
 
 
+class SingleStreamBlockStandard(nnx.Module):
+    """
+    A standard transformer block that maintains the parallel computation of attention
+    and MLP from DiT, but without any conditioning mechanisms.
+    """
+
+    def __init__(
+        self,
+        hidden_size: int,
+        num_heads: int,
+        rngs: nnx.Rngs,
+        param_dtype: DTypeLike = jnp.bfloat16,
+        mlp_ratio: float = 4.0,
+        qk_scale: float | None = None,
+    ):
+        self.hidden_dim = hidden_size
+        self.num_heads = num_heads
+        head_dim = hidden_size // num_heads
+        self.scale = qk_scale or head_dim**-0.5
+
+        self.mlp_hidden_dim = int(hidden_size * mlp_ratio)
+        # qkv and mlp_in
+        self.linear1 = nnx.Linear(
+            in_features=hidden_size,
+            out_features=hidden_size * 3 + self.mlp_hidden_dim,
+            rngs=rngs,
+            param_dtype=param_dtype,
+        )
+        # proj and mlp_out
+        self.linear2 = nnx.Linear(
+            in_features=hidden_size + self.mlp_hidden_dim,
+            out_features=hidden_size,
+            rngs=rngs,
+            param_dtype=param_dtype,
+        )
+
+        self.norm = QKNorm(dim=head_dim, rngs=rngs, param_dtype=param_dtype)
+
+        self.hidden_size = hidden_size
+        self.pre_norm = nnx.LayerNorm(
+            num_features=hidden_size,
+            use_scale=False,
+            use_bias=False,
+            epsilon=1e-6,
+            rngs=rngs,
+            param_dtype=param_dtype,
+        )
+
+        self.mlp_act = nnx.gelu
+
+    def __call__(self, x: Array, pe: Array) -> Array:
+        # Standard layer normalization without modulation
+        x_norm = self.pre_norm(x)
+        
+        # Same parallel computation of attention and MLP
+        qkv, mlp = jnp.split(self.linear1(x_norm), [3 * self.hidden_size], axis=-1)
+
+        q, k, v = rearrange(qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
+        q, k = self.norm(q, k, v)
+
+        # compute attention
+        attn = attention(q, k, v, pe=pe)
+        
+        # compute activation in mlp stream, cat again and run second linear layer
+        output = self.linear2(jnp.concatenate((attn, self.mlp_act(mlp)), 2))
+        
+        # Standard residual connection without gating
+        return x + output
+
+
 class LastLayer(nnx.Module):
     def __init__(
         self,
