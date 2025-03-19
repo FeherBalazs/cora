@@ -405,11 +405,12 @@ class TransformerDecoder(pxc.EnergyModule):
         # Create Vodes for each transformer block output
         for _ in range(config.num_blocks):
             self.vodes.append(pxc.Vode(
+                energy_fn=pxc.se_energy,
                 ruleset={STATUS_FORWARD: ("h -> u",)}
             ))
         
         # Output Vode (sensory layer) - shape depends on whether we're handling video or images
-        self.vodes.append(pxc.Vode())
+        self.vodes.append(pxc.Vode(energy_fn=pxc.se_energy))
         self.vodes[-1].h.frozen = True  # Freeze the output Vode's hidden state
         
         # Create a conditioning parameter using PCX's LayerParam class
@@ -625,6 +626,7 @@ class TransformerDecoder(pxc.EnergyModule):
         # Apply tanh activation to constrain output values to [-1, 1] range
         # This matches the input normalization range and helps stabilize training
         x = jnp.tanh(x)
+        # x = jax.nn.swish(x)
         
         # Unpatchify back to image or video
         x = self._unpatchify(x, batch_size=None)
