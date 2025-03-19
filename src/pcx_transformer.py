@@ -20,6 +20,7 @@ from jflux.modules.layers import (
     SingleStreamBlockStandard,
     EmbedND,
     LastLayer,
+    LastLayerStandard,
     MLPEmbedder,
 )
 
@@ -190,8 +191,9 @@ class PCXSingleStreamBlockStandard(PCXWrapper):
         self.num_heads = num_heads
         self.mlp_ratio = mlp_ratio
         
-    def __call__(self, x: jax.Array, pe: jax.Array) -> jax.Array:
-        return super().__call__(x, pe)
+    def __call__(self, x: jax.Array, vec: jax.Array, pe: jax.Array) -> jax.Array:
+        # Pass vec to maintain API compatibility with PCXSingleStreamBlock
+        return super().__call__(x, vec, pe)
 
 
 class PCXEmbedND(PCXWrapper):
@@ -283,4 +285,43 @@ class PCXLastLayer(PCXWrapper):
         self.out_channels = out_channels
         
     def __call__(self, x: jax.Array, vec: jax.Array) -> jax.Array:
-        return super().__call__(x, vec) 
+        return super().__call__(x, vec)
+
+
+class PCXLastLayerStandard(PCXWrapper):
+    """
+    PCX-compatible wrapper for the jflux LastLayerStandard.
+    This layer provides standard layer normalization and projection without adaptive conditioning.
+    """
+    
+    def __init__(
+        self,
+        hidden_size: int,
+        patch_size: int,
+        out_channels: int,
+        rngs: Optional[nnx.Rngs] = None,
+        param_dtype: DTypeLike = jnp.float32,
+    ):
+        if rngs is None:
+            rngs = nnx.Rngs(0)
+            
+        # Create the standard jflux LastLayerStandard
+        original_layer = LastLayerStandard(
+            hidden_size=hidden_size,
+            patch_size=patch_size,
+            out_channels=out_channels,
+            rngs=rngs,
+            param_dtype=param_dtype
+        )
+        
+        # Initialize the wrapper with the original layer
+        super().__init__(original_layer)
+        
+        # Store configuration for reference
+        self.hidden_size = hidden_size
+        self.patch_size = patch_size
+        self.out_channels = out_channels
+        
+    def __call__(self, x: jax.Array) -> jax.Array:
+        # vec parameter is kept for API compatibility but ignored
+        return super().__call__(x) 
