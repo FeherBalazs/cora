@@ -1,19 +1,24 @@
 import jax
 import jax.numpy as jnp
-import pcx as px
+import jax.tree_util as jtu
+from typing import Any
+
+# PCX imports
+import pcx
 import pcx.predictive_coding as pxc
 import pcx.nn as pxnn
 import pcx.utils as pxu
-from typing import Callable, Optional, Dict, Any, Type
-from jax.typing import DTypeLike
-import jax.tree_util as jtu
-from dataclasses import is_dataclass
 
-from flax import nnx
+
 from pcx.core._module import Module
+from pcx.core._random import RandomKeyGenerator, RKG
 from pcx.core._parameter import BaseParam
 from pcx.core._static import StaticParam
+from pcx.nn._parameter import LayerParam
 
+from flax import nnx
+
+# jflux component imports
 from jflux.modules.layers import (
     DoubleStreamBlock,
     SingleStreamBlock,
@@ -24,304 +29,109 @@ from jflux.modules.layers import (
     MLPEmbedder,
 )
 
-# Try to import the TransformerConfig class if available
-try:
-    from src.decoder_transformer import TransformerConfig
-    HAS_TRANSFORMER_CONFIG = True
-except ImportError:
-    HAS_TRANSFORMER_CONFIG = False
-    TransformerConfig = type(None)  # Fallback placeholder
+
+########################################################################################################################
+#
+# FLAX LAYER
+#
+# pcx flax layers are a thin wrapper around Flax modules that initializes parameters with a sample input,
+# replaces JAX arrays with LayerParam instances, and provides a __call__ method to unwrap and apply the module.
+#
+########################################################################################################################
 
 
-def is_px_static(obj):
-    """Check if an object has been marked as static by px.static()"""
-    # Objects marked with px.static typically have a special attribute or behavior
-    return hasattr(obj, '__static_hash__') or hasattr(obj, '_static') or hasattr(obj, '_StaticGuard__val')
+class FlaxLayer(Module):
+    """A generic wrapper for Flax modules, integrating them into the PCX framework."""
 
+    def __init__(
+        self,
+        cls,
+        *args,
+        sample_input: Any,
+        rngs: RandomKeyGenerator = RKG,
+        **kwargs,
+    ):
+        """
+        Initialize the Flax module and wrap its parameters.
 
-class PCXWrapper(Module):
-    """
-    Base wrapper for jflux components to make them compatible with PCX's parameter system.
-    This wrapper converts flax nnx parameters to PCX LayerParam objects.
-    
-    This follows a similar approach to pcx.nn.Layer, adapted for Flax/nnx modules,
-    with special handling for configuration objects and px.static objects.
-    """
-    
-    def __init__(self, module, filter=lambda x: isinstance(x, jax.Array)):
+        Args:
+            cls: The Flax module class to wrap (e.g., SingleStreamBlock).
+            *args: Positional arguments for the Flax module constructor.
+            sample_input: A sample input tensor to initialize parameter shapes.
+            rngs: Random key generator for initialization.
+            **kwargs: Keyword arguments for the Flax module constructor.
+        """
         super().__init__()
+        # Create the flax module
+        self.flax_module = self._create_flax_module(cls, *args, **kwargs)
         
-        # Store the original module with parameters converted appropriately
-        # Using an approach similar to Layer in pcx/nn/_layer.py but adapted for Flax
-        self.module = jtu.tree_map(
-            lambda w: pxnn.LayerParam(w) if filter(w) else StaticParam(w),
-            module,
-            is_leaf=lambda w: filter(w) or not hasattr(w, '__dict__') or 
-                             is_px_static(w) or  # Handle px.static objects
-                             (HAS_TRANSFORMER_CONFIG and isinstance(w, TransformerConfig)) or
-                             is_dataclass(type(w))  # Handle all dataclasses
-        )
-        
+        # Initialize parameters with a random key and sample input
+        self.params = self.flax_module.init(rngs(), sample_input)["params"]
+        # Wrap parameters in LayerParam for PCX compatibility
+        self.params = jtu.tree_map(lambda w: LayerParam(w), self.params)
+
+    def _create_flax_module(self, cls, *args, **kwargs):
+        """Create the flax module. Can be overridden by subclasses."""
+        return cls(*args, **kwargs)
+
     def __call__(self, *args, **kwargs):
-        # Convert all parameter objects back to their values for the call
-        # Following the same approach as in Layer.__call__
-        module_with_arrays = jtu.tree_map(
+        """Execute the forward pass by unwrapping parameters and calling apply."""
+        # Unwrap parameters from LayerParam instances
+        unwrapped_params = jtu.tree_map(
             lambda w: w.get() if isinstance(w, BaseParam) else w,
-            self.module,
-            is_leaf=lambda w: isinstance(w, BaseParam) or 
-                             is_px_static(w) or  # Handle px.static objects
-                             (HAS_TRANSFORMER_CONFIG and isinstance(w, TransformerConfig)) or
-                             is_dataclass(type(w))  # Handle all dataclasses
+            self.params,
+            is_leaf=lambda w: isinstance(w, BaseParam),
         )
-        
-        # Call the module with the arrays
-        return module_with_arrays(*args, **kwargs)
+        # Call the Flax module's apply method
+        return self.flax_module.apply({"params": unwrapped_params}, *args, **kwargs)
 
 
-class PCXDoubleStreamBlock(PCXWrapper):
-    """
-    PCX-compatible wrapper for the jflux DoubleStreamBlock.
-    """
-    
+class PCXSingleStreamBlockStandard(FlaxLayer):
+    """A PCX wrapper for the Flax SingleStreamBlock module."""
+
     def __init__(
         self,
         hidden_size: int,
         num_heads: int,
-        mlp_ratio: float = 4.0,
-        qkv_bias: bool = True,
-        rngs: Optional[nnx.Rngs] = None,
-        param_dtype: DTypeLike = jnp.float32,
+        mlp_ratio: float,
+        sample_input: Any,
+        rngs: RandomKeyGenerator = RKG,
+        param_dtype: Any = None,
     ):
-        if rngs is None:
-            rngs = nnx.Rngs(0)
-            
-        # Create the original jflux DoubleStreamBlock
-        original_block = DoubleStreamBlock(
+        """
+        Initialize a SingleStreamBlock with PCX parameter wrapping.
+
+        Args:
+            hidden_size: Size of the hidden state.
+            num_heads: Number of attention heads.
+            mlp_ratio: Ratio for MLP hidden size.
+            sample_input: A sample input tensor to initialize parameter shapes.
+            rngs: Random key generator for initialization.
+            param_dtype: Data type for parameters (e.g., jnp.float32).
+        """
+        # Convert RandomKeyGenerator to nnx.Rngs for SingleStreamBlockStandard
+        nnx_rngs = nnx.Rngs(jax.random.PRNGKey(0) if rngs is None else rngs())
+        
+        super().__init__(
+            cls=SingleStreamBlockStandard,
             hidden_size=hidden_size,
             num_heads=num_heads,
             mlp_ratio=mlp_ratio,
-            qkv_bias=qkv_bias,
-            rngs=rngs,
-            param_dtype=param_dtype
+            sample_input=sample_input,
+            rngs=rngs,  # Original rngs for FlaxLayer initialization
+            param_dtype=param_dtype if param_dtype is not None else jnp.float32,
+            # Pass nnx_rngs directly to the SingleStreamBlockStandard
+            _nnx_rngs=nnx_rngs,
         )
         
-        # Initialize the wrapper with the original block
-        super().__init__(original_block)
+    def _create_flax_module(self, cls, *args, **kwargs):
+        """Create the flax module with the correct rngs format."""
+        # Extract nnx_rngs from kwargs
+        nnx_rngs = kwargs.pop('_nnx_rngs', None)
         
-        # Store configuration for reference
-        self.hidden_size = hidden_size
-        self.num_heads = num_heads
-        self.mlp_ratio = mlp_ratio
-        
-    def __call__(self, img: jax.Array, txt: jax.Array, vec: jax.Array, pe: jax.Array):
-        return super().__call__(img, txt, vec, pe)
-
-
-class PCXSingleStreamBlock(PCXWrapper):
-    """
-    PCX-compatible wrapper for the jflux SingleStreamBlock.
-    """
-    
-    def __init__(
-        self,
-        hidden_size: int,
-        num_heads: int,
-        mlp_ratio: float = 4.0,
-        qk_scale: Optional[float] = None,
-        rngs: Optional[nnx.Rngs] = None,
-        param_dtype: DTypeLike = jnp.float32,
-    ):
-        if rngs is None:
-            rngs = nnx.Rngs(0)
+        # Update kwargs to use nnx_rngs as 'rngs' parameter
+        if nnx_rngs is not None:
+            kwargs['rngs'] = nnx_rngs
             
-        # Create the original jflux SingleStreamBlock
-        original_block = SingleStreamBlock(
-            hidden_size=hidden_size,
-            num_heads=num_heads,
-            mlp_ratio=mlp_ratio,
-            qk_scale=qk_scale,
-            rngs=rngs,
-            param_dtype=param_dtype
-        )
-        
-        # Initialize the wrapper with the original block
-        super().__init__(original_block)
-        
-        # Store configuration for reference
-        self.hidden_size = hidden_size
-        self.num_heads = num_heads
-        self.mlp_ratio = mlp_ratio
-        
-    def __call__(self, x: jax.Array, vec: jax.Array, pe: jax.Array):
-        return super().__call__(x, vec, pe)
+        return cls(*args, **kwargs)
 
-
-class PCXSingleStreamBlockStandard(PCXWrapper):
-    """
-    PCX-compatible wrapper for the jflux SingleStreamBlockStandard.
-    """
-    
-    def __init__(
-        self,
-        hidden_size: int,
-        num_heads: int,
-        mlp_ratio: float = 4.0,
-        qk_scale: Optional[float] = None,
-        rngs: Optional[nnx.Rngs] = None,
-        param_dtype: DTypeLike = jnp.float32,
-    ):
-        if rngs is None:
-            rngs = nnx.Rngs(0)
-            
-        # Create the original jflux SingleStreamBlockStandard
-        original_block = SingleStreamBlockStandard(
-            hidden_size=hidden_size,
-            num_heads=num_heads,
-            mlp_ratio=mlp_ratio,
-            qk_scale=qk_scale,
-            rngs=rngs,
-            param_dtype=param_dtype
-        )
-        
-        # Initialize the wrapper with the original block
-        super().__init__(original_block)
-        
-        # Store configuration for reference
-        self.hidden_size = hidden_size
-        self.num_heads = num_heads
-        self.mlp_ratio = mlp_ratio
-        
-    def __call__(self, x: jax.Array, vec: jax.Array, pe: jax.Array) -> jax.Array:
-        # Pass vec to maintain API compatibility with PCXSingleStreamBlock
-        return super().__call__(x, vec, pe)
-
-
-class PCXEmbedND(PCXWrapper):
-    """
-    PCX-compatible wrapper for the jflux EmbedND.
-    """
-    
-    def __init__(self, dim: int, theta: int, axes_dim: list[int]):
-        # Create the original jflux EmbedND
-        original_embed = EmbedND(dim=dim, theta=theta, axes_dim=axes_dim)
-        
-        # Initialize the wrapper with the original embed
-        super().__init__(original_embed)
-        
-        # Store configuration for reference
-        self.dim = dim
-        self.theta = theta
-        self.axes_dim = axes_dim
-        
-    def __call__(self, ids: jax.Array) -> jax.Array:
-        return super().__call__(ids)
-
-
-class PCXMLPEmbedder(PCXWrapper):
-    """
-    PCX-compatible wrapper for the jflux MLPEmbedder.
-    """
-    
-    def __init__(
-        self,
-        in_dim: int,
-        hidden_dim: int,
-        rngs: Optional[nnx.Rngs] = None,
-        param_dtype: DTypeLike = jnp.float32,
-    ):
-        if rngs is None:
-            rngs = nnx.Rngs(0)
-            
-        # Create the original jflux MLPEmbedder
-        original_embedder = MLPEmbedder(
-            in_dim=in_dim,
-            hidden_dim=hidden_dim,
-            rngs=rngs,
-            param_dtype=param_dtype
-        )
-        
-        # Initialize the wrapper with the original embedder
-        super().__init__(original_embedder)
-        
-        # Store configuration for reference
-        self.in_dim = in_dim
-        self.hidden_dim = hidden_dim
-        
-    def __call__(self, x: jax.Array) -> jax.Array:
-        return super().__call__(x)
-
-
-class PCXLastLayer(PCXWrapper):
-    """
-    PCX-compatible wrapper for the jflux LastLayer.
-    """
-    
-    def __init__(
-        self,
-        hidden_size: int,
-        patch_size: int,
-        out_channels: int,
-        rngs: Optional[nnx.Rngs] = None,
-        param_dtype: DTypeLike = jnp.float32,
-    ):
-        if rngs is None:
-            rngs = nnx.Rngs(0)
-            
-        # Create the original jflux LastLayer
-        original_layer = LastLayer(
-            hidden_size=hidden_size,
-            patch_size=patch_size,
-            out_channels=out_channels,
-            rngs=rngs,
-            param_dtype=param_dtype
-        )
-        
-        # Initialize the wrapper with the original layer
-        super().__init__(original_layer)
-        
-        # Store configuration for reference
-        self.hidden_size = hidden_size
-        self.patch_size = patch_size
-        self.out_channels = out_channels
-        
-    def __call__(self, x: jax.Array, vec: jax.Array) -> jax.Array:
-        return super().__call__(x, vec)
-
-
-class PCXLastLayerStandard(PCXWrapper):
-    """
-    PCX-compatible wrapper for the jflux LastLayerStandard.
-    This layer provides standard layer normalization and projection without adaptive conditioning.
-    """
-    
-    def __init__(
-        self,
-        hidden_size: int,
-        patch_size: int,
-        out_channels: int,
-        rngs: Optional[nnx.Rngs] = None,
-        param_dtype: DTypeLike = jnp.float32,
-    ):
-        if rngs is None:
-            rngs = nnx.Rngs(0)
-            
-        # Create the standard jflux LastLayerStandard
-        original_layer = LastLayerStandard(
-            hidden_size=hidden_size,
-            patch_size=patch_size,
-            out_channels=out_channels,
-            rngs=rngs,
-            param_dtype=param_dtype
-        )
-        
-        # Initialize the wrapper with the original layer
-        super().__init__(original_layer)
-        
-        # Store configuration for reference
-        self.hidden_size = hidden_size
-        self.patch_size = patch_size
-        self.out_channels = out_channels
-        
-    def __call__(self, x: jax.Array) -> jax.Array:
-        # vec parameter is kept for API compatibility but ignored
-        return super().__call__(x) 
