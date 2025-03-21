@@ -445,9 +445,8 @@ class SingleStreamBlockStandard(nnx.Module):
 
         self.mlp_act = nnx.gelu
 
-    def __call__(self, x: Array, vec: Array, pe: Array) -> Array:
+    def __call__(self, x: Array, pe: Array) -> Array:
         # Standard layer normalization without modulation
-        # Ignore the vec parameter - maintain API compatibility
         # x_norm = self.pre_norm(x)
 
         # Ignore normalization
