@@ -8,6 +8,7 @@
 
 # Specific directories to ignore
 examples/experiment_results
+examples/datacifar10
 datasets
 debug_logs
 
