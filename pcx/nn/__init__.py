@@ -18,6 +18,8 @@ __all__ = [
     "StateParam",
     "StatefulLayer",
     "BatchNorm",
+    "MultiHeadAttention",
+    "TransformerBlock",
 ]
 
 from ._layer import (
@@ -34,6 +36,8 @@ from ._layer import (
     AdaptiveMaxPool2d,
     Dropout,
     LayerNorm,
+    MultiHeadAttention,
+    TransformerBlock,
 )
 
 
