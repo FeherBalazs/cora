@@ -25,7 +25,7 @@ from jax.typing import DTypeLike
 from einops import rearrange
 from pcx.core._parameter import get as param_get  # Import get function for parameter access
 
-from pcx_transformer import PCXSingleStreamBlock, PCXSingleStreamBlockStandard, PCXEmbedND, PCXMLPEmbedder, PCXLastLayer, PCXLastLayerStandard
+from pcx_transformer import PCXSingleStreamBlockStandard, PCXEmbedND, PCXMLPEmbedder, PCXLastLayer, PCXLastLayerStandard
 
 STATUS_FORWARD = "forward"
 STATUS_REFINE = "refine"
@@ -33,8 +33,6 @@ STATUS_REFINE = "refine"
 import jax.random as jrandom
 key = jrandom.PRNGKey(42)
 
-# Add debugging utilities for model diagnostics
-# =============================================
 
 class ModelDebugger:
     """Utility class for debugging model training and inference."""
@@ -341,6 +339,7 @@ class TransformerConfig:
     num_heads: int = 8
     num_blocks: int = 3
     mlp_ratio: float = 4.0
+    dropout_rate: float = 0.1
     
     # Patch settings
     patch_size: int = 4
@@ -386,10 +385,11 @@ class TransformerDecoder(pxc.EnergyModule):
         
         # Initialize random key
         self.rngs = nnx.Rngs(0)
-        
+        key1, key2 = jax.random.split(self.rngs.default, num=2)
+
         print(f"Model initialized with {self.config.num_patches} patches, each with dimension {self.config.patch_dim}")
         print(f"Using {'video' if self.config.is_video else 'image'} mode with shape {self.config.image_shape}")
-        
+
         # Define Vodes for predictive coding
         # Top-level latent Vode
         self.vodes = [pxc.Vode(
@@ -413,9 +413,6 @@ class TransformerDecoder(pxc.EnergyModule):
         self.vodes.append(pxc.Vode(energy_fn=pxc.se_energy))
         self.vodes[-1].h.frozen = True  # Freeze the output Vode's hidden state
         
-        # Create a conditioning parameter using PCX's LayerParam class
-        # self.cond_param = pxnn.LayerParam(jnp.ones((config.latent_dim,), dtype=config.param_dtype) * 0.01)
-        
         # === jflux-inspired architecture components ===
         
         # Image input projection - using PCX Linear layer properly
@@ -424,50 +421,21 @@ class TransformerDecoder(pxc.EnergyModule):
             out_features=config.hidden_size,
             bias=True
         )
-        
-        # Latent vector processing via MLPEmbedder
-        self.vector_in = PCXMLPEmbedder(
-            in_dim=config.latent_dim,
-            hidden_dim=config.hidden_size
-        )
-        
-        # Positional embedding generator
-        self.pe_embedder = PCXEmbedND(
-            dim=config.hidden_size // config.num_heads,
-            theta=config.theta,
-            axes_dim=config.axes_dim
-        )
 
         # Transformer blocks
         self.transformer_blocks = []
         for i in range(config.num_blocks):
-            # Create transformer block
             self.transformer_blocks.append(
-                PCXSingleStreamBlockStandard(
-                    hidden_size=config.hidden_size,
+                pxnn.TransformerBlock(
+                    input_shape=config.hidden_size,
+                    hidden_dim=config.hidden_size * config.mlp_ratio,
                     num_heads=config.num_heads,
-                    mlp_ratio=config.mlp_ratio,
-                    rngs=self.rngs,
-                    param_dtype=config.param_dtype
+                    dropout_rate=config.dropout_rate,
+                    rkg=px.RKG
                 )
             )
-        
-        # Use PCXLastLayer for final layer processing
-        self.final_layer = PCXLastLayer(
-            hidden_size=config.hidden_size,
-            patch_size=config.patch_size,
-            out_channels=config.image_shape[0],  # Number of channels
-            rngs=self.rngs,
-            param_dtype=config.param_dtype
-        )
 
-        self.final_layer_standard = PCXLastLayerStandard(
-            hidden_size=config.hidden_size,
-            patch_size=config.patch_size,
-            out_channels=config.image_shape[0],  # Number of channels
-            rngs=self.rngs,
-            param_dtype=config.param_dtype
-        )
+        self.positional_embedding = jax.random.normal(key1, (config.num_patches, config.hidden_size))
     
     def _patchify(self, x, batch_size=None):
         """
@@ -603,21 +571,17 @@ class TransformerDecoder(pxc.EnergyModule):
         
         return patch_ids
 
+
     def __call__(self, y: jax.Array | None = None):        
         # Get the initial sequence of patch embeddings from Vode 0
         x = self.vodes[0](jnp.empty(()))
         
-        # Add positional embeddings - use 3D for video, 2D for images
-        patch_ids = self._create_patch_ids(batch_size=1)
-        pe = self.pe_embedder(patch_ids)
+        # Add positional embeddings (TODO: use 3D for video, 2D for images)
+        x += self.positional_embedding
 
-        # # Use the learnable conditioning parameter directly with param_get
-        # vec = self.vector_in(param_get(self.cond_param))
-        # vec = jnp.expand_dims(vec, axis=0) if vec.ndim == 1 else vec    # SingleStreamBlock expects (batch, latent_dim)
-        
         # Process through transformer blocks
         for i, block in enumerate(self.transformer_blocks):
-            x = block(x, vec=None, pe=pe) # Apply transformer block
+            x = block(x) # Apply transformer block
             x = self.vodes[i+1](x) # Apply Vode
         
         # Apply final layer to transform from hidden dimension to patch dimension
