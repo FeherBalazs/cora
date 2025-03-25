@@ -575,8 +575,11 @@ class TransformerDecoder(pxc.EnergyModule):
     def __call__(self, y: jax.Array | None = None):        
         # Get the initial sequence of patch embeddings from Vode 0
         x = self.vodes[0](jnp.empty(()))
+
+        #TODO: need to patchify the latent as the blocks expect (num_patches, hidden_size)
         
         # Add positional embeddings (TODO: use 3D for video, 2D for images)
+        # TODO: check if this makes sense or add ROPE
         x += self.positional_embedding
 
         # Process through transformer blocks
@@ -585,14 +588,15 @@ class TransformerDecoder(pxc.EnergyModule):
             x = self.vodes[i+1](x) # Apply Vode
         
         # Apply final layer to transform from hidden dimension to patch dimension
+        # TODO: check if this can be kept as is or if we need to change it
         x = self.final_layer_standard(x)
         
         # Apply tanh activation to constrain output values to [-1, 1] range
         # This matches the input normalization range and helps stabilize training
         x = jnp.tanh(x)
-        # x = jax.nn.swish(x)
         
         # Unpatchify back to image or video
+        # TODO: check if this can be kept as is or if we need to change it
         x = self._unpatchify(x, batch_size=None)
         
         # Apply sensory Vode
