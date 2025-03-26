@@ -389,6 +389,7 @@ class TransformerDecoder(pxc.EnergyModule):
         key = jax.random.PRNGKey(0)
 
         print(f"Model initialized with {self.config.num_patches} patches, each with dimension {self.config.patch_dim}")
+        print(f"Model initialized with {self.config.hidden_size} hidden_size, {self.config.mlp_hidden_dim} mlp_hidden_dim")
         print(f"Using {'video' if self.config.is_video else 'image'} mode with shape {self.config.image_shape}")
 
         # Define Vodes for predictive coding
@@ -433,7 +434,8 @@ class TransformerDecoder(pxc.EnergyModule):
     def __call__(self, y: jax.Array | None = None):        
         # Get the initial sequence of patch embeddings from Vode 0
         x = self.vodes[0](jnp.empty(()))
-        
+
+        #TODO: Add linear projection of x to hidden_size and modify positional embedding to match
         # Add positional embeddings
         x += self.positional_embedding
 
@@ -470,7 +472,7 @@ class TransformerDecoder(pxc.EnergyModule):
             channel_size (int): Number of channels (e.g., 3 for RGB)
 
         Returns:
-            image (array): Reconstructed image, shape (image_size, image_size, channel_size)
+            image (array): Reconstructed image, shape (channel_size, image_size, image_size)
         """
         # Number of patches along each dimension (e.g., 32 // 4 = 8)
         num_patches_per_side = image_size // patch_size
@@ -486,10 +488,10 @@ class TransformerDecoder(pxc.EnergyModule):
         )
 
         # Step 2: Rearrange patches into the full image grid
-        # Shape: (64, 4, 4, 3) -> (32, 32, 3)
+        # Shape: (64, 4, 4, 3) -> (3, 32, 32)
         image = einops.rearrange(
             x,
-            '(h_num w_num) p_h p_w c -> (h_num p_h) (w_num p_w) c',
+            '(h_num w_num) p_h p_w c -> c (h_num p_h) (w_num p_w)',
             h_num=num_patches_per_side,
             w_num=num_patches_per_side
         )
