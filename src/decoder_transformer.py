@@ -341,6 +341,7 @@ class TransformerConfig:
     num_blocks: int = 3
     mlp_ratio: float = 4.0
     dropout_rate: float = 0.1
+    mlp_hidden_dim: int = int(hidden_size * mlp_ratio)
     
     # Patch settings
     patch_size: int = 4
@@ -415,7 +416,7 @@ class TransformerDecoder(pxc.EnergyModule):
             self.transformer_blocks.append(
                 pxnn.TransformerBlock(
                     input_shape=config.hidden_size,
-                    hidden_dim=config.hidden_size * config.mlp_ratio,
+                    hidden_dim=config.mlp_hidden_dim,
                     num_heads=config.num_heads,
                     dropout_rate=config.dropout_rate
                 )
@@ -426,7 +427,7 @@ class TransformerDecoder(pxc.EnergyModule):
         self.vodes[-1].h.frozen = True  # Freeze the output Vode's hidden state
 
         # TODO: This is fixed random embedding, change it later to something better
-        self.positional_embedding = jax.random.normal(key, (config.num_patches, config.hidden_size))
+        self.positional_embedding = jax.random.normal(key, (config.num_patches, config.patch_dim))
     
     
     def __call__(self, y: jax.Array | None = None):        
