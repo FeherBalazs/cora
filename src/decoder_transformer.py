@@ -15,6 +15,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+import einops
 import pcx as px
 import pcx.predictive_coding as pxc
 import pcx.nn as pxnn
@@ -151,101 +152,45 @@ class TransformerDecoder(pxc.EnergyModule):
         # TODO: This is fixed random embedding, change it later to something better
         self.positional_embedding = jax.random.normal(key1, (config.num_patches, config.hidden_size))
     
-    def _unpatchify(self, x, batch_size=None):
+
+    def unpatchify(self, x, patch_size, image_size, channel_size):
         """
-        Converts patches back to images or videos.
-        For images: Input shape (num_patches, patch_dim) -> Output shape (c, h, w)
-        For videos: Input shape (t*h_patches*w_patches, patch_dim) -> Output shape (t, c, h, w)
-        With batch: First dimension is batch_size
+        Reconstructs a CIFAR-10 image from a sequence of patch embeddings.
+
+        Args:
+            x (array): Transformer output, shape (num_patches, patch_dim)
+            patch_size (int): Size of each patch (e.g., 4 for 4x4 patches)
+            image_size (int): Size of the image (e.g., 32 for 32x32 images)
+            channel_size (int): Number of channels (e.g., 3 for RGB)
+
+        Returns:
+            image (array): Reconstructed image, shape (image_size, image_size, channel_size)
         """
-        p = self.config.patch_size
-        
-        if self.config.is_video:
-            # Handle video data
-            t, c, h, w = self.config.image_shape
-            h_patches, w_patches = h // p, w // p
-            
-            if batch_size is None:
-                # Handle single video
-                x = x.reshape((t, h_patches, w_patches, c, p, p))
-                x = jnp.transpose(x, (0, 3, 1, 4, 2, 5))  # (t, c, h_patches, p, w_patches, p)
-                x = x.reshape((t, c, h, w))  # (t, c, h, w)
-            else:
-                # Handle batched videos
-                x = x.reshape((batch_size, t, h_patches, w_patches, c, p, p))
-                x = jnp.transpose(x, (0, 1, 4, 2, 5, 3, 6))  # (batch, t, c, h_patches, p, w_patches, p)
-                x = x.reshape((batch_size, t, c, h, w))  # (batch, t, c, h, w)
-        else:
-            # Handle image data (original implementation)
-            if len(self.config.image_shape) == 3:
-                c, h, w = self.config.image_shape
-            else:
-                _, c, h, w = self.config.image_shape
-            
-            h_patches, w_patches = h // p, w // p
-            
-            if batch_size is None:
-                # Handle single sequence
-                x = x.reshape((h_patches, w_patches, c, p, p))
-                x = jnp.transpose(x, (2, 0, 3, 1, 4))  # (c, h_patches, p, w_patches, p)
-                x = x.reshape((c, h, w))  # (c, h, w)
-            else:
-                # Handle batched input
-                x = x.reshape((batch_size, h_patches, w_patches, c, p, p))
-                x = jnp.transpose(x, (0, 3, 1, 4, 2, 5))  # (batch, c, h_patches, p, w_patches, p)
-                x = x.reshape((batch_size, c, h, w))  # (batch, c, h, w)
-        
-        return x
+        # Number of patches along each dimension (e.g., 32 // 4 = 8)
+        num_patches_per_side = image_size // patch_size
+
+        # Step 1: Reshape each patch embedding into (patch_size, patch_size, channel_size)
+        # Input shape: (64, 48) -> (64, 4, 4, 3)
+        x = einops.rearrange(
+            x,
+            'patches (p_h p_w c) -> patches p_h p_w c',
+            p_h=patch_size,
+            p_w=patch_size,
+            c=channel_size
+        )
+
+        # Step 2: Rearrange patches into the full image grid
+        # Shape: (64, 4, 4, 3) -> (32, 32, 3)
+        image = einops.rearrange(
+            x,
+            '(h_num w_num) p_h p_w c -> (h_num p_h) (w_num p_w) c',
+            h_num=num_patches_per_side,
+            w_num=num_patches_per_side
+        )
+
+        return image
     
-    def _create_patch_ids(self, batch_size):
-        """
-        Creates patch position IDs for positional embeddings.
-        For images: Returns positional IDs of shape (batch_size, num_patches, 2)
-        For videos: Returns positional IDs of shape (batch_size, num_patches, 3) with temporal dimension
-        """
-        # Calculate grid dimensions
-        h_patches = self.config.image_shape[1] // self.config.patch_size
-        w_patches = self.config.image_shape[2] // self.config.patch_size
-        
-        if self.config.is_video:
-            # Create 3D grid of patch positions for video
-            # First dimension (channel 0) will be for time/frame index
-            # Other dimensions (channels 1,2) will be for spatial positions (height, width)
-            patch_ids = jnp.zeros((self.config.num_frames, h_patches, w_patches, 3))
-            
-            # Set temporal dimension (channel 0)
-            # Broadcasting the frame indices across all spatial positions
-            for t in range(self.config.num_frames):
-                patch_ids = patch_ids.at[t, :, :, 0].set(t)
-            
-            # Set spatial dimensions (channels 1,2)
-            patch_ids = patch_ids.at[..., 1].set(jnp.arange(h_patches)[None, :, None])
-            patch_ids = patch_ids.at[..., 2].set(jnp.arange(w_patches)[None, None, :])
-            
-            # Reshape to sequence and add batch dimension
-            # Going from (num_frames, h_patches, w_patches, 3) to (batch_size, num_frames*h_patches*w_patches, 3)
-            patch_ids = patch_ids.reshape(-1, 3)
-            patch_ids = jnp.tile(patch_ids[None], (batch_size, 1, 1))
-        else:
-            # Create 2D grid of patch positions for images
-            if len(self.config.axes_dim) == 2:
-                # Standard 2D positional encoding
-                patch_ids = jnp.zeros((h_patches, w_patches, 2))
-                patch_ids = patch_ids.at[..., 0].set(jnp.arange(h_patches)[:, None])
-                patch_ids = patch_ids.at[..., 1].set(jnp.arange(w_patches)[None, :])
-            else:
-                # Use 3D positional encoding with first channel as zeros (for future compatibility)
-                patch_ids = jnp.zeros((h_patches, w_patches, 3))
-                patch_ids = patch_ids.at[..., 1].set(jnp.arange(h_patches)[:, None])
-                patch_ids = patch_ids.at[..., 2].set(jnp.arange(w_patches)[None, :])
-            
-            # Reshape to sequence and add batch dimension
-            patch_ids = patch_ids.reshape(-1, patch_ids.shape[-1])
-            patch_ids = jnp.tile(patch_ids[None], (batch_size, 1, 1))
-        
-        return patch_ids
-
-
+    
     def __call__(self, y: jax.Array | None = None):        
         # Get the initial sequence of patch embeddings from Vode 0
         x = self.vodes[0](jnp.empty(()))
@@ -263,8 +208,7 @@ class TransformerDecoder(pxc.EnergyModule):
         x = jnp.tanh(x)
         
         # Unpatchify back to image
-        # TODO: check if this can be kept as is or if we need to change it
-        x = self._unpatchify(x, batch_size=None)
+        x = self.unpatchify(x, patch_size=self.config.patch_size, image_size=self.config.image_shape[1], channel_size=self.config.image_shape[0])
         
         # Apply sensory Vode
         x = self.vodes[-1](x)
