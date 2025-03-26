@@ -385,8 +385,7 @@ class TransformerDecoder(pxc.EnergyModule):
         self.config = px.static(config)
         
         # Initialize random key
-        self.rngs = nnx.Rngs(0)
-        key1, key2 = jax.random.split(self.rngs.default, num=2)
+        key = jax.random.PRNGKey(0)
 
         print(f"Model initialized with {self.config.num_patches} patches, each with dimension {self.config.patch_dim}")
         print(f"Using {'video' if self.config.is_video else 'image'} mode with shape {self.config.image_shape}")
@@ -418,8 +417,7 @@ class TransformerDecoder(pxc.EnergyModule):
                     input_shape=config.hidden_size,
                     hidden_dim=config.hidden_size * config.mlp_ratio,
                     num_heads=config.num_heads,
-                    dropout_rate=config.dropout_rate,
-                    rkg=px.RKG
+                    dropout_rate=config.dropout_rate
                 )
             )
         
@@ -428,7 +426,7 @@ class TransformerDecoder(pxc.EnergyModule):
         self.vodes[-1].h.frozen = True  # Freeze the output Vode's hidden state
 
         # TODO: This is fixed random embedding, change it later to something better
-        self.positional_embedding = jax.random.normal(key1, (config.num_patches, config.hidden_size))
+        self.positional_embedding = jax.random.normal(key, (config.num_patches, config.hidden_size))
     
     
     def __call__(self, y: jax.Array | None = None):        
