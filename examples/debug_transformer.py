@@ -33,11 +33,11 @@ from src.decoder_transformer import (
 )
 
 # Set up basic parameters - pushing the model capacity higher
-BATCH_SIZE = 100  # Even larger batch size
-LATENT_DIM = 512  # Larger latent dimension
-NUM_EPOCHS = 20   # More epochs for convergence
-NUM_BLOCKS = 6    # More transformer blocks for capacity
-INFERENCE_STEPS = 8  # More inference steps
+BATCH_SIZE = 1  # Even larger batch size
+LATENT_DIM = 128  # Larger latent dimension
+NUM_EPOCHS = 1   # More epochs for convergence
+NUM_BLOCKS = 1    # More transformer blocks for capacity
+INFERENCE_STEPS = 1  # More inference steps
 
 # Learning rates with schedule parameters
 PEAK_LR_WEIGHTS = 1e-3  # Higher peak learning rate
@@ -46,8 +46,8 @@ WEIGHT_DECAY = 2e-4     # Slightly stronger weight decay
 WARMUP_EPOCHS = 5       # Warmup period
 
 # Dataset parameters - using more data
-TRAIN_SUBSET = 50000  # Use the full training set (50,000 images)
-TEST_SUBSET = 1000   # Larger test set
+TRAIN_SUBSET = 100  # Use the full training set (50,000 images)
+TEST_SUBSET = 100   # Larger test set
 TARGET_CLASS = None  # Use all classes
 
 
