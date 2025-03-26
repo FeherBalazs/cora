@@ -122,19 +122,6 @@ class TransformerDecoder(pxc.EnergyModule):
                 energy_fn=pxc.se_energy,
                 ruleset={STATUS_FORWARD: ("h -> u",)}
             ))
-        
-        # Output Vode (sensory layer) - shape depends on whether we're handling video or images
-        self.vodes.append(pxc.Vode(energy_fn=pxc.se_energy))
-        self.vodes[-1].h.frozen = True  # Freeze the output Vode's hidden state
-        
-        # === jflux-inspired architecture components ===
-        
-        # Image input projection - using PCX Linear layer properly
-        self.img_in = pxnn.Linear(
-            in_features=self.config.patch_dim,
-            out_features=config.hidden_size,
-            bias=True
-        )
 
         # Transformer blocks
         self.transformer_blocks = []
@@ -148,6 +135,10 @@ class TransformerDecoder(pxc.EnergyModule):
                     rkg=px.RKG
                 )
             )
+        
+        # Output Vode (sensory layer) - shape depends on whether we're handling video or images
+        self.vodes.append(pxc.Vode(energy_fn=pxc.se_energy))
+        self.vodes[-1].h.frozen = True  # Freeze the output Vode's hidden state
 
         # TODO: This is fixed random embedding, change it later to something better
         self.positional_embedding = jax.random.normal(key1, (config.num_patches, config.hidden_size))
