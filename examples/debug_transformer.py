@@ -141,11 +141,11 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
     ])
     
     # Load CIFAR-10 dataset with augmentation
-    dataset_root = root_path + "cifar10/"
+    dataset_root = '../' + root_path + "/cifar10/"
     train_dataset = torchvision.datasets.CIFAR10(
         root=dataset_root,
         transform=train_transform,
-        download=True,
+        download=False,
         train=True,
     )
     test_dataset = torchvision.datasets.CIFAR10(
