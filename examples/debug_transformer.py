@@ -59,7 +59,7 @@ def create_config(dataset="cifar10", latent_dim=LATENT_DIM, num_blocks=NUM_BLOCK
             image_shape=(3, 32, 32),
             num_frames=16,
             is_video=False,
-            hidden_size=384,  # Larger hidden size
+            hidden_size=48,  # Larger hidden size
             num_heads=12,     # More attention heads
             num_blocks=num_blocks,
             mlp_ratio=4.0,
@@ -644,6 +644,9 @@ def main():
     
     # Store validation losses to track progress
     val_losses = []
+
+    # Validate image shape
+    print(f"Image shape: {train_loader.dataloader.dataset[0][0].shape}")
     
     # Train and debug the model
     print(f"Training for {args.epochs} epochs with debugging...")
