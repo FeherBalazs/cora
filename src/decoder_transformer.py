@@ -34,293 +34,6 @@ import jax.random as jrandom
 key = jrandom.PRNGKey(42)
 
 
-class ModelDebugger:
-    """Utility class for debugging model training and inference."""
-    
-    def __init__(self, enable_logging=True, log_dir="../debug_logs"):
-        self.enable_logging = enable_logging
-        self.log_dir = log_dir
-        self.energy_history = []
-        self.gradient_norm_history = []
-        self.activation_stats = {}
-        
-        if enable_logging:
-            os.makedirs(log_dir, exist_ok=True)
-    
-    def log_energy(self, step, h_energy, w_energy):
-        """Log energy values during training."""
-        if not self.enable_logging:
-            return
-            
-        self.energy_history.append({
-            'step': step,
-            'h_energy': float(h_energy) if h_energy is not None else None,
-            'w_energy': float(w_energy) if w_energy is not None else None
-        })
-        
-        # Save periodically to avoid memory issues
-        if len(self.energy_history) % 100 == 0:
-            self._save_energy_log()
-    
-    def log_gradient_norms(self, step, h_grad, w_grad):
-        """Log gradient norms to detect exploding/vanishing gradients."""
-        if not self.enable_logging or h_grad is None or w_grad is None:
-            return
-            
-        # Extract gradients from the model parameters
-        h_grad_flat = self._flatten_gradients(h_grad.get("model", {}))
-        w_grad_flat = self._flatten_gradients(w_grad.get("model", {}))
-        
-        # Compute norms
-        h_grad_norm = jnp.linalg.norm(h_grad_flat) if h_grad_flat is not None else None
-        w_grad_norm = jnp.linalg.norm(w_grad_flat) if w_grad_flat is not None else None
-        
-        self.gradient_norm_history.append({
-            'step': step,
-            'h_grad_norm': float(h_grad_norm) if h_grad_norm is not None else None,
-            'w_grad_norm': float(w_grad_norm) if w_grad_norm is not None else None
-        })
-        
-        # Save periodically
-        if len(self.gradient_norm_history) % 100 == 0:
-            self._save_gradient_log()
-    
-    def log_activation_stats(self, name, activation):
-        """Log statistics about activations at different layers."""
-        if not self.enable_logging:
-            return
-            
-        try:
-            # Use numpy to avoid JAX tracer issues - carefully handle JAX arrays
-            if hasattr(activation, 'numpy'):
-                # Direct numpy conversion for PyTorch tensors
-                activation_np = activation.numpy()
-            elif hasattr(activation, 'shape') and hasattr(jnp, 'asarray'):
-                # For JAX arrays, must first check if concrete (not a tracer)
-                # Use np.asarray for already-concrete arrays
-                if not hasattr(activation, '_trace'):
-                    try:
-                        activation_np = np.asarray(activation)
-                    except Exception as e1:
-                        print(f"Error converting activation {name} to numpy: {e1}")
-                        return
-                else:
-                    # Skip if it's a JAX tracer (inside JIT context)
-                    print(f"Warning: Skipping logging for {name} because it's a JAX tracer")
-                    return
-            else:
-                # Skip if we can't safely convert to numpy
-                print(f"Warning: Skipping logging for {name} (can't convert to numpy)")
-                return
-            
-            # Calculate statistics safely
-            stats = {}
-            try:
-                stats['min'] = float(np.min(activation_np))
-                stats['max'] = float(np.max(activation_np))
-                stats['mean'] = float(np.mean(activation_np))
-                stats['std'] = float(np.std(activation_np))
-                stats['abs_mean'] = float(np.mean(np.abs(activation_np)))
-                stats['zero_frac'] = float(np.mean(np.equal(activation_np, 0)))
-            except Exception as e2:
-                print(f"Error calculating statistics for {name}: {e2}")
-                return
-            
-            if name not in self.activation_stats:
-                self.activation_stats[name] = []
-            
-            self.activation_stats[name].append(stats)
-            
-            # Save periodically
-            if len(self.activation_stats[name]) % 20 == 0:
-                self._save_activation_log(name)
-        except Exception as e:
-            print(f"Error logging activation stats for {name}: {e}")
-            # Continue without failing if there's an error
-    
-    def visualize_layer_output(self, model, name, output, epoch=None):
-        """Visualize the output of specific layers."""
-        if not self.enable_logging:
-            return
-            
-        import matplotlib.pyplot as plt
-        from datetime import datetime
-        
-        # For image-like outputs only
-        if len(output.shape) < 3:
-            return
-            
-        # Create directory for visualizations
-        viz_dir = os.path.join(self.log_dir, "layer_viz")
-        os.makedirs(viz_dir, exist_ok=True)
-        
-        # Generate timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        epoch_str = f"_epoch{epoch}" if epoch is not None else ""
-        
-        # Save visualization
-        plt.figure(figsize=(8, 8))
-        
-        # Reshape and normalize for visualization
-        if len(output.shape) == 3:  # [B, L, D]
-            # Reshape to square if possible
-            side = int(np.sqrt(output.shape[1]))
-            if side**2 == output.shape[1]:
-                viz = output[0].reshape(side, side, -1)
-                # Take average across feature dimension
-                viz = jnp.mean(viz, axis=-1)
-                plt.imshow(viz, cmap='viridis')
-            else:
-                # Just visualize the first few dimensions as a heatmap
-                viz = output[0, :100, :100] if output.shape[1] > 100 and output.shape[2] > 100 else output[0]
-                plt.imshow(viz, cmap='viridis', aspect='auto')
-        elif len(output.shape) == 4:  # Image-like
-            if output.shape[1] == 3:  # [B, C, H, W] format
-                viz = jnp.transpose(output[0], (1, 2, 0))
-                plt.imshow(jnp.clip(viz, 0, 1))
-            else:
-                # Take first channel
-                viz = output[0, 0]
-                plt.imshow(viz, cmap='viridis')
-        
-        plt.title(f"Layer: {name}")
-        plt.colorbar()
-        plt.savefig(f"{viz_dir}/{name}_{timestamp}{epoch_str}.png")
-        plt.close()
-    
-    def debug_unpatchify(self, model, patched_output, epoch=None):
-        """Debug the unpatchify process by visualizing before and after."""
-        if not self.enable_logging:
-            return
-            
-        import matplotlib.pyplot as plt
-        from datetime import datetime
-        
-        # Create directory for unpatchify debugging
-        viz_dir = os.path.join(self.log_dir, "unpatchify_debug")
-        os.makedirs(viz_dir, exist_ok=True)
-        
-        # Generate timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        epoch_str = f"_epoch{epoch}" if epoch is not None else ""
-        
-        # Visualize patched representation
-        plt.figure(figsize=(12, 10))
-        
-        # Plot heatmaps of patches
-        plt.subplot(2, 2, 1)
-        # Take first 16 patches for visualization
-        num_patches = min(16, patched_output.shape[1])
-        patch_dim = patched_output.shape[2]
-        
-        # Reshape to visualize patch content
-        patch_viz = patched_output[0, :num_patches, :].reshape(num_patches, -1)
-        plt.imshow(patch_viz, cmap='viridis', aspect='auto')
-        plt.title("Patch Representation (first 16 patches)")
-        plt.colorbar()
-        
-        # Plot histogram of values in patches
-        plt.subplot(2, 2, 2)
-        plt.hist(patched_output[0].flatten(), bins=50, alpha=0.7)
-        plt.title("Distribution of Values in Patches")
-        
-        # Try to unpatchify and visualize
-        try:
-            img_shape = model.config.image_shape
-            unpatchified = model._unpatchify(patched_output, batch_size=patched_output.shape[0])
-            
-            plt.subplot(2, 2, 3)
-            if img_shape[0] == 1:  # Grayscale
-                plt.imshow(jnp.clip(jnp.squeeze(unpatchified[0]), 0, 1), cmap='gray')
-            else:  # RGB
-                plt.imshow(jnp.clip(jnp.transpose(unpatchified[0], (1, 2, 0)), 0, 1))
-            plt.title("Unpatchified Image")
-            
-            plt.subplot(2, 2, 4)
-            plt.hist(unpatchified[0].flatten(), bins=50, alpha=0.7)
-            plt.title("Distribution of Values in Unpatchified Image")
-            
-        except Exception as e:
-            plt.subplot(2, 2, 3)
-            plt.text(0.5, 0.5, f"Error in unpatchify: {str(e)}", 
-                     horizontalalignment='center', verticalalignment='center')
-        
-        plt.tight_layout()
-        plt.savefig(f"{viz_dir}/unpatchify_debug_{timestamp}{epoch_str}.png")
-        plt.close()
-    
-    def _flatten_gradients(self, grad_dict):
-        """Flatten gradient dictionary into a single array for norm calculation."""
-        try:
-            flat_arrays = []
-            
-            # If grad_dict is not a dictionary but has a get() method (like the model object)
-            if hasattr(grad_dict, 'get') and not isinstance(grad_dict, dict):
-                return self._flatten_gradients(grad_dict.get("model", {}))
-            
-            # Check if we have a model attribute and handle that case
-            if hasattr(grad_dict, 'model') and not isinstance(grad_dict, dict):
-                return self._flatten_gradients(grad_dict.model)
-            
-            # Handle dictionary case
-            if isinstance(grad_dict, dict):
-                for k, v in grad_dict.items():
-                    if isinstance(v, dict):
-                        # Recursively flatten nested dictionaries
-                        nested_flat = self._flatten_gradients(v)
-                        if nested_flat is not None:
-                            flat_arrays.append(nested_flat)
-                    elif isinstance(v, jnp.ndarray):
-                        flat_arrays.append(v.flatten())
-            
-            if flat_arrays:
-                return jnp.concatenate(flat_arrays)
-            return None
-        except Exception as e:
-            print(f"Error flattening gradients: {e}")
-            return None
-    
-    def _save_energy_log(self):
-        """Save energy history to file."""
-        if not self.energy_history:
-            return
-            
-        import json
-        with open(os.path.join(self.log_dir, 'energy_history.json'), 'w') as f:
-            json.dump(self.energy_history, f)
-    
-    def _save_gradient_log(self):
-        """Save gradient norm history to file."""
-        if not self.gradient_norm_history:
-            return
-            
-        import json
-        with open(os.path.join(self.log_dir, 'gradient_norm_history.json'), 'w') as f:
-            json.dump(self.gradient_norm_history, f)
-    
-    def _save_activation_log(self, name):
-        """Save activation statistics for a specific layer."""
-        if name not in self.activation_stats or not self.activation_stats[name]:
-            return
-            
-        import json
-        with open(os.path.join(self.log_dir, f'activation_{name}.json'), 'w') as f:
-            json.dump(self.activation_stats[name], f)
-    
-    def save_all_logs(self):
-        """Save all logs to files."""
-        if not self.enable_logging:
-            return
-            
-        self._save_energy_log()
-        self._save_gradient_log()
-        
-        for name in self.activation_stats:
-            self._save_activation_log(name)
-
-# Create a global debugger instance
-model_debugger = ModelDebugger(enable_logging=True)
-
 @dataclass
 class TransformerConfig:
     """Configuration for the TransformerDecoder model."""
@@ -397,8 +110,8 @@ class TransformerDecoder(pxc.EnergyModule):
             ruleset={pxc.STATUS.INIT: ("h, u <- u:to_init",)},
             tforms={
                 "to_init": lambda n, k, v, rkg: jax.random.normal(
-                    px.RKG(), (config.num_patches, config.hidden_size)
-                ) * 0.01 if config.use_noise else jnp.zeros((config.num_patches, config.hidden_size))
+                    px.RKG(), (config.num_patches, config.patch_dim)
+                ) * 0.01 if config.use_noise else jnp.zeros((config.num_patches, config.patch_dim))
             }
         )]
         
@@ -435,47 +148,8 @@ class TransformerDecoder(pxc.EnergyModule):
                 )
             )
 
+        # TODO: This is fixed random embedding, change it later to something better
         self.positional_embedding = jax.random.normal(key1, (config.num_patches, config.hidden_size))
-    
-    def _patchify(self, x, batch_size=None):
-        """
-        Converts images or videos to sequences of patches.
-        For images: Input shape (c, h, w) -> Output shape (num_patches, patch_dim)
-        For videos: Input shape (t, c, h, w) -> Output shape (t*h_patches*w_patches, patch_dim)
-        With batch: Prepends batch dimension to output
-        """
-        if self.config.is_video:
-            # Handle video data
-            t, c, h, w = self.config.image_shape
-            p = self.config.patch_size
-            
-            if batch_size is None:
-                # Handle single video sequence
-                x = x.reshape((t, c, h // p, p, w // p, p))
-                x = jnp.transpose(x, (0, 2, 4, 1, 3, 5))  # (t, h_patches, w_patches, c, p, p)
-                x = x.reshape((-1, p * p * c))  # (t*h_patches*w_patches, patch_dim)
-            else:
-                # Handle batched videos
-                x = x.reshape((batch_size, t, c, h // p, p, w // p, p))
-                x = jnp.transpose(x, (0, 1, 3, 5, 2, 4, 6))  # (batch, t, h_patches, w_patches, c, p, p)
-                x = x.reshape((batch_size, -1, p * p * c))  # (batch, t*h_patches*w_patches, patch_dim)
-        else:
-            # Handle image data (original implementation)
-            c, h, w = self.config.image_shape
-            p = self.config.patch_size
-            
-            if batch_size is None:
-                # Handle single image
-                x = x.reshape((c, h // p, p, w // p, p))
-                x = jnp.transpose(x, (1, 3, 0, 2, 4))  # (h_patches, w_patches, c, p, p)
-                x = x.reshape((-1, p * p * c))  # (num_patches, patch_dim)
-            else:
-                # Handle batched input
-                x = x.reshape((batch_size, c, h // p, p, w // p, p))
-                x = jnp.transpose(x, (0, 2, 4, 1, 3, 5))  # (batch, h_patches, w_patches, c, p, p)
-                x = x.reshape((batch_size, -1, p * p * c))  # (batch, num_patches, patch_dim)
-        
-        return x
     
     def _unpatchify(self, x, batch_size=None):
         """
@@ -575,27 +249,20 @@ class TransformerDecoder(pxc.EnergyModule):
     def __call__(self, y: jax.Array | None = None):        
         # Get the initial sequence of patch embeddings from Vode 0
         x = self.vodes[0](jnp.empty(()))
-
-        #TODO: need to patchify the latent as the blocks expect (num_patches, hidden_size)
         
-        # Add positional embeddings (TODO: use 3D for video, 2D for images)
-        # TODO: check if this makes sense or add ROPE
+        # Add positional embeddings
         x += self.positional_embedding
 
         # Process through transformer blocks
         for i, block in enumerate(self.transformer_blocks):
             x = block(x) # Apply transformer block
             x = self.vodes[i+1](x) # Apply Vode
-        
-        # Apply final layer to transform from hidden dimension to patch dimension
-        # TODO: check if this can be kept as is or if we need to change it
-        x = self.final_layer_standard(x)
-        
+    
         # Apply tanh activation to constrain output values to [-1, 1] range
         # This matches the input normalization range and helps stabilize training
         x = jnp.tanh(x)
         
-        # Unpatchify back to image or video
+        # Unpatchify back to image
         # TODO: check if this can be kept as is or if we need to change it
         x = self._unpatchify(x, batch_size=None)
         
