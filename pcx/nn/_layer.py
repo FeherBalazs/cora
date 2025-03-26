@@ -413,34 +413,34 @@ class TransformerBlock(Module):
         hidden_dim: int,
         num_heads: int,
         dropout_rate: float,
-        rkg: RandomKeyGenerator = RKG,
     ):
         super().__init__()
-        key1, key2, key3 = jax.random.split(rkg(), 3)
 
         self.layer_norm1 = LayerNorm(input_shape)
         self.layer_norm2 = LayerNorm(input_shape)
-        self.attention = MultiHeadAttention(num_heads, input_shape, key=key1)
+        self.attention = MultiHeadAttention(num_heads, input_shape)
 
-        self.linear1 = Linear(input_shape, hidden_dim, key=key2)
-        self.linear2 = Linear(hidden_dim, input_shape, key=key3)
+        self.linear1 = Linear(input_shape, hidden_dim)
+        self.linear2 = Linear(hidden_dim, input_shape)
         self.dropout1 = Dropout(dropout_rate)
         self.dropout2 = Dropout(dropout_rate)
         
-    def __call__(self, x, enable_dropout: bool=False, key=None):
-
-        key1, key2 = jax.random.split(key, num=2)
+    def __call__(self, x, enable_dropout: bool=False):
         
+        # Apply layer normalization
         input_x = jax.vmap(self.layer_norm1)(x)
+
+        # Apply self-attention and add residual connection
         x = x + self.attention(input_x, input_x, input_x)
 
+        # Apply layer normalization and feedforward network
         input_x = jax.vmap(self.layer_norm2)(x)
         input_x = jax.vmap(self.linear1)(input_x)
         input_x = jax.nn.gelu(input_x)
 
-        input_x = self.dropout1(input_x, inference=not enable_dropout, key=key1)
+        input_x = self.dropout1(input_x, inference=not enable_dropout)
         input_x = jax.vmap(self.linear2)(input_x)
-        input_x = self.dropout2(input_x, inference=not enable_dropout, key=key2)
+        input_x = self.dropout2(input_x, inference=not enable_dropout)
 
         x = x + input_x
 
