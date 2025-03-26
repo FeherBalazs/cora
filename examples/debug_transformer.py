@@ -610,11 +610,6 @@ def main():
     # Inspect model parameters
     inspect_model_parameters(model)
     
-    # Test unpatchify method with a known pattern
-    print("\nTesting patchify/unpatchify methods...")
-    recon_mse = debug_plot_unpatchify_test(model)
-    print(f"Patchify/Unpatchify test completed. MSE: {recon_mse}")
-    
     # Calculate steps per epoch for learning rate schedule
     steps_per_epoch = len(train_loader)
     
