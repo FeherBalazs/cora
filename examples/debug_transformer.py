@@ -35,9 +35,9 @@ from src.decoder_transformer import (
 # Set up basic parameters - pushing the model capacity higher
 BATCH_SIZE = 1  # Even larger batch size
 LATENT_DIM = 128  # Larger latent dimension
-NUM_EPOCHS = 20   # More epochs for convergence
+NUM_EPOCHS = 10   # More epochs for convergence
 NUM_BLOCKS = 1    # More transformer blocks for capacity
-INFERENCE_STEPS = 8  # More inference steps
+INFERENCE_STEPS = 32  # More inference steps
 
 # Learning rates with schedule parameters
 PEAK_LR_WEIGHTS = 1e-3  # Higher peak learning rate
@@ -145,13 +145,13 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
     train_dataset = torchvision.datasets.CIFAR10(
         root=dataset_root,
         transform=train_transform,
-        download=False,
+        download=True,
         train=True,
     )
     test_dataset = torchvision.datasets.CIFAR10(
         root=dataset_root,
         transform=test_transform,
-        download=False,
+        download=True,
         train=False,
     )
     
@@ -570,7 +570,9 @@ def debug_one_batch(model, optim_h, optim_w, batch, inference_steps, epoch):
 
 def main():
     """Main function to run the debugging process."""
-    # Parse command line arguments
+    print(jax.devices())
+    print(jax.device_count())
+# Parse command line arguments
     args = parse_args()
     
     # Set random seed for reproducibility
@@ -650,6 +652,7 @@ def main():
     
     # Train and debug the model
     print(f"Training for {args.epochs} epochs with debugging...")
+
     for epoch in range(args.epochs):
         epoch_start = time.time()
         print(f"Epoch {epoch+1}/{args.epochs}")
@@ -694,14 +697,14 @@ def main():
         
         epoch_time = time.time() - epoch_start
         print(f"Epoch completed in {epoch_time:.2f} seconds")
-    
+
     print("Final model evaluation...")
     # Create a final visualization with different inference steps
     visualize_reconstruction(
         model, 
         optim_h, 
         val_loader, 
-        T_values=[1, 2, 4, 8], 
+        T_values=[1, 2, 4, 8, 16, 32, 64], 
         use_corruption=False,
         num_images=1
     )
