@@ -92,14 +92,27 @@ def parse_args():
     return parser.parse_args()
 
 def create_learning_rate_schedule(base_lr, warmup_epochs, total_epochs, steps_per_epoch):
-    """Create a learning rate schedule with warmup and cosine decay."""
+    """Create a learning rate schedule with warmup and cosine decay to half of the peak rate."""
+    # Set minimum learning rate to half of the peak
+    min_lr = base_lr * 0.5
+    
     def lr_schedule(step):
         epoch = step / steps_per_epoch
+        
+        # Linear warmup phase
         warmup_lr = base_lr * (epoch / warmup_epochs)
+        
+        # Cosine decay phase with minimum value = min_lr
         decay_ratio = (epoch - warmup_epochs) / (total_epochs - warmup_epochs)
+        decay_ratio = jnp.clip(decay_ratio, 0.0, 1.0)  # Ensure it's between 0 and 1
+        
+        # Modified cosine decay to range from base_lr to min_lr (not zero)
         cosine_factor = 0.5 * (1.0 + jnp.cos(jnp.pi * decay_ratio))
-        decay_lr = base_lr * cosine_factor
+        decay_lr = min_lr + (base_lr - min_lr) * cosine_factor
+        
+        # Return warmup_lr during warmup, decay_lr afterward
         return jnp.where(epoch < warmup_epochs, warmup_lr, decay_lr)
+    
     return lr_schedule
 
 def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=None, test_subset_n=None, target_class=None):
@@ -821,22 +834,22 @@ def main():
     
     print(f"Training for {args.epochs} epochs with W&B logging...")
     
-    # Generate initial reconstruction (epoch 0)
-    print("Generating initial reconstructions...")
-    _, _, initial_recon_path, initial_recon_logs = visualize_reconstruction(
-        model, 
-        optim_h, 
-        val_loader, 
-        T_values=[1, 2, 4, 8], 
-        use_corruption=False,
-        num_images=args.num_images,
-        wandb_run=run,
-        epoch=0
-    )
+    # # Generate initial reconstruction (epoch 0)
+    # print("Generating initial reconstructions...")
+    # _, _, initial_recon_path, initial_recon_logs = visualize_reconstruction(
+    #     model, 
+    #     optim_h, 
+    #     val_loader, 
+    #     T_values=[1, 2, 4, 8], 
+    #     use_corruption=False,
+    #     num_images=args.num_images,
+    #     wandb_run=run,
+    #     epoch=0
+    # )
     
-    # Log initial reconstruction with step=0
-    run.log(initial_recon_logs, step=0)
-    print(f"Uploaded reconstruction image for epoch 0 to W&B")
+    # # Log initial reconstruction with step=0
+    # run.log(initial_recon_logs, step=0)
+    # print(f"Uploaded reconstruction image for epoch 0 to W&B")
     
     for epoch in range(args.epochs):
         epoch_start = time.time()
@@ -877,7 +890,7 @@ def main():
                 model, 
                 optim_h, 
                 val_loader, 
-                T_values=[1, 2, 4, 8], 
+                T_values=[1, 2, 4, 8, 16, 32], 
                 use_corruption=False,
                 num_images=args.num_images,
                 wandb_run=run,
@@ -899,23 +912,23 @@ def main():
         epoch_time = time.time() - epoch_start
         print(f"Epoch completed in {epoch_time:.2f} seconds")
     
-    # Final model evaluation is now redundant since we're creating reconstructions during training
-    # But we'll keep it for backward compatibility and add it to the summary
-    print("Final model evaluation for summary...")
-    _, _, final_recon_path, _ = visualize_reconstruction(
-        model, 
-        optim_h, 
-        val_loader, 
-        T_values=[1, 2, 4, 8], 
-        use_corruption=False,
-        num_images=args.num_images,
-        wandb_run=run,
-        epoch="final"
-    )
+    # # Final model evaluation is now redundant since we're creating reconstructions during training
+    # # But we'll keep it for backward compatibility and add it to the summary
+    # print("Final model evaluation for summary...")
+    # _, _, final_recon_path, _ = visualize_reconstruction(
+    #     model, 
+    #     optim_h, 
+    #     val_loader, 
+    #     T_values=[1, 2, 4, 8], 
+    #     use_corruption=False,
+    #     num_images=args.num_images,
+    #     wandb_run=run,
+    #     epoch="final"
+    # )
     
-    # Save final reconstruction path to run summary
-    if final_recon_path:
-        wandb.summary["final_reconstruction"] = wandb.Image(final_recon_path)
+    # # Save final reconstruction path to run summary
+    # if final_recon_path:
+    #     wandb.summary["final_reconstruction"] = wandb.Image(final_recon_path)
     
     # Close W&B after all logging is complete
     wandb.finish()
