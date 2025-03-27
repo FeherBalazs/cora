@@ -351,7 +351,7 @@ class TransformerConfig:
     theta: int = 10_000
     
     # Training settings
-    use_noise: bool = True
+    use_noise: bool = False
     param_dtype: DTypeLike = jnp.float32
     
     def __post_init__(self):
@@ -400,7 +400,7 @@ class TransformerDecoder(pxc.EnergyModule):
             tforms={
                 "to_init": lambda n, k, v, rkg: jax.random.normal(
                     px.RKG(), (config.num_patches, config.patch_dim)
-                ) * 0.01 if config.use_noise else jnp.zeros((config.num_patches, config.patch_dim))
+                ) * 0.01 if config.use_noise else jnp.ones((config.num_patches, config.patch_dim))
             }
         )]
         
