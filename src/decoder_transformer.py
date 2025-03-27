@@ -562,9 +562,6 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
     with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
         # Capture the forward outputs for debugging
         z = forward(x, model=model)
-    
-    # Do not log activity stats in JIT-compiled function
-    # We'll log stats in the debug_one_batch function outside of JIT
 
     optim_h.init(pxu.M_hasnot(pxc.VodeParam, frozen=True)(model))
 
@@ -577,14 +574,10 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
         with pxu.step(model, clear_params=pxc.VodeParam.Cache):
             (w_energy, y_), w_grad = learning_step(model=model)
         optim_w.step(model, w_grad["model"], scale_by=1.0/x.shape[0])
-        
-        # Energy and gradient logging will happen in a non-JIT context after this function returns
 
     # After training, forward once more to get final activations
     with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
         z = forward(None, model=model)
-    
-    # No debugging visualization here - will do that in a non-JIT context
 
     optim_h.clear()
 
