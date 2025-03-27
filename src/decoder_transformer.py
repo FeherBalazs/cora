@@ -442,11 +442,12 @@ class TransformerDecoder(pxc.EnergyModule):
         # Process through transformer blocks
         for i, block in enumerate(self.transformer_blocks):
             x = block(x) # Apply transformer block
+            x = jnp.tanh(x)
             x = self.vodes[i+1](x) # Apply Vode
     
         # Apply tanh activation to constrain output values to [-1, 1] range
         # This matches the input normalization range and helps stabilize training
-        x = jnp.tanh(x)
+        # x = jnp.tanh(x)
         
         # Unpatchify back to image
         x = self.unpatchify(x, patch_size=self.config.patch_size, image_size=self.config.image_shape[1], channel_size=self.config.image_shape[0])
