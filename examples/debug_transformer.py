@@ -35,9 +35,9 @@ from src.decoder_transformer import (
 # Set up basic parameters - pushing the model capacity higher
 BATCH_SIZE = 1  # Even larger batch size
 LATENT_DIM = 128  # Larger latent dimension
-NUM_EPOCHS = 1   # More epochs for convergence
+NUM_EPOCHS = 20   # More epochs for convergence
 NUM_BLOCKS = 1    # More transformer blocks for capacity
-INFERENCE_STEPS = 1  # More inference steps
+INFERENCE_STEPS = 8  # More inference steps
 
 # Learning rates with schedule parameters
 PEAK_LR_WEIGHTS = 1e-3  # Higher peak learning rate
@@ -46,8 +46,8 @@ WEIGHT_DECAY = 2e-4     # Slightly stronger weight decay
 WARMUP_EPOCHS = 5       # Warmup period
 
 # Dataset parameters - using more data
-TRAIN_SUBSET = 100  # Use the full training set (50,000 images)
-TEST_SUBSET = 100   # Larger test set
+TRAIN_SUBSET = 1  # Use the full training set (50,000 images)
+TEST_SUBSET = 1   # Larger test set
 TARGET_CLASS = None  # Use all classes
 
 
@@ -60,7 +60,7 @@ def create_config(dataset="cifar10", latent_dim=LATENT_DIM, num_blocks=NUM_BLOCK
             num_frames=16,
             is_video=False,
             hidden_size=48,  # Larger hidden size
-            num_heads=12,     # More attention heads
+            num_heads=6,     # More attention heads
             num_blocks=num_blocks,
             mlp_ratio=4.0,
             patch_size=4,
@@ -663,34 +663,34 @@ def main():
         train(train_loader, args.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch)
         
         # Evaluate on validation set
-        val_loss = eval(val_loader, args.inference_steps, model=model, optim_h=optim_h)
+        val_loss = eval(train_loader, args.inference_steps, model=model, optim_h=optim_h)
         val_losses.append(val_loss)
         print(f"Validation loss: {val_loss:.6f}")
         
-        # Print loss change if not first epoch
-        if epoch > 0:
-            loss_diff = val_losses[-1] - val_losses[-2]
-            percent_change = (loss_diff / val_losses[-2]) * 100
-            print(f"Loss change: {loss_diff:.6f} ({percent_change:.2f}%)")
+        # # Print loss change if not first epoch
+        # if epoch > 0:
+        #     loss_diff = val_losses[-1] - val_losses[-2]
+        #     percent_change = (loss_diff / val_losses[-2]) * 100
+        #     print(f"Loss change: {loss_diff:.6f} ({percent_change:.2f}%)")
         
-        # Run detailed debugging at specified intervals
-        if epoch % args.debug_interval == 0:
-            print("Running detailed debugging on a batch...")
-            # Get a single batch for debugging
-            batch = next(iter(train_loader.dataloader))
-            batch_loss = debug_one_batch(model, optim_h, optim_w, batch, args.inference_steps, epoch)
-            print(f"Debug batch loss: {batch_loss:.6f}")
+        # # Run detailed debugging at specified intervals
+        # if epoch % args.debug_interval == 0:
+        #     print("Running detailed debugging on a batch...")
+        #     # Get a single batch for debugging
+        #     batch = next(iter(train_loader.dataloader))
+        #     batch_loss = debug_one_batch(model, optim_h, optim_w, batch, args.inference_steps, epoch)
+        #     print(f"Debug batch loss: {batch_loss:.6f}")
             
-            # Visualize reconstructions
-            print("Generating reconstruction visualizations...")
-            visualize_reconstruction(
-                model, 
-                optim_h, 
-                val_loader, 
-                T_values=[1, args.inference_steps], 
-                use_corruption=False,
-                num_images=4
-            )
+        #     # Visualize reconstructions
+        #     print("Generating reconstruction visualizations...")
+        #     visualize_reconstruction(
+        #         model, 
+        #         optim_h, 
+        #         val_loader, 
+        #         T_values=[1, args.inference_steps], 
+        #         use_corruption=False,
+        #         num_images=4
+        #     )
         
         epoch_time = time.time() - epoch_start
         print(f"Epoch completed in {epoch_time:.2f} seconds")
@@ -703,19 +703,19 @@ def main():
         val_loader, 
         T_values=[1, 2, 4, 8], 
         use_corruption=False,
-        num_images=4
+        num_images=1
     )
     
-    # Test inpainting with corruption
-    visualize_reconstruction(
-        model, 
-        optim_h, 
-        val_loader, 
-        T_values=[1, 2, 4, 8], 
-        use_corruption=True,
-        corrupt_ratio=0.5,
-        num_images=4
-    )
+    # # Test inpainting with corruption
+    # visualize_reconstruction(
+    #     model, 
+    #     optim_h, 
+    #     val_loader, 
+    #     T_values=[1, 2, 4, 8], 
+    #     use_corruption=True,
+    #     corrupt_ratio=0.5,
+    #     num_images=4
+    # )
     
     # Plot validation loss curve
     plt.figure(figsize=(10, 6))
