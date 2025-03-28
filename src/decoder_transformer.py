@@ -21,6 +21,7 @@ import pcx.predictive_coding as pxc
 import pcx.nn as pxnn
 import pcx.utils as pxu
 import pcx.functional as pxf
+from src.utils import create_positional_encoding
 from flax import nnx
 from jax.typing import DTypeLike
 from einops import rearrange
@@ -427,17 +428,31 @@ class TransformerDecoder(pxc.EnergyModule):
         self.vodes.append(pxc.Vode(energy_fn=pxc.se_energy))
         self.vodes[-1].h.frozen = True  # Freeze the output Vode's hidden state
 
-        # TODO: This is fixed random embedding, change it later to something better
-        self.positional_embedding = jax.random.normal(key, (config.num_patches, config.patch_dim))
-    
+        # Add projection layer to map from patch_dim to hidden_size
+        self.patch_projection = pxnn.Linear(in_features=48, out_features=config.hidden_size)
+        
+        # Add output projection layer to map from hidden_size back to patch_dim
+        self.output_projection = pxnn.Linear(in_features=config.hidden_size, out_features=config.patch_dim)
+        
+        # Generate positional embedding from utils
+        self.positional_embedding = create_positional_encoding(
+            image_shape=config.image_shape,
+            hidden_size=config.hidden_size,
+            patch_size=config.patch_size,
+            is_video=config.is_video,
+            num_frames=config.num_frames if config.is_video else None,
+            theta=config.theta
+        )
     
     def __call__(self, y: jax.Array | None = None):        
         # Get the initial sequence of patch embeddings from Vode 0
         x = self.vodes[0](jnp.empty(()))
 
-        #TODO: Add linear projection of x to hidden_size and modify positional embedding to match
+        # Project patches to hidden dimension
+        x = jax.vmap(self.patch_projection)(x)
+        
         # Add positional embeddings
-        x += self.positional_embedding
+        x = x + self.positional_embedding
 
         # Process through transformer blocks
         for i, block in enumerate(self.transformer_blocks):
@@ -445,9 +460,11 @@ class TransformerDecoder(pxc.EnergyModule):
             x = jnp.tanh(x)
             x = self.vodes[i+1](x) # Apply Vode
     
+        # Project back to patch_dim
+        x = jax.vmap(self.output_projection)(x)
+        
         # Apply tanh activation to constrain output values to [-1, 1] range
-        # This matches the input normalization range and helps stabilize training
-        # x = jnp.tanh(x)
+        x = jnp.tanh(x)
         
         # Unpatchify back to image
         x = self.unpatchify(x, patch_size=self.config.patch_size, image_size=self.config.image_shape[1], channel_size=self.config.image_shape[0])
