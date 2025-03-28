@@ -342,7 +342,7 @@ class TransformerConfig:
     num_blocks: int = 3
     mlp_ratio: float = 4.0
     dropout_rate: float = 0.1
-    mlp_hidden_dim: int = int(hidden_size * mlp_ratio)
+    mlp_hidden_dim: int = 256
     
     # Patch settings
     patch_size: int = 4
@@ -379,6 +379,8 @@ class TransformerConfig:
         if not self.is_video and len(self.axes_dim) == 3:
             # If not using video but axes_dim has 3 elements, use only the last 2
             self.axes_dim = self.axes_dim[1:]
+        
+        self.mlp_hidden_dim = int(self.hidden_size * self.mlp_ratio)
 
 
 class TransformerDecoder(pxc.EnergyModule):
@@ -408,7 +410,6 @@ class TransformerDecoder(pxc.EnergyModule):
         # Create Vodes for each transformer block output
         for _ in range(config.num_blocks):
             self.vodes.append(pxc.Vode(
-                energy_fn=pxc.se_energy,
                 ruleset={STATUS_FORWARD: ("h -> u",)}
             ))
 
@@ -425,7 +426,7 @@ class TransformerDecoder(pxc.EnergyModule):
             )
         
         # Output Vode (sensory layer) - shape depends on whether we're handling video or images
-        self.vodes.append(pxc.Vode(energy_fn=pxc.se_energy))
+        self.vodes.append(pxc.Vode())
         self.vodes[-1].h.frozen = True  # Freeze the output Vode's hidden state
 
         # Add projection layer to map from patch_dim to hidden_size
@@ -519,14 +520,12 @@ class TransformerDecoder(pxc.EnergyModule):
 
 @pxf.vmap(pxu.M(pxc.VodeParam | pxc.VodeParam.Cache).to((None, 0)), in_axes=0, out_axes=0)
 def forward(x, *, model: TransformerDecoder):
-    """Forward pass of the model."""
-    return model(y=x)
+    return model(x)
 
 
 @pxf.vmap(pxu.M(pxc.VodeParam | pxc.VodeParam.Cache).to((None, 0)), out_axes=(None, 0), axis_name="batch")
 def energy(*, model: TransformerDecoder):
-    """Energy computation for the model."""
-    y_ = model(y=None)
+    y_ = model(None)
     return jax.lax.psum(model.energy(), "batch"), y_
 
 
@@ -566,7 +565,7 @@ def masked_se_energy(vode, rkg, mask):
     return jnp.sum(masked_error) / jnp.sum(mask)  # Normalize by number of known pixels
 
 
-@pxf.jit(static_argnums=0)
+# @pxf.jit(static_argnums=0)
 def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.Optim, epoch=None, step=None):
     model.train()
 
@@ -578,8 +577,7 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
 
     # Top down sweep and setting target value
     with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
-        # Capture the forward outputs for debugging
-        z = forward(x, model=model)
+        forward(x, model=model)
 
     optim_h.init(pxu.M_hasnot(pxc.VodeParam, frozen=True)(model))
 
@@ -587,15 +585,18 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
     for t in range(T):
         with pxu.step(model, clear_params=pxc.VodeParam.Cache):
             (h_energy, y_), h_grad = inference_step(model=model)
+            print("h_energy:", h_energy, "at step t:", t)
         optim_h.step(model, h_grad["model"])
 
         with pxu.step(model, clear_params=pxc.VodeParam.Cache):
             (w_energy, y_), w_grad = learning_step(model=model)
+            print("w_energy:", w_energy, "at step t:", t)
         optim_w.step(model, w_grad["model"], scale_by=1.0/x.shape[0])
 
     # After training, forward once more to get final activations
-    with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
-        z = forward(None, model=model)
+    # with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
+    with pxu.step(model):
+        forward(None, model=model)
 
     optim_h.clear()
 
@@ -609,10 +610,12 @@ def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.
         step += 1
     
     # Save all logs after each epoch
-    model_debugger.save_all_logs()
+    # model_debugger.save_all_logs()
+
+    return h_energy, w_energy, h_grad, w_grad
 
 
-@pxf.jit(static_argnums=0)
+# @pxf.jit(static_argnums=0)
 def eval_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim):
     # model.eval()
 
@@ -883,7 +886,6 @@ def create_config_by_dataset(dataset_name: str, latent_dim: int = 512, num_block
 
 if __name__ == "__main__":
     # Just an example of how to use the configuration system
-    # This configuration setup is now compatible with multiple datasets
     config = create_config_by_dataset(
         dataset_name="cifar10",
         latent_dim=512,
