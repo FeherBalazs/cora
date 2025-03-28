@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, Tuple
 import contextlib
 import re
+import matplotlib.pyplot as plt
+from datetime import datetime
 
 # Add the src directory to the path
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
@@ -88,7 +90,7 @@ MODEL_CONFIGS = {
         num_blocks=6,
         train_subset=5,
         test_subset=5,
-        inference_steps=8,
+        inference_steps=6,
         use_lr_schedule=False
     ),
     "debug_small": ModelConfig(
@@ -278,133 +280,7 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
     
     return TorchDataloader(train_dataloader), TorchDataloader(test_dataloader)
 
-def analyze_pcx_gradients(h_grad, w_grad):
-    """Analyze PCX gradients with proper PCX-specific extraction."""
-    
-    # Get all leaf nodes with gradients from PCX gradient structure
-    def extract_pcx_gradients(grad_dict, prefix=""):
-        """Extract all gradient arrays from PCX gradient structure."""
-        if grad_dict is None:
-            return {}
-            
-        # Top level in PCX grad structure is usually {"model": {...}}
-        if isinstance(grad_dict, dict) and "model" in grad_dict:
-            return extract_pcx_gradients(grad_dict["model"], prefix)
-            
-        gradients = {}
-        
-        if not isinstance(grad_dict, dict):
-            # For JAX arrays, extract directly
-            if hasattr(grad_dict, 'shape'):
-                return {prefix: grad_dict}
-            return {}
-            
-        # Process nested dictionaries
-        for key, value in grad_dict.items():
-            component_name = f"{prefix}.{key}" if prefix else key
-            
-            if isinstance(value, dict):
-                # Recursively process nested dictionaries
-                sub_gradients = extract_pcx_gradients(value, component_name)
-                gradients.update(sub_gradients)
-            elif hasattr(value, 'shape'):
-                # Direct gradient array
-                gradients[component_name] = value
-                
-        return gradients
-    
-    # Extract gradients from PCX structure
-    h_grads = extract_pcx_gradients(h_grad, "hidden")
-    w_grads = extract_pcx_gradients(w_grad, "weight")
-    
-    print(f"Found {len(h_grads)} hidden gradient arrays and {len(w_grads)} weight gradient arrays")
-    
-    # Calculate statistics for each gradient array
-    def calculate_grad_stats(grad_dict):
-        stats = {}
-        for name, grad_array in grad_dict.items():
-            flat_grad = jnp.ravel(grad_array)
-            if flat_grad.size == 0:
-                continue
-                
-            stats[name] = {
-                'norm': float(jnp.linalg.norm(flat_grad)),
-                'mean': float(jnp.mean(flat_grad)),
-                'std': float(jnp.std(flat_grad)),
-                'max': float(jnp.max(flat_grad)),
-                'min': float(jnp.min(flat_grad)),
-                'shape': grad_array.shape,
-                'size': flat_grad.size
-            }
-        return stats
-    
-    h_stats = calculate_grad_stats(h_grads)
-    w_stats = calculate_grad_stats(w_grads)
-    
-    # Calculate total norm across all arrays
-    def calculate_total_norm(stats_dict):
-        squared_sum = sum(stats['norm']**2 for stats in stats_dict.values())
-        return jnp.sqrt(squared_sum) if squared_sum > 0 else 0.0
-        
-    h_total_norm = calculate_total_norm(h_stats)
-    w_total_norm = calculate_total_norm(w_stats)
-    
-    print(f"Hidden gradient norm: {h_total_norm}")
-    print(f"Weight gradient norm: {w_total_norm}")
-    
-    # Find maximum component norm
-    h_max_component = max([s['norm'] for s in h_stats.values()], default=0.0)
-    w_max_component = max([s['norm'] for s in w_stats.values()], default=0.0)
-    
-    # Find top components by norm
-    h_top_components = sorted(
-        [(k, s['norm']) for k, s in h_stats.items()],
-        key=lambda x: x[1], reverse=True
-    )[:5]
-    
-    w_top_components = sorted(
-        [(k, s['norm']) for k, s in w_stats.items()],
-        key=lambda x: x[1], reverse=True
-    )[:5]
-    
-    print("Top hidden gradient components:")
-    for name, norm in h_top_components:
-        print(f"  {name}: {norm}")
-        
-    print("Top weight gradient components:")
-    for name, norm in w_top_components:
-        print(f"  {name}: {norm}")
-    
-    # Calculate ratio if possible
-    h_to_w_ratio = h_total_norm / w_total_norm if w_total_norm > 0 else 0.0
-    
-    return {
-        'components': {
-            'hidden': h_stats,
-            'weight': w_stats
-        },
-        'summary': {
-            'hidden': {
-                'total_norm': h_total_norm,
-                'max_component_norm': h_max_component,
-                'component_count': len(h_stats)
-            },
-            'weight': {
-                'total_norm': w_total_norm,
-                'max_component_norm': w_max_component,
-                'component_count': len(w_stats)
-            },
-            'h_to_w_ratio': h_to_w_ratio
-        },
-        'top_components': {
-            'hidden': h_top_components,
-            'weight': w_top_components
-        }
-    }
-
 def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corruption=False, corrupt_ratio=0.5, target_class=None, num_images=2, wandb_run=None, epoch=None, step=None):
-    import matplotlib.pyplot as plt
-    from datetime import datetime
     
     # Import or define STATUS_FORWARD constant
     STATUS_FORWARD = "forward"
@@ -506,7 +382,7 @@ def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corr
 
 def log_vode_stats(model, h_grad, w_grad, run, epoch):
     """
-    Log detailed statistics about each Vode's energy and gradients to wandb.
+    Log statistics about each Vode's energy and gradients to wandb.
     
     Args:
         model: The TransformerDecoder model
@@ -514,94 +390,291 @@ def log_vode_stats(model, h_grad, w_grad, run, epoch):
         w_grad: Weight gradients
         run: Wandb run object
         epoch: Current epoch
+        
+    Returns:
+        A tuple of (processed_energy_data, processed_grad_data) for summary tables
     """
-    # Dictionary to collect all stats for wandb
+    # Collect stats for wandb
     vode_stats = {}
     
-    # Extract individual energy contributions from each Vode
+    # Get energy and gradient data
     vode_energies = model.get_submodule_energies()
-    print("vode_energies: ", vode_energies)
-
-    # for i, vode in enumerate(model.vodes):
-    #     try:
-    #         print("vode.cache['E']: ", vode.cache)
-    #         vode_energies.append(vode.cache)
-
-    #     except Exception as e:
-    #         print(f"Error calculating energy for vode {i}: {e}")
-    #         vode_energies.append(None)
-
-    # print("h_grad: ", h_grad)
-    
-    # Extract gradients per Vode
     vode_grad_norms = extract_vode_gradient_norms(h_grad)
     
-    # Create wandb logging dictionaries
+    # Process data for individual metrics and summary tables
+    processed_energy_data = []
+    processed_grad_data = []
+    energy_data = []
+    grad_data = []
+    
+    # Process each vode's data
     for i, (energy, grad_norm) in enumerate(zip(vode_energies, vode_grad_norms)):
+        # Process energy values
         if energy is not None:
-            vode_stats[f"VodeEnergy/vode_{i}"] = energy
+            # Convert to scalar if needed
+            if hasattr(energy, 'item'):
+                energy_value = energy.item()
+            elif hasattr(energy, 'shape'):
+                energy_value = float(energy)
+            else:
+                energy_value = energy
+                
+            # Log individual metrics
+            vode_stats[f"VodeEnergy/vode_{i}"] = energy_value
+            
+            # Store for tables
+            energy_data.append([i, energy_value])
+            processed_energy_data.append([epoch+1, i, energy_value])
         
+        # Process gradient values
         if grad_norm is not None:
             vode_stats[f"VodeGradNorm/vode_{i}"] = grad_norm
+            grad_data.append([i, grad_norm])
+            processed_grad_data.append([epoch+1, i, grad_norm])
     
-    # Create a bar chart for energy distribution
-    energy_data = [[i, e] for i, e in enumerate(vode_energies) if e is not None]
+    # Create visualizations
     if energy_data:
         energy_table = wandb.Table(data=energy_data, columns=["vode_index", "energy"])
-        vode_stats["VodeEnergy/distribution"] = wandb.plot.bar(
-            energy_table, "vode_index", "energy", title="Energy by Vode"
+        vode_stats[f"VodeEnergy/distribution_epoch_{epoch+1}"] = wandb.plot.bar(
+            energy_table, "vode_index", "energy", 
+            title=f"Energy by Vode - Epoch {epoch+1}"
         )
     
-    # Create a bar chart for gradient norm distribution
-    grad_data = [[i, n] for i, n in enumerate(vode_grad_norms) if n is not None]
     if grad_data:
         grad_table = wandb.Table(data=grad_data, columns=["vode_index", "grad_norm"])
-        vode_stats["VodeGradNorm/distribution"] = wandb.plot.bar(
-            grad_table, "vode_index", "grad_norm", title="Gradient Norm by Vode"
+        vode_stats[f"VodeGradNorm/distribution_epoch_{epoch+1}"] = wandb.plot.bar(
+            grad_table, "vode_index", "grad_norm", 
+            title=f"Gradient Norm by Vode - Epoch {epoch+1}"
         )
     
-    # Log everything to wandb
+    # Log to wandb
     run.log(vode_stats, step=epoch+1)
     
-    return vode_stats
+    return processed_energy_data, processed_grad_data
 
 def extract_vode_gradient_norms(h_grad):
-    """Simplified direct extraction based on the known structure"""
+    """Extract actual gradient L2 norms from the vode gradients"""
     vode_grad_norms = []
     
-    try:
-        if isinstance(h_grad, dict) and "model" in h_grad:
-            model = h_grad["model"]
-            
-            # Get the vodes attribute
-            for i in range(len(model.vodes)):
-                try:
-                    # Try to access vodes[i].h directly
-                    vode_param_name = f"vodes[{i}].h"
-                    if hasattr(model, vode_param_name):
-                        vode_param = getattr(model, vode_param_name)
-                        if hasattr(vode_param, 'value'):
-                            grad_array = vode_param.value
-                        else:
-                            grad_array = vode_param
-                            
-                        if hasattr(grad_array, 'flatten'):
-                            flat_grad = grad_array.flatten()
-                            norm = float(jnp.linalg.norm(flat_grad))
-                            vode_grad_norms.append(norm)
-                        else:
-                            vode_grad_norms.append(None)
-                    else:
-                        # If we don't find this vode, we've reached the end
-                        break
-                except Exception as e:
-                    print(f"Error accessing vode {i}: {e}")
-                    vode_grad_norms.append(None)
-    except Exception as e:
-        print(f"Error in direct extraction: {e}")
+    # Add debug information about the structure
+    print(f"h_grad type: {type(h_grad)}")
+    if isinstance(h_grad, dict) and 'model' in h_grad:
+        print(f"model_grads type: {type(h_grad['model'])}")
+        if hasattr(h_grad['model'], 'vodes'):
+            print(f"vodes type: {type(h_grad['model'].vodes)}")
+            print(f"Number of vodes: {len(h_grad['model'].vodes)}")
+            if len(h_grad['model'].vodes) > 0:
+                first_vode = h_grad['model'].vodes[0]
+                print(f"First vode type: {type(first_vode)}")
+                if hasattr(first_vode, 'h'):
+                    print(f"First vode.h type: {type(first_vode.h)}")
+                    if hasattr(first_vode.h, 'value'):
+                        print(f"First vode.h.value type: {type(first_vode.h.value)}")
+                        print(f"First vode.h.value shape: {first_vode.h.value.shape}")
     
+    try:
+        # Access the model gradients
+        model_grads = h_grad['model']
+        
+        # Access the vodes list
+        vodes = model_grads.vodes
+        
+        # For each vode, extract the gradient tensor and calculate its L2 norm
+        for i in range(len(vodes)):
+            vode = vodes[i]
+            h_grad_tensor = vode.h
+            print("h_grad_tensor", h_grad_tensor)
+            
+            # VodeParams might store their values in different ways
+            # Try different common patterns to access the values
+            if hasattr(h_grad_tensor, 'value'):
+                # Access the value attribute if it exists
+                grad_values = h_grad_tensor.value
+            elif hasattr(h_grad_tensor, 'get_value'):
+                # Or try get_value() method if it exists
+                grad_values = h_grad_tensor.get_value()
+            else:
+                # Otherwise assume the object itself is the tensor
+                grad_values = h_grad_tensor
+                
+            # Calculate L2 norm (Euclidean norm)
+            # First flatten the tensor to a 1D array
+            if hasattr(grad_values, 'flatten'):
+                flattened = grad_values.flatten()
+                # Calculate L2 norm as sqrt(sum(x_i^2))
+                l2_norm = float(jnp.sqrt(jnp.sum(flattened * flattened)))
+                vode_grad_norms.append(l2_norm)
+                print(f"Vode {i} L2 norm: {l2_norm}")
+            else:
+                # If we can't flatten, just log that we couldn't calculate the norm
+                print(f"Couldn't calculate norm for vode {i}: grad_values not flattenable")
+    
+    except Exception as e:
+        print(f"Error extracting gradient norms: {e}")
+        import traceback
+        traceback.print_exc()
+        
+    # Return the actual calculated norms
     return vode_grad_norms
 
+def create_grouped_bar_chart(table_data, group_col, x_col, y_col, title):
+    """
+    Create a grouped bar chart for Weights & Biases using custom HTML.
+    
+    Args:
+        table_data: List of rows with data
+        group_col: Column name for grouping (e.g., "epoch")
+        x_col: Column name for x-axis (e.g., "vode_index")
+        y_col: Column name for y-values (e.g., "energy")
+        title: Chart title
+    
+    Returns:
+        wandb.Html object with the chart
+    """
+    # Organize data by group
+    groups = {}
+    x_values = set()
+    
+    for row in table_data:
+        group = row[0]  # epoch
+        x = row[1]      # vode_index
+        y = row[2]      # energy/grad_norm
+        
+        if group not in groups:
+            groups[group] = {}
+        
+        groups[group][x] = y
+        x_values.add(x)
+    
+    # Sort the x values
+    x_values = sorted(list(x_values))
+    group_keys = sorted(groups.keys())
+    
+    # Create vega-lite specification
+    vega_spec = {
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "title": title,
+        "width": 500,
+        "height": 300,
+        "data": {"values": []},
+        "mark": "bar",
+        "encoding": {
+            "x": {"field": x_col, "type": "ordinal", "title": x_col},
+            "y": {"field": y_col, "type": "quantitative", "title": y_col},
+            "color": {"field": group_col, "type": "nominal", "title": group_col},
+            "tooltip": [
+                {"field": x_col, "type": "ordinal"},
+                {"field": y_col, "type": "quantitative"},
+                {"field": group_col, "type": "nominal"}
+            ]
+        }
+    }
+    
+    # Add data points
+    for group in group_keys:
+        for x in x_values:
+            if x in groups[group]:
+                vega_spec["data"]["values"].append({
+                    x_col: f"Vode {x}",
+                    y_col: groups[group][x],
+                    group_col: f"Epoch {group}"
+                })
+    
+    # Create HTML with vega-lite
+    html = f"""
+    <html>
+    <head>
+        <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
+        <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
+        <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
+    </head>
+    <body>
+        <div id="vis"></div>
+        <script type="text/javascript">
+            const spec = {json.dumps(vega_spec)};
+            vegaEmbed('#vis', spec);
+        </script>
+    </body>
+    </html>
+    """
+    
+    return wandb.Html(html)
+
+def create_multi_line_chart(table_data, x_col, y_col, series_col, title):
+    """
+    Create a multi-line chart for Weights & Biases using custom HTML.
+    
+    Args:
+        table_data: List of rows with data
+        x_col: Column name for x-axis (e.g., "epoch")
+        y_col: Column name for y-values (e.g., "energy")
+        series_col: Column name for different lines (e.g., "vode_index")
+        title: Chart title
+    
+    Returns:
+        wandb.Html object with the chart
+    """
+    # Organize data by series
+    series_map = {}
+    
+    for row in table_data:
+        x = row[0]      # epoch
+        series = row[1]  # vode_index
+        y = row[2]      # energy/grad_norm
+        
+        if series not in series_map:
+            series_map[series] = []
+        
+        series_map[series].append({"x": x, "y": y})
+    
+    # Create vega-lite specification
+    vega_spec = {
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "title": title,
+        "width": 500,
+        "height": 300,
+        "data": {"values": []},
+        "mark": "line",
+        "encoding": {
+            "x": {"field": x_col, "type": "quantitative", "title": x_col},
+            "y": {"field": y_col, "type": "quantitative", "title": y_col},
+            "color": {"field": series_col, "type": "nominal", "title": series_col},
+            "tooltip": [
+                {"field": x_col, "type": "quantitative"},
+                {"field": y_col, "type": "quantitative"},
+                {"field": series_col, "type": "nominal"}
+            ]
+        }
+    }
+    
+    # Add data points
+    for series, points in series_map.items():
+        for point in points:
+            vega_spec["data"]["values"].append({
+                x_col: point["x"],
+                y_col: point["y"],
+                series_col: f"Vode {series}"
+            })
+    
+    # Create HTML with vega-lite
+    html = f"""
+    <html>
+    <head>
+        <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
+        <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
+        <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
+    </head>
+    <body>
+        <div id="vis"></div>
+        <script type="text/javascript">
+            const spec = {json.dumps(vega_spec)};
+            vegaEmbed('#vis', spec);
+        </script>
+    </body>
+    </html>
+    """
+    
+    return wandb.Html(html)
 
 def main():
     """Main function to run the debugging process with W&B logging."""
@@ -722,43 +795,9 @@ def main():
     # Store validation losses
     val_losses = []
     
-    # # Direct inspection of a single training batch to understand gradient structure
-    # print("\n=== Direct Inspection of train_on_batch Output ===")
-    # test_batch = next(iter(train_loader.dataloader))
-    # x_test, _ = test_batch
-    # x_test = jnp.array(x_test.numpy())
-    
-    # print("Calling train_on_batch directly to inspect outputs...")
-    # h_energy, w_energy, h_grad, w_grad = train_on_batch(
-    #     1, x_test, model=model, optim_w=optim_w, optim_h=optim_h, epoch=0, step=0
-    # )
-    
-    # print(f"h_energy: {h_energy}, w_energy: {w_energy}")
-    # print(f"Are energies identical? {h_energy == w_energy}")
-    
-    # print("\nInspecting hidden gradient structure:")
-    # h_grad_type = type(h_grad)
-    # print(f"h_grad type: {h_grad_type}")
-    
-    # if isinstance(h_grad, dict):
-    #     print(f"h_grad keys: {h_grad.keys()}")
-    #     for key in h_grad.keys():
-    #         print(f"  h_grad[{key}] type: {type(h_grad[key])}")
-    #         if isinstance(h_grad[key], dict):
-    #             print(f"    h_grad[{key}] keys: {h_grad[key].keys()}")
-    
-    # print("\nInspecting weight gradient structure:")
-    # w_grad_type = type(w_grad)
-    # print(f"w_grad type: {w_grad_type}")
-    
-    # if isinstance(w_grad, dict):
-    #     print(f"w_grad keys: {w_grad.keys()}")
-    #     for key in w_grad.keys():
-    #         print(f"  w_grad[{key}] type: {type(w_grad[key])}")
-    #         if isinstance(w_grad[key], dict):
-    #             print(f"    w_grad[{key}] keys: {w_grad[key].keys()}")
-    
-    # print("=== End of Direct Inspection ===\n")
+    # Store energy and gradient data for all epochs
+    all_epochs_energy_data = []
+    all_epochs_grad_data = []
     
     print(f"Training for {config.epochs} epochs with W&B logging...")
     
@@ -779,8 +818,12 @@ def main():
         # Train for one epoch
         h_energy, w_energy, h_grad, w_grad = train(train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch)
         
-        # Log detailed vode statistics
-        vode_stats = log_vode_stats(model, h_grad, w_grad, run, epoch)
+        # Log detailed vode statistics and get processed data for summary
+        processed_energy_data, processed_grad_data = log_vode_stats(model, h_grad, w_grad, run, epoch)
+        
+        # Add the processed data to our summary collections
+        all_epochs_energy_data.extend(processed_energy_data)
+        all_epochs_grad_data.extend(processed_grad_data)
         
         # Evaluate on validation set
         val_loss = eval(train_loader, config.inference_steps, model=model, optim_h=optim_h)
@@ -823,6 +866,31 @@ def main():
         epoch_time = time.time() - epoch_start
         print(f"Epoch completed in {epoch_time:.2f} seconds")
     
+    # Create summary tables after training is complete
+    if all_epochs_energy_data:
+        summary_energy_table = wandb.Table(data=all_epochs_energy_data, 
+                                          columns=["epoch", "vode_index", "energy"])
+        run.log({
+            "Summary/VodeEnergy_AllEpochs": create_grouped_bar_chart(all_epochs_energy_data, "epoch", "vode_index", "energy", "Energy by Vode Across All Epochs")
+        })
+        
+        # Also create a line plot to show the trend over epochs
+        run.log({
+            "Summary/VodeEnergy_Trends": create_multi_line_chart(all_epochs_energy_data, "epoch", "energy", "vode_index", "Energy Trends by Vode Across Epochs")
+        })
+    
+    if all_epochs_grad_data:
+        summary_grad_table = wandb.Table(data=all_epochs_grad_data, 
+                                        columns=["epoch", "vode_index", "grad_norm"])
+        run.log({
+            "Summary/VodeGradNorm_AllEpochs": create_grouped_bar_chart(all_epochs_grad_data, "epoch", "vode_index", "grad_norm", "Gradient Norm by Vode Across All Epochs")
+        })
+        
+        # Also create a line plot to show the trend over epochs
+        run.log({
+            "Summary/VodeGradNorm_Trends": create_multi_line_chart(all_epochs_grad_data, "epoch", "grad_norm", "vode_index", "Gradient Norm Trends by Vode Across Epochs")
+        })
+        
     # Close W&B after all logging is complete
     wandb.finish()
     
