@@ -62,6 +62,15 @@ class EnergyModule(Module):
             recursive=False,
         )
 
+    def get_submodule_energies(self):
+        """
+        Return a list of individual energy values for each EnergyModule submodule.
+        
+        Returns:
+            list: List of (submodule, energy) tuples for each EnergyModule submodule.
+        """
+        return [m.energy() for m in self.submodules(cls=EnergyModule)]
+
     @property
     def status(self) -> Any:
         return self._status.get()
