@@ -20,6 +20,8 @@ import json
 from datetime import datetime
 import wandb
 import psutil
+from dataclasses import dataclass, field
+from typing import List, Optional, Dict, Any, Tuple
 
 # Add the src directory to the path
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
@@ -37,58 +39,144 @@ from src.decoder_transformer import (
     train_on_batch
 )
 
-def create_config(dataset="cifar10", latent_dim=128, num_blocks=1):
-    """Create a TransformerConfig based on the dataset name."""
+@dataclass
+class ModelConfig:
+    """Configuration for transformer models with all hyperparameters in one place."""
+    name: str
+    # Dataset settings
+    dataset: str = "cifar10"
+    data_dir: str = "../datasets/"
+    train_subset: int = 5
+    test_subset: int = 5
+    target_class: Optional[int] = None
+    
+    # Model architecture
+    latent_dim: int = 128
+    hidden_size: int = 48
+    num_heads: int = 6
+    num_blocks: int = 1
+    mlp_ratio: float = 4.0
+    patch_size: int = 4
+    axes_dim: List[int] = field(default_factory=lambda: [16, 16])
+    theta: int = 10_000
+    use_noise: bool = True
+    
+    # Training settings
+    batch_size: int = 1
+    epochs: int = 20
+    inference_steps: int = 8
+    peak_lr_weights: float = 1e-3
+    peak_lr_hidden: float = 0.01
+    weight_decay: float = 2e-4
+    warmup_epochs: int = 5
+    seed: int = 42
+    
+    # Visualization settings
+    num_images: int = 5
+
+# Predefined configurations for easy experimentation
+MODEL_CONFIGS = {
+    "debug_tiny": ModelConfig(
+        name="debug_tiny",
+        batch_size=1,
+        latent_dim=64,
+        hidden_size=128,
+        num_heads=4,
+        num_blocks=3,
+        train_subset=5,
+        test_subset=5,
+        inference_steps=8
+    ),
+    "debug_small": ModelConfig(
+        name="debug_small",
+        batch_size=1,
+        latent_dim=128,
+        hidden_size=128,
+        num_heads=6, 
+        num_blocks=2,
+        train_subset=10,
+        test_subset=10,
+        inference_steps=8
+    ),
+    "baseline": ModelConfig(
+        name="baseline",
+        batch_size=16,
+        latent_dim=256,
+        hidden_size=128,
+        num_heads=8,
+        num_blocks=6,
+        train_subset=100,
+        test_subset=20,
+        inference_steps=16,
+        peak_lr_weights=5e-4,
+        peak_lr_hidden=0.005
+    )
+}
+
+# Default configuration to use
+DEFAULT_CONFIG = "debug_small"
+
+def create_config(dataset="cifar10", latent_dim=128, num_blocks=1, hidden_size=48, num_heads=6,
+                 mlp_ratio=4.0, patch_size=4, axes_dim=None, theta=10_000, use_noise=True):
+    """Create a TransformerConfig based on the dataset name and parameters."""
+    axes_dim = axes_dim or [16, 16]
+    
     if dataset == "cifar10":
         return TransformerConfig(
             latent_dim=latent_dim,
             image_shape=(3, 32, 32),
             num_frames=16,
             is_video=False,
-            hidden_size=48,
-            num_heads=6,
+            hidden_size=hidden_size,
+            num_heads=num_heads,
             num_blocks=num_blocks,
-            mlp_ratio=4.0,
-            patch_size=4,
-            axes_dim=[16, 16],
-            theta=10_000,
-            use_noise=True
+            mlp_ratio=mlp_ratio,
+            patch_size=patch_size,
+            axes_dim=axes_dim,
+            theta=theta,
+            use_noise=use_noise
         )
     else:
         raise ValueError(f"Unsupported dataset: {dataset}")
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Debug a transformer model with W&B logging')
-    parser.add_argument('--batch-size', type=int, default=1,
-                        help='Batch size for training (default: 1)')
-    parser.add_argument('--latent-dim', type=int, default=128,
-                        help='Latent dimension size (default: 128)')
-    parser.add_argument('--num-blocks', type=int, default=6,
-                        help='Number of transformer blocks (default: 1)')
-    parser.add_argument('--epochs', type=int, default=50,
-                        help='Number of training epochs (default: 1)')
-    parser.add_argument('--inference-steps', type=int, default=8,
-                        help='Number of inference steps (default: 4)')
-    parser.add_argument('--data-dir', type=str, default='../datasets/',
-                        help='Directory to store datasets (default: ../datasets/)')
-    parser.add_argument('--train-subset', type=int, default=5,
-                        help='Number of samples to use from the training set (default: 1)')
-    parser.add_argument('--test-subset', type=int, default=5,
-                        help='Number of samples to use from the test set (default: 1)')
+    parser.add_argument('--config', type=str, default=DEFAULT_CONFIG,
+                        help=f'Predefined configuration to use. Options: {", ".join(MODEL_CONFIGS.keys())}')
+    parser.add_argument('--batch-size', type=int, default=None,
+                        help='Batch size for training')
+    parser.add_argument('--latent-dim', type=int, default=None,
+                        help='Latent dimension size')
+    parser.add_argument('--hidden-size', type=int, default=None,
+                        help='Hidden dimension size')
+    parser.add_argument('--num-heads', type=int, default=None,
+                        help='Number of attention heads')
+    parser.add_argument('--num-blocks', type=int, default=None,
+                        help='Number of transformer blocks')
+    parser.add_argument('--epochs', type=int, default=None,
+                        help='Number of training epochs')
+    parser.add_argument('--inference-steps', type=int, default=None,
+                        help='Number of inference steps')
+    parser.add_argument('--data-dir', type=str, default=None,
+                        help='Directory to store datasets')
+    parser.add_argument('--train-subset', type=int, default=None,
+                        help='Number of samples to use from the training set')
+    parser.add_argument('--test-subset', type=int, default=None,
+                        help='Number of samples to use from the test set')
     parser.add_argument('--target-class', type=int, default=None,
                         help='Filter the dataset to a specific class (0-9 for CIFAR-10)')
-    parser.add_argument('--peak-lr-weights', type=float, default=1e-3,
-                        help='Peak learning rate for weights (default: 1e-3)')
-    parser.add_argument('--peak-lr-hidden', type=float, default=0.01,
-                        help='Peak learning rate for hidden states (default: 0.01)')
-    parser.add_argument('--weight-decay', type=float, default=2e-4,
-                        help='Weight decay for AdamW optimizer (default: 2e-4)')
-    parser.add_argument('--warmup-epochs', type=int, default=5,
-                        help='Number of warmup epochs for learning rate (default: 5)')
-    parser.add_argument('--seed', type=int, default=42,
+    parser.add_argument('--peak-lr-weights', type=float, default=None,
+                        help='Peak learning rate for weights')
+    parser.add_argument('--peak-lr-hidden', type=float, default=None,
+                        help='Peak learning rate for hidden states')
+    parser.add_argument('--weight-decay', type=float, default=None,
+                        help='Weight decay for AdamW optimizer')
+    parser.add_argument('--warmup-epochs', type=int, default=None,
+                        help='Number of warmup epochs for learning rate')
+    parser.add_argument('--seed', type=int, default=None,
                       help='Random seed for reproducibility')
-    parser.add_argument('--num-images', type=int, default=5,
-                      help='Number of images to use for reconstruction visualization (default: 5)')
+    parser.add_argument('--num-images', type=int, default=None,
+                      help='Number of images to use for reconstruction visualization')
     return parser.parse_args()
 
 def create_learning_rate_schedule(base_lr, warmup_epochs, total_epochs, steps_per_epoch):
@@ -687,31 +775,31 @@ def main():
     """Main function to run the debugging process with W&B logging."""
     args = parse_args()
     
+    # Load the base configuration
+    config = MODEL_CONFIGS[args.config]
+    
+    # Override configuration with any command-line arguments
+    for arg_name, arg_value in vars(args).items():
+        if arg_value is not None and arg_name != 'config':
+            setattr(config, arg_name, arg_value)
+    
+    # Print the effective configuration
+    print(f"\nUsing configuration '{config.name}' with settings:")
+    for key, value in vars(config).items():
+        if key != 'name':
+            print(f"  {key}: {value}")
+    print()
+    
     # Set random seed for reproducibility
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    key = jax.random.PRNGKey(args.seed)
+    np.random.seed(config.seed)
+    torch.manual_seed(config.seed)
+    key = jax.random.PRNGKey(config.seed)
     
     # Initialize Weights & Biases
     run = wandb.init(
         entity="neural-machines",
         project="debug-transformer",
-        config={
-            "latent_dim": args.latent_dim,
-            "num_blocks": args.num_blocks,
-            "batch_size": args.batch_size,
-            "epochs": args.epochs,
-            "inference_steps": args.inference_steps,
-            "peak_lr_weights": args.peak_lr_weights,
-            "peak_lr_hidden": args.peak_lr_hidden,
-            "weight_decay": args.weight_decay,
-            "warmup_epochs": args.warmup_epochs,
-            "seed": args.seed,
-            "train_subset": args.train_subset,
-            "test_subset": args.test_subset,
-            "target_class": args.target_class,
-            "num_images": args.num_images
-        },
+        config=vars(config),
         mode="online"  # Change to online for immediate verification
     )
     
@@ -737,56 +825,63 @@ def main():
         print(f"Error uploading code to W&B: {e}")
     
     print(f"Creating configuration for debugging CIFAR-10 transformer...")
-    config = create_config(
-        dataset="cifar10",
-        latent_dim=args.latent_dim,
-        num_blocks=args.num_blocks
+    model_config = create_config(
+        dataset=config.dataset,
+        latent_dim=config.latent_dim,
+        num_blocks=config.num_blocks,
+        hidden_size=config.hidden_size,
+        num_heads=config.num_heads,
+        mlp_ratio=config.mlp_ratio,
+        patch_size=config.patch_size,
+        axes_dim=config.axes_dim,
+        theta=config.theta,
+        use_noise=config.use_noise
     )
     
     print(f"Creating debug dataloaders for CIFAR-10...")
     train_loader, val_loader = get_debug_dataloaders(
-        dataset_name="cifar10",
-        batch_size=args.batch_size,
-        root_path=args.data_dir,
-        train_subset_n=args.train_subset,
-        test_subset_n=args.test_subset,
-        target_class=args.target_class
+        dataset_name=config.dataset,
+        batch_size=config.batch_size,
+        root_path=config.data_dir,
+        train_subset_n=config.train_subset,
+        test_subset_n=config.test_subset,
+        target_class=config.target_class
     )
     
     print(f"Training on {len(train_loader.dataset)} samples")
     print(f"Validating on {len(val_loader.dataset)} samples")
     
     print("Initializing model...")
-    model = TransformerDecoder(config)
+    model = TransformerDecoder(model_config)
     
     # Calculate steps per epoch for learning rate schedule
     steps_per_epoch = len(train_loader)
     
     # Set up optimizers with learning rate schedule
     weights_lr_schedule = create_learning_rate_schedule(
-        args.peak_lr_weights, 
-        args.warmup_epochs, 
-        args.epochs, 
+        config.peak_lr_weights, 
+        config.warmup_epochs, 
+        config.epochs, 
         steps_per_epoch
     )
     
     hidden_lr_schedule = create_learning_rate_schedule(
-        args.peak_lr_hidden, 
-        args.warmup_epochs, 
-        args.epochs, 
+        config.peak_lr_hidden, 
+        config.warmup_epochs, 
+        config.epochs, 
         steps_per_epoch
     )
     
     print(f"Using learning rate schedule with:")
-    print(f"  - Peak weight LR: {args.peak_lr_weights}")
-    print(f"  - Peak hidden LR: {args.peak_lr_hidden}")
-    print(f"  - Warmup epochs: {args.warmup_epochs}")
-    print(f"  - Weight decay: {args.weight_decay}")
+    print(f"  - Peak weight LR: {config.peak_lr_weights}")
+    print(f"  - Peak hidden LR: {config.peak_lr_hidden}")
+    print(f"  - Warmup epochs: {config.warmup_epochs}")
+    print(f"  - Weight decay: {config.weight_decay}")
     
     # Create optimizers with schedule
     optim_h = pxu.Optim(lambda: optax.sgd(hidden_lr_schedule, momentum=0.9))
     optim_w = pxu.Optim(
-        lambda: optax.adamw(weights_lr_schedule, weight_decay=args.weight_decay), 
+        lambda: optax.adamw(weights_lr_schedule, weight_decay=config.weight_decay), 
         pxu.M(pxnn.LayerParam)(model)
     )
     
@@ -832,28 +927,11 @@ def main():
     
     print("=== End of Direct Inspection ===\n")
     
-    print(f"Training for {args.epochs} epochs with W&B logging...")
+    print(f"Training for {config.epochs} epochs with W&B logging...")
     
-    # # Generate initial reconstruction (epoch 0)
-    # print("Generating initial reconstructions...")
-    # _, _, initial_recon_path, initial_recon_logs = visualize_reconstruction(
-    #     model, 
-    #     optim_h, 
-    #     val_loader, 
-    #     T_values=[1, 2, 4, 8], 
-    #     use_corruption=False,
-    #     num_images=args.num_images,
-    #     wandb_run=run,
-    #     epoch=0
-    # )
-    
-    # # Log initial reconstruction with step=0
-    # run.log(initial_recon_logs, step=0)
-    # print(f"Uploaded reconstruction image for epoch 0 to W&B")
-    
-    for epoch in range(args.epochs):
+    for epoch in range(config.epochs):
         epoch_start = time.time()
-        print(f"Epoch {epoch+1}/{args.epochs}")
+        print(f"Epoch {epoch+1}/{config.epochs}")
         
         # Get current learning rates
         current_w_lr = weights_lr_schedule(epoch * steps_per_epoch)
@@ -861,10 +939,10 @@ def main():
         print(f"Current learning rates - Weights: {current_w_lr:.6f}, Hidden: {current_h_lr:.6f}")
         
         # Train for one epoch
-        train(train_loader, args.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch)
+        train(train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch)
         
         # Evaluate on validation set
-        val_loss = eval(train_loader, args.inference_steps, model=model, optim_h=optim_h)
+        val_loss = eval(train_loader, config.inference_steps, model=model, optim_h=optim_h)
         val_losses.append(val_loss)
         print(f"Validation loss: {val_loss:.6f}")
         
@@ -878,13 +956,13 @@ def main():
         # Track dynamics on a sample batch
         print("Tracking batch dynamics...")
         batch = next(iter(train_loader.dataloader))
-        dynamics_metrics, batch_loss = track_batch_dynamics(model, optim_h, optim_w, batch, args.inference_steps, epoch)
+        dynamics_metrics, batch_loss = track_batch_dynamics(model, optim_h, optim_w, batch, config.inference_steps, epoch)
         epoch_metrics.update(dynamics_metrics)
         epoch_metrics['Losses/batch_loss'] = batch_loss
         print(f"Batch dynamics loss: {batch_loss:.6f}")
         
         # Generate reconstructions every 5 epochs (and for the final epoch)
-        if (epoch + 1) % 5 == 0 or epoch == args.epochs - 1:
+        if (epoch + 1) % 5 == 0 or epoch == config.epochs - 1:
             print(f"Generating reconstructions for epoch {epoch+1}...")
             _, _, recon_path, recon_logs = visualize_reconstruction(
                 model, 
@@ -892,7 +970,7 @@ def main():
                 val_loader, 
                 T_values=[1, 2, 4, 8, 16, 32], 
                 use_corruption=False,
-                num_images=args.num_images,
+                num_images=config.num_images,
                 wandb_run=run,
                 epoch=epoch+1
             )
@@ -912,30 +990,12 @@ def main():
         epoch_time = time.time() - epoch_start
         print(f"Epoch completed in {epoch_time:.2f} seconds")
     
-    # # Final model evaluation is now redundant since we're creating reconstructions during training
-    # # But we'll keep it for backward compatibility and add it to the summary
-    # print("Final model evaluation for summary...")
-    # _, _, final_recon_path, _ = visualize_reconstruction(
-    #     model, 
-    #     optim_h, 
-    #     val_loader, 
-    #     T_values=[1, 2, 4, 8], 
-    #     use_corruption=False,
-    #     num_images=args.num_images,
-    #     wandb_run=run,
-    #     epoch="final"
-    # )
-    
-    # # Save final reconstruction path to run summary
-    # if final_recon_path:
-    #     wandb.summary["final_reconstruction"] = wandb.Image(final_recon_path)
-    
     # Close W&B after all logging is complete
     wandb.finish()
     
     # Plot validation loss curve
     plt.figure(figsize=(10, 6))
-    plt.plot(range(1, args.epochs + 1), val_losses, marker='o')
+    plt.plot(range(1, config.epochs + 1), val_losses, marker='o')
     plt.title('Validation Loss Over Epochs')
     plt.xlabel('Epoch')
     plt.ylabel('Validation Loss')
