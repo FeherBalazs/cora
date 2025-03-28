@@ -427,16 +427,14 @@ class TransformerBlock(Module):
         
     def __call__(self, x, enable_dropout: bool=False):
         
-        # TODO: Fix layer norm
         # Apply layer normalization
-        # input_x = jax.vmap(self.layer_norm1)(x)
-        input_x = x
+        input_x = jax.vmap(self.layer_norm1)(x)
 
         # Apply self-attention and add residual connection
         x = x + self.attention(input_x, input_x, input_x)
 
         # Apply layer normalization and feedforward network
-        # input_x = jax.vmap(self.layer_norm2)(x)
+        input_x = jax.vmap(self.layer_norm2)(x)
         input_x = jax.vmap(self.linear1)(input_x)
         input_x = jax.nn.gelu(input_x)
 
