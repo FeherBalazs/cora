@@ -22,6 +22,8 @@ import wandb
 import psutil
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, Tuple
+import contextlib
+import re
 
 # Add the src directory to the path
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
@@ -63,12 +65,13 @@ class ModelConfig:
     
     # Training settings
     batch_size: int = 1
-    epochs: int = 20
+    epochs: int = 2
     inference_steps: int = 8
     peak_lr_weights: float = 1e-3
     peak_lr_hidden: float = 0.01
     weight_decay: float = 2e-4
-    warmup_epochs: int = 5
+    warmup_epochs: int = 1
+    use_lr_schedule: bool = True  # New option to control whether to use LR scheduling
     seed: int = 42
     
     # Visualization settings
@@ -82,10 +85,11 @@ MODEL_CONFIGS = {
         latent_dim=64,
         hidden_size=128,
         num_heads=4,
-        num_blocks=3,
+        num_blocks=6,
         train_subset=5,
         test_subset=5,
-        inference_steps=8
+        inference_steps=8,
+        use_lr_schedule=False
     ),
     "debug_small": ModelConfig(
         name="debug_small",
@@ -96,20 +100,22 @@ MODEL_CONFIGS = {
         num_blocks=2,
         train_subset=10,
         test_subset=10,
-        inference_steps=8
+        inference_steps=8,
+        use_lr_schedule=True
     ),
     "baseline": ModelConfig(
         name="baseline",
-        batch_size=16,
+        batch_size=10,
         latent_dim=256,
         hidden_size=128,
         num_heads=8,
         num_blocks=6,
         train_subset=100,
-        test_subset=20,
+        test_subset=100,
         inference_steps=16,
         peak_lr_weights=5e-4,
-        peak_lr_hidden=0.005
+        peak_lr_hidden=0.005,
+        use_lr_schedule=True
     )
 }
 
@@ -173,6 +179,10 @@ def parse_args():
                         help='Weight decay for AdamW optimizer')
     parser.add_argument('--warmup-epochs', type=int, default=None,
                         help='Number of warmup epochs for learning rate')
+    parser.add_argument('--use-lr-schedule', action='store_true', dest='use_lr_schedule',
+                        help='Use learning rate schedule with warmup and decay')
+    parser.add_argument('--no-lr-schedule', action='store_false', dest='use_lr_schedule',
+                        help='Use constant learning rate without scheduling')
     parser.add_argument('--seed', type=int, default=None,
                       help='Random seed for reproducibility')
     parser.add_argument('--num-images', type=int, default=None,
@@ -392,283 +402,6 @@ def analyze_pcx_gradients(h_grad, w_grad):
         }
     }
 
-def track_batch_dynamics(model, optim_h, optim_w, batch, inference_steps, epoch):
-    """Track dynamics of a single batch with detailed logging."""
-    x, y = batch
-    x_numpy = x.numpy()
-    x = jnp.array(x_numpy)
-    
-    # Track gradients and errors over inference steps
-    gradient_history = []
-    error_history = []
-    component_history = []
-    
-    # Flag to track if component plot was created
-    component_plot_created = False
-    
-    # Process each inference step
-    for step in range(inference_steps):
-        # Training step
-        h_energy, w_energy, h_grad, w_grad = train_on_batch(
-            1, x, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch, step=step
-        )
-        
-        # Print energy values for debugging
-        print(f"Step {step} - h_energy: {h_energy}, w_energy: {w_energy}")
-        print(f"Step {step} - h_energy type: {type(h_energy)}, w_energy type: {type(w_energy)}")
-        
-        # Convert energies to float for consistent handling
-        if hasattr(h_energy, 'item'):
-            h_energy = float(h_energy.item())
-        else:
-            h_energy = float(h_energy)
-            
-        if hasattr(w_energy, 'item'):
-            w_energy = float(w_energy.item()) 
-        else:
-            w_energy = float(w_energy)
-        
-        # Analyze PCX gradients
-        grad_stats = analyze_pcx_gradients(h_grad, w_grad)
-        
-        # Store component norms for plotting
-        step_components = {'step': step}
-        
-        # Extract top components by gradient norm
-        h_components = sorted(
-            [(k, v['norm']) for k, v in grad_stats['components']['hidden'].items()],
-            key=lambda x: x[1], reverse=True
-        )[:5]  # Top 5 hidden components
-        
-        w_components = sorted(
-            [(k, v['norm']) for k, v in grad_stats['components']['weight'].items()],
-            key=lambda x: x[1], reverse=True
-        )[:5]  # Top 5 weight components
-        
-        # Add to tracking dictionary
-        for k, v in h_components:
-            step_components[f"h_{k.split('.')[-1]}"] = v
-            
-        for k, v in w_components:
-            step_components[f"w_{k.split('.')[-1]}"] = v
-            
-        component_history.append(step_components)
-        
-        # Track gradients and errors
-        step_metrics = {
-            'step': step,
-            'h_energy': h_energy,
-            'w_energy': w_energy,
-            'h_grad_norm': grad_stats['summary']['hidden']['total_norm'],
-            'w_grad_norm': grad_stats['summary']['weight']['total_norm'],
-            'h_to_w_ratio': grad_stats['summary']['h_to_w_ratio'],
-            'h_max_component': grad_stats['summary']['hidden']['max_component_norm'],
-            'w_max_component': grad_stats['summary']['weight']['max_component_norm']
-        }
-        gradient_history.append(step_metrics)
-        
-        # Calculate reconstruction error
-        loss, x_hat = eval_on_batch_partial(
-            use_corruption=False, corrupt_ratio=0.5, T=1, 
-            x=x, model=model, optim_h=optim_h
-        )
-        error_history.append({
-            'step': step,
-            'loss': float(loss),
-            'reconstruction_error': float(jnp.mean(jnp.square(x - x_hat[1])))
-        })
-    
-    # Create visualizations
-    debug_dir = "../debug_logs/dynamics"
-    os.makedirs(debug_dir, exist_ok=True)
-    
-    # Define file paths for plots
-    gradient_dynamics_path = f"{debug_dir}/gradient_dynamics_epoch{epoch}.png"
-    component_gradients_path = f"{debug_dir}/component_gradients_epoch{epoch}.png"
-    error_dynamics_path = f"{debug_dir}/error_dynamics_epoch{epoch}.png"
-    gradient_ratios_path = f"{debug_dir}/gradient_ratios_epoch{epoch}.png"
-    
-    # Plot energy dynamics
-    plt.figure(figsize=(12, 6))
-    plt.subplot(1, 2, 1)
-    steps = [m['step'] for m in gradient_history]
-    h_energy = [m['h_energy'] for m in gradient_history]
-    w_energy = [m['w_energy'] for m in gradient_history]
-    plt.plot(steps, h_energy, label='Hidden Energy')
-    plt.plot(steps, w_energy, label='Weight Energy')
-    plt.title('Energy Dynamics Over Steps')
-    plt.xlabel('Inference Step')
-    plt.ylabel('Energy')
-    plt.legend()
-    plt.grid(True)
-    
-    # Plot gradient norms
-    plt.subplot(1, 2, 2)
-    h_grad_norm = [m['h_grad_norm'] for m in gradient_history]
-    w_grad_norm = [m['w_grad_norm'] for m in gradient_history]
-    h_to_w_ratio = [m['h_to_w_ratio'] for m in gradient_history]
-    
-    # Check if we have valid values for log scale
-    if any(v > 0 for v in h_grad_norm) or any(v > 0 for v in w_grad_norm):
-        plt.semilogy(steps, h_grad_norm, label='Hidden Grad Norm')
-        plt.semilogy(steps, w_grad_norm, label='Weight Grad Norm')
-    else:
-        plt.plot(steps, h_grad_norm, label='Hidden Grad Norm')
-        plt.plot(steps, w_grad_norm, label='Weight Grad Norm')
-    
-    plt.title('Gradient Norm Dynamics')
-    plt.xlabel('Inference Step')
-    plt.ylabel('Gradient Norm')
-    plt.legend()
-    plt.grid(True)
-    
-    plt.tight_layout()
-    plt.savefig(gradient_dynamics_path)
-    plt.close()
-    
-    # Plot component gradients
-    if len(component_history) > 0 and len(component_history[0]) > 1:
-        # Extract component keys (excluding 'step')
-        component_keys = [k for k in component_history[0].keys() if k != 'step']
-        if component_keys:
-            plt.figure(figsize=(15, 8))
-            
-            # Hidden components
-            h_keys = [k for k in component_keys if k.startswith('h_')]
-            has_positive_h_values = False
-            
-            if h_keys:
-                plt.subplot(1, 2, 1)
-                for key in h_keys:
-                    values = [m.get(key, 0) for m in component_history]
-                    if any(v > 0 for v in values):
-                        has_positive_h_values = True
-                        plt.semilogy(steps, values, label=key)
-                    else:
-                        plt.plot(steps, values, label=key)
-                plt.title('Hidden Component Gradients')
-                plt.xlabel('Inference Step')
-                plt.ylabel('Gradient Norm')
-                plt.legend()
-                plt.grid(True)
-            
-            # Weight components
-            w_keys = [k for k in component_keys if k.startswith('w_')]
-            has_positive_w_values = False
-            
-            if w_keys:
-                plt.subplot(1, 2, 2)
-                for key in w_keys:
-                    values = [m.get(key, 0) for m in component_history]
-                    if any(v > 0 for v in values):
-                        has_positive_w_values = True
-                        plt.semilogy(steps, values, label=key)
-                    else:
-                        plt.plot(steps, values, label=key)
-                plt.title('Weight Component Gradients')
-                plt.xlabel('Inference Step')
-                plt.ylabel('Gradient Norm')
-                plt.legend()
-                plt.grid(True)
-            
-            plt.tight_layout()
-            plt.savefig(component_gradients_path)
-            plt.close()
-            component_plot_created = True
-    
-    # Plot error dynamics
-    plt.figure(figsize=(12, 6))
-    plt.subplot(1, 2, 1)
-    steps = [m['step'] for m in error_history]
-    losses = [m['loss'] for m in error_history]
-    recon_errors = [m['reconstruction_error'] for m in error_history]
-    plt.plot(steps, losses, label='Total Loss')
-    plt.plot(steps, recon_errors, label='Reconstruction Error')
-    plt.title('Error Dynamics Over Steps')
-    plt.xlabel('Inference Step')
-    plt.ylabel('Error')
-    plt.legend()
-    plt.grid(True)
-    
-    plt.subplot(1, 2, 2)
-    # Check if we have valid values for log scale
-    if any(v > 0 for v in losses) or any(v > 0 for v in recon_errors):
-        plt.semilogy(steps, losses, label='Total Loss')
-        plt.semilogy(steps, recon_errors, label='Reconstruction Error')
-    else:
-        plt.plot(steps, losses, label='Total Loss')
-        plt.plot(steps, recon_errors, label='Reconstruction Error')
-    plt.title('Error Dynamics')
-    plt.xlabel('Inference Step')
-    plt.ylabel('Error')
-    plt.legend()
-    plt.grid(True)
-    
-    plt.tight_layout()
-    plt.savefig(error_dynamics_path)
-    plt.close()
-    
-    # Plot gradient-to-energy ratio
-    plt.figure(figsize=(12, 6))
-    plt.subplot(1, 2, 1)
-    h_to_w_ratio = [m['h_to_w_ratio'] for m in gradient_history]
-    plt.plot(steps, h_to_w_ratio, label='Hidden/Weight Gradient Ratio')
-    plt.title('Hidden to Weight Gradient Ratio')
-    plt.xlabel('Inference Step')
-    plt.ylabel('Ratio')
-    plt.grid(True)
-    
-    plt.subplot(1, 2, 2)
-    h_max = [m['h_max_component'] for m in gradient_history] 
-    w_max = [m['w_max_component'] for m in gradient_history]
-    # Check if we have valid values for log scale
-    if any(v > 0 for v in h_max) or any(v > 0 for v in w_max):
-        plt.semilogy(steps, h_max, label='Max Hidden Component')
-        plt.semilogy(steps, w_max, label='Max Weight Component')
-    else:
-        plt.plot(steps, h_max, label='Max Hidden Component')
-        plt.plot(steps, w_max, label='Max Weight Component')
-    plt.title('Maximum Component Gradients')
-    plt.xlabel('Inference Step')
-    plt.ylabel('Gradient Norm')
-    plt.legend()
-    plt.grid(True)
-    
-    plt.tight_layout()
-    plt.savefig(gradient_ratios_path)
-    plt.close()
-    
-    # Save histories to JSON for later analysis
-    with open(f"{debug_dir}/gradient_history_epoch{epoch}.json", 'w') as f:
-        json.dump(gradient_history, f, indent=2)
-    with open(f"{debug_dir}/error_history_epoch{epoch}.json", 'w') as f:
-        json.dump(error_history, f, indent=2)
-    with open(f"{debug_dir}/component_history_epoch{epoch}.json", 'w') as f:
-        json.dump(component_history, f, indent=2)
-    
-    # Prepare W&B logging dictionary
-    log_dict = {
-        'Gradients/hidden_energy': h_energy[-1],
-        'Gradients/weight_energy': w_energy[-1],
-        'Gradients/hidden_grad_norm': h_grad_norm[-1],
-        'Gradients/weight_grad_norm': w_grad_norm[-1],
-        'Gradients/h_to_w_ratio': h_to_w_ratio[-1],
-        'Gradients/h_max_component': h_max[-1],
-        'Gradients/w_max_component': w_max[-1],
-        'Errors/total_loss': losses[-1],
-        'Errors/reconstruction_error': recon_errors[-1],
-        'Dynamics/gradient_plot': wandb.Image(gradient_dynamics_path),
-        'Dynamics/error_plot': wandb.Image(error_dynamics_path),
-        'Dynamics/ratio_plot': wandb.Image(gradient_ratios_path)
-    }
-    
-    # Only add component plot if it was created
-    if component_plot_created:
-        log_dict['Dynamics/component_plot'] = wandb.Image(component_gradients_path)
-    
-    # Return log_dict instead of logging directly, to ensure consistent step handling
-    return log_dict, loss
-
 def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corruption=False, corrupt_ratio=0.5, target_class=None, num_images=2, wandb_run=None, epoch=None, step=None):
     import matplotlib.pyplot as plt
     from datetime import datetime
@@ -771,6 +504,105 @@ def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corr
     plt.close(fig)
     return orig_images, recon_images, reconstruction_path, log_dict
 
+def log_vode_stats(model, h_grad, w_grad, run, epoch):
+    """
+    Log detailed statistics about each Vode's energy and gradients to wandb.
+    
+    Args:
+        model: The TransformerDecoder model
+        h_grad: Hidden state gradients
+        w_grad: Weight gradients
+        run: Wandb run object
+        epoch: Current epoch
+    """
+    # Dictionary to collect all stats for wandb
+    vode_stats = {}
+    
+    # Extract individual energy contributions from each Vode
+    vode_energies = model.get_submodule_energies()
+    print("vode_energies: ", vode_energies)
+
+    # for i, vode in enumerate(model.vodes):
+    #     try:
+    #         print("vode.cache['E']: ", vode.cache)
+    #         vode_energies.append(vode.cache)
+
+    #     except Exception as e:
+    #         print(f"Error calculating energy for vode {i}: {e}")
+    #         vode_energies.append(None)
+
+    # print("h_grad: ", h_grad)
+    
+    # Extract gradients per Vode
+    vode_grad_norms = extract_vode_gradient_norms(h_grad)
+    
+    # Create wandb logging dictionaries
+    for i, (energy, grad_norm) in enumerate(zip(vode_energies, vode_grad_norms)):
+        if energy is not None:
+            vode_stats[f"VodeEnergy/vode_{i}"] = energy
+        
+        if grad_norm is not None:
+            vode_stats[f"VodeGradNorm/vode_{i}"] = grad_norm
+    
+    # Create a bar chart for energy distribution
+    energy_data = [[i, e] for i, e in enumerate(vode_energies) if e is not None]
+    if energy_data:
+        energy_table = wandb.Table(data=energy_data, columns=["vode_index", "energy"])
+        vode_stats["VodeEnergy/distribution"] = wandb.plot.bar(
+            energy_table, "vode_index", "energy", title="Energy by Vode"
+        )
+    
+    # Create a bar chart for gradient norm distribution
+    grad_data = [[i, n] for i, n in enumerate(vode_grad_norms) if n is not None]
+    if grad_data:
+        grad_table = wandb.Table(data=grad_data, columns=["vode_index", "grad_norm"])
+        vode_stats["VodeGradNorm/distribution"] = wandb.plot.bar(
+            grad_table, "vode_index", "grad_norm", title="Gradient Norm by Vode"
+        )
+    
+    # Log everything to wandb
+    run.log(vode_stats, step=epoch+1)
+    
+    return vode_stats
+
+def extract_vode_gradient_norms(h_grad):
+    """Simplified direct extraction based on the known structure"""
+    vode_grad_norms = []
+    
+    try:
+        if isinstance(h_grad, dict) and "model" in h_grad:
+            model = h_grad["model"]
+            
+            # Get the vodes attribute
+            for i in range(len(model.vodes)):
+                try:
+                    # Try to access vodes[i].h directly
+                    vode_param_name = f"vodes[{i}].h"
+                    if hasattr(model, vode_param_name):
+                        vode_param = getattr(model, vode_param_name)
+                        if hasattr(vode_param, 'value'):
+                            grad_array = vode_param.value
+                        else:
+                            grad_array = vode_param
+                            
+                        if hasattr(grad_array, 'flatten'):
+                            flat_grad = grad_array.flatten()
+                            norm = float(jnp.linalg.norm(flat_grad))
+                            vode_grad_norms.append(norm)
+                        else:
+                            vode_grad_norms.append(None)
+                    else:
+                        # If we don't find this vode, we've reached the end
+                        break
+                except Exception as e:
+                    print(f"Error accessing vode {i}: {e}")
+                    vode_grad_norms.append(None)
+    except Exception as e:
+        print(f"Error in direct extraction: {e}")
+    
+    return vode_grad_norms
+
+
 def main():
     """Main function to run the debugging process with W&B logging."""
     args = parse_args()
@@ -857,75 +689,76 @@ def main():
     # Calculate steps per epoch for learning rate schedule
     steps_per_epoch = len(train_loader)
     
-    # Set up optimizers with learning rate schedule
-    weights_lr_schedule = create_learning_rate_schedule(
-        config.peak_lr_weights, 
-        config.warmup_epochs, 
-        config.epochs, 
-        steps_per_epoch
-    )
+    # Create learning rate functions based on config
+    if config.use_lr_schedule:
+        # Use schedule with warmup and decay
+        weights_lr_fn = create_learning_rate_schedule(
+            config.peak_lr_weights, 
+            config.warmup_epochs, 
+            config.epochs, 
+            steps_per_epoch
+        )
+        
+        hidden_lr_fn = create_learning_rate_schedule(
+            config.peak_lr_hidden, 
+            config.warmup_epochs, 
+            config.epochs, 
+            steps_per_epoch
+        )
+        print(f"Using learning rate schedule - Peak weights LR: {config.peak_lr_weights}, Peak hidden LR: {config.peak_lr_hidden}")
+    else:
+        # Use constant learning rates
+        weights_lr_fn = config.peak_lr_weights
+        hidden_lr_fn = config.peak_lr_hidden
+        print(f"Using constant learning rates - Weights: {weights_lr_fn}, Hidden: {hidden_lr_fn}")
     
-    hidden_lr_schedule = create_learning_rate_schedule(
-        config.peak_lr_hidden, 
-        config.warmup_epochs, 
-        config.epochs, 
-        steps_per_epoch
-    )
-    
-    print(f"Using learning rate schedule with:")
-    print(f"  - Peak weight LR: {config.peak_lr_weights}")
-    print(f"  - Peak hidden LR: {config.peak_lr_hidden}")
-    print(f"  - Warmup epochs: {config.warmup_epochs}")
-    print(f"  - Weight decay: {config.weight_decay}")
-    
-    # Create optimizers with schedule
-    optim_h = pxu.Optim(lambda: optax.sgd(hidden_lr_schedule, momentum=0.9))
+    # Create optimizers with the appropriate learning rate function
+    optim_h = pxu.Optim(lambda: optax.sgd(hidden_lr_fn, momentum=0.9))
     optim_w = pxu.Optim(
-        lambda: optax.adamw(weights_lr_schedule, weight_decay=config.weight_decay), 
+        lambda: optax.adamw(weights_lr_fn, weight_decay=config.weight_decay), 
         pxu.M(pxnn.LayerParam)(model)
     )
     
     # Store validation losses
     val_losses = []
     
-    # Direct inspection of a single training batch to understand gradient structure
-    print("\n=== Direct Inspection of train_on_batch Output ===")
-    test_batch = next(iter(train_loader.dataloader))
-    x_test, _ = test_batch
-    x_test = jnp.array(x_test.numpy())
+    # # Direct inspection of a single training batch to understand gradient structure
+    # print("\n=== Direct Inspection of train_on_batch Output ===")
+    # test_batch = next(iter(train_loader.dataloader))
+    # x_test, _ = test_batch
+    # x_test = jnp.array(x_test.numpy())
     
-    print("Calling train_on_batch directly to inspect outputs...")
-    h_energy, w_energy, h_grad, w_grad = train_on_batch(
-        1, x_test, model=model, optim_w=optim_w, optim_h=optim_h, epoch=0, step=0
-    )
+    # print("Calling train_on_batch directly to inspect outputs...")
+    # h_energy, w_energy, h_grad, w_grad = train_on_batch(
+    #     1, x_test, model=model, optim_w=optim_w, optim_h=optim_h, epoch=0, step=0
+    # )
     
-    print(f"h_energy: {h_energy}, w_energy: {w_energy}")
-    print(f"h_energy type: {type(h_energy)}, w_energy type: {type(w_energy)}")
-    print(f"Are energies identical? {h_energy == w_energy}")
+    # print(f"h_energy: {h_energy}, w_energy: {w_energy}")
+    # print(f"Are energies identical? {h_energy == w_energy}")
     
-    print("\nInspecting hidden gradient structure:")
-    h_grad_type = type(h_grad)
-    print(f"h_grad type: {h_grad_type}")
+    # print("\nInspecting hidden gradient structure:")
+    # h_grad_type = type(h_grad)
+    # print(f"h_grad type: {h_grad_type}")
     
-    if isinstance(h_grad, dict):
-        print(f"h_grad keys: {h_grad.keys()}")
-        for key in h_grad.keys():
-            print(f"  h_grad[{key}] type: {type(h_grad[key])}")
-            if isinstance(h_grad[key], dict):
-                print(f"    h_grad[{key}] keys: {h_grad[key].keys()}")
+    # if isinstance(h_grad, dict):
+    #     print(f"h_grad keys: {h_grad.keys()}")
+    #     for key in h_grad.keys():
+    #         print(f"  h_grad[{key}] type: {type(h_grad[key])}")
+    #         if isinstance(h_grad[key], dict):
+    #             print(f"    h_grad[{key}] keys: {h_grad[key].keys()}")
     
-    print("\nInspecting weight gradient structure:")
-    w_grad_type = type(w_grad)
-    print(f"w_grad type: {w_grad_type}")
+    # print("\nInspecting weight gradient structure:")
+    # w_grad_type = type(w_grad)
+    # print(f"w_grad type: {w_grad_type}")
     
-    if isinstance(w_grad, dict):
-        print(f"w_grad keys: {w_grad.keys()}")
-        for key in w_grad.keys():
-            print(f"  w_grad[{key}] type: {type(w_grad[key])}")
-            if isinstance(w_grad[key], dict):
-                print(f"    w_grad[{key}] keys: {w_grad[key].keys()}")
+    # if isinstance(w_grad, dict):
+    #     print(f"w_grad keys: {w_grad.keys()}")
+    #     for key in w_grad.keys():
+    #         print(f"  w_grad[{key}] type: {type(w_grad[key])}")
+    #         if isinstance(w_grad[key], dict):
+    #             print(f"    w_grad[{key}] keys: {w_grad[key].keys()}")
     
-    print("=== End of Direct Inspection ===\n")
+    # print("=== End of Direct Inspection ===\n")
     
     print(f"Training for {config.epochs} epochs with W&B logging...")
     
@@ -933,13 +766,21 @@ def main():
         epoch_start = time.time()
         print(f"Epoch {epoch+1}/{config.epochs}")
         
-        # Get current learning rates
-        current_w_lr = weights_lr_schedule(epoch * steps_per_epoch)
-        current_h_lr = hidden_lr_schedule(epoch * steps_per_epoch)
+        # Get current learning rates - handle both scheduled and constant LR cases
+        if config.use_lr_schedule:
+            current_w_lr = weights_lr_fn(epoch * steps_per_epoch)
+            current_h_lr = hidden_lr_fn(epoch * steps_per_epoch)
+        else:
+            current_w_lr = weights_lr_fn
+            current_h_lr = hidden_lr_fn
+            
         print(f"Current learning rates - Weights: {current_w_lr:.6f}, Hidden: {current_h_lr:.6f}")
         
         # Train for one epoch
-        train(train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch)
+        h_energy, w_energy, h_grad, w_grad = train(train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch)
+        
+        # Log detailed vode statistics
+        vode_stats = log_vode_stats(model, h_grad, w_grad, run, epoch)
         
         # Evaluate on validation set
         val_loss = eval(train_loader, config.inference_steps, model=model, optim_h=optim_h)
@@ -953,29 +794,21 @@ def main():
             'LearningRate/hidden': current_h_lr
         }
         
-        # Track dynamics on a sample batch
-        print("Tracking batch dynamics...")
-        batch = next(iter(train_loader.dataloader))
-        dynamics_metrics, batch_loss = track_batch_dynamics(model, optim_h, optim_w, batch, config.inference_steps, epoch)
-        epoch_metrics.update(dynamics_metrics)
-        epoch_metrics['Losses/batch_loss'] = batch_loss
-        print(f"Batch dynamics loss: {batch_loss:.6f}")
-        
-        # Generate reconstructions every 5 epochs (and for the final epoch)
-        if (epoch + 1) % 5 == 0 or epoch == config.epochs - 1:
-            print(f"Generating reconstructions for epoch {epoch+1}...")
-            _, _, recon_path, recon_logs = visualize_reconstruction(
-                model, 
-                optim_h, 
-                val_loader, 
-                T_values=[1, 2, 4, 8, 16, 32], 
-                use_corruption=False,
-                num_images=config.num_images,
-                wandb_run=run,
-                epoch=epoch+1
-            )
-            # Add reconstruction logs to the epoch metrics
-            epoch_metrics.update(recon_logs)
+        # # Generate reconstructions every 5 epochs (and for the final epoch)
+        # if (epoch + 1) % 5 == 0 or epoch == config.epochs - 1:
+        #     print(f"Generating reconstructions for epoch {epoch+1}...")
+        #     _, _, recon_path, recon_logs = visualize_reconstruction(
+        #         model, 
+        #         optim_h, 
+        #         val_loader, 
+        #         T_values=[1, 2, 4, 8, 16, 32], 
+        #         use_corruption=False,
+        #         num_images=config.num_images,
+        #         wandb_run=run,
+        #         epoch=epoch+1
+        #     )
+        #     # Add reconstruction logs to the epoch metrics
+        #     epoch_metrics.update(recon_logs)
         
         # Add system metrics
         epoch_metrics.update({
