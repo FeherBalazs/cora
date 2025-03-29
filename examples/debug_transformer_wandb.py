@@ -37,6 +37,7 @@ from src.decoder_transformer import (
     train, 
     eval, 
     eval_on_batch_partial,
+    eval_on_batch,
     visualize_reconstruction,
     model_debugger,
     forward,
@@ -50,12 +51,11 @@ class ModelConfig:
     # Dataset settings
     dataset: str = "cifar10"
     data_dir: str = "../datasets/"
-    train_subset: int = 5
-    test_subset: int = 5
+    train_subset: int = 1
+    test_subset: int = 1
     target_class: Optional[int] = None
     
     # Model architecture
-    latent_dim: int = 128
     hidden_size: int = 48
     num_heads: int = 6
     num_blocks: int = 1
@@ -67,8 +67,11 @@ class ModelConfig:
     
     # Training settings
     batch_size: int = 1
-    epochs: int = 2
-    inference_steps: int = 8
+    epochs: int = 100
+    inference_steps: int = 10
+    eval_inference_steps: int = 10
+    # reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 4, 8, 16, 32, 64, 128])
+    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 10, 50])
     peak_lr_weights: float = 1e-3
     peak_lr_hidden: float = 0.01
     weight_decay: float = 2e-4
@@ -76,45 +79,44 @@ class ModelConfig:
     use_lr_schedule: bool = True  # New option to control whether to use LR scheduling
     seed: int = 42
     
+    # Early stopping settings
+    use_early_stopping: bool = False
+    early_stopping_patience: int = 10
+    early_stopping_min_delta: float = 0.0001
+    
     # Visualization settings
-    num_images: int = 5
+    num_images: int = 1
 
 # Predefined configurations for easy experimentation
 MODEL_CONFIGS = {
     "debug_tiny": ModelConfig(
         name="debug_tiny",
         batch_size=1,
-        latent_dim=64,
         hidden_size=128,
         num_heads=4,
         num_blocks=6,
-        train_subset=5,
-        test_subset=5,
-        inference_steps=6,
+        train_subset=1,
+        test_subset=1,
         use_lr_schedule=False
     ),
     "debug_small": ModelConfig(
         name="debug_small",
         batch_size=1,
-        latent_dim=128,
-        hidden_size=128,
-        num_heads=6, 
-        num_blocks=2,
-        train_subset=10,
-        test_subset=10,
-        inference_steps=8,
-        use_lr_schedule=True
+        hidden_size=512,
+        num_heads=8,
+        num_blocks=6,
+        train_subset=1,
+        test_subset=1,
+        use_lr_schedule=False
     ),
     "baseline": ModelConfig(
         name="baseline",
         batch_size=10,
-        latent_dim=256,
         hidden_size=128,
         num_heads=8,
         num_blocks=6,
         train_subset=100,
         test_subset=100,
-        inference_steps=16,
         peak_lr_weights=5e-4,
         peak_lr_hidden=0.005,
         use_lr_schedule=True
@@ -124,14 +126,13 @@ MODEL_CONFIGS = {
 # Default configuration to use
 DEFAULT_CONFIG = "debug_small"
 
-def create_config(dataset="cifar10", latent_dim=128, num_blocks=1, hidden_size=48, num_heads=6,
+def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
                  mlp_ratio=4.0, patch_size=4, axes_dim=None, theta=10_000, use_noise=True):
     """Create a TransformerConfig based on the dataset name and parameters."""
     axes_dim = axes_dim or [16, 16]
     
     if dataset == "cifar10":
         return TransformerConfig(
-            latent_dim=latent_dim,
             image_shape=(3, 32, 32),
             num_frames=16,
             is_video=False,
@@ -153,8 +154,6 @@ def parse_args():
                         help=f'Predefined configuration to use. Options: {", ".join(MODEL_CONFIGS.keys())}')
     parser.add_argument('--batch-size', type=int, default=None,
                         help='Batch size for training')
-    parser.add_argument('--latent-dim', type=int, default=None,
-                        help='Latent dimension size')
     parser.add_argument('--hidden-size', type=int, default=None,
                         help='Hidden dimension size')
     parser.add_argument('--num-heads', type=int, default=None,
@@ -185,6 +184,14 @@ def parse_args():
                         help='Use learning rate schedule with warmup and decay')
     parser.add_argument('--no-lr-schedule', action='store_false', dest='use_lr_schedule',
                         help='Use constant learning rate without scheduling')
+    parser.add_argument('--use-early-stopping', action='store_true', dest='use_early_stopping',
+                        help='Use early stopping to prevent overfitting')
+    parser.add_argument('--no-early-stopping', action='store_false', dest='use_early_stopping',
+                        help='Disable early stopping')
+    parser.add_argument('--early-stopping-patience', type=int, default=None,
+                        help='Number of epochs with no improvement before stopping training')
+    parser.add_argument('--early-stopping-min-delta', type=float, default=None,
+                        help='Minimum change to qualify as an improvement')
     parser.add_argument('--seed', type=int, default=None,
                       help='Random seed for reproducibility')
     parser.add_argument('--num-images', type=int, default=None,
@@ -257,7 +264,7 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=False,
         num_workers=2,
     )
     test_dataloader = DataLoader(
@@ -312,25 +319,12 @@ def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corr
             
         for T in T_values:
             # Enhanced eval_on_batch_partial to capture intermediate outputs
-            x_hat = eval_on_batch_partial(use_corruption=use_corruption, corrupt_ratio=corrupt_ratio, T=T, x=x, model=model, optim_h=optim_h)
+            # loss, x_hat = eval_on_batch_partial(use_corruption=use_corruption, corrupt_ratio=corrupt_ratio, T=T, x=x, model=model, optim_h=optim_h)
+            loss, x_hat = eval_on_batch(T=T, x=x, model=model, optim_h=optim_h)
+
+            print("reconstruction loss with T:", T, "loss:", loss)
             
-            # For debugging, capture last layer outputs
-            try:
-                with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
-                    z = forward(None, model=model)
-                    if hasattr(model, 'final_layer'):
-                        # The TransformerDecoder doesn't have a 'final_layer' attribute directly
-                        # Instead, we can get the conditioning parameter
-                        cond_param = param_get(model.cond_param)
-                        last_layer_out = model.final_layer.module(z, cond_param)
-                        # Store for debugging
-                        if T not in debug_info['last_layer_outputs']:
-                            debug_info['last_layer_outputs'][T] = []
-                        debug_info['last_layer_outputs'][T].append(last_layer_out)
-            except Exception as e:
-                print(f"Error capturing last layer outputs: {e}")
-            
-            x_hat_single = jnp.reshape(x_hat[1][0], image_shape)
+            x_hat_single = jnp.reshape(x_hat[0], image_shape)
             recon_images[T].append(x_hat_single)
     
     # Create subplots
@@ -732,9 +726,8 @@ def main():
     print(f"Creating configuration for debugging CIFAR-10 transformer...")
     model_config = create_config(
         dataset=config.dataset,
-        latent_dim=config.latent_dim,
-        num_blocks=config.num_blocks,
         hidden_size=config.hidden_size,
+        num_blocks=config.num_blocks,
         num_heads=config.num_heads,
         mlp_ratio=config.mlp_ratio,
         patch_size=config.patch_size,
@@ -799,6 +792,11 @@ def main():
     all_epochs_energy_data = []
     all_epochs_grad_data = []
     
+    # Early stopping variables
+    best_val_loss = float('inf')
+    epochs_without_improvement = 0
+    early_stopped = False
+    
     print(f"Training for {config.epochs} epochs with W&B logging...")
     
     for epoch in range(config.epochs):
@@ -826,7 +824,7 @@ def main():
         all_epochs_grad_data.extend(processed_grad_data)
         
         # Evaluate on validation set
-        val_loss = eval(train_loader, config.inference_steps, model=model, optim_h=optim_h)
+        val_loss = eval(train_loader, config.eval_inference_steps, model=model, optim_h=optim_h)
         val_losses.append(val_loss)
         print(f"Validation loss: {val_loss:.6f}")
         
@@ -837,21 +835,21 @@ def main():
             'LearningRate/hidden': current_h_lr
         }
         
-        # # Generate reconstructions every 5 epochs (and for the final epoch)
-        # if (epoch + 1) % 5 == 0 or epoch == config.epochs - 1:
-        #     print(f"Generating reconstructions for epoch {epoch+1}...")
-        #     _, _, recon_path, recon_logs = visualize_reconstruction(
-        #         model, 
-        #         optim_h, 
-        #         val_loader, 
-        #         T_values=[1, 2, 4, 8, 16, 32], 
-        #         use_corruption=False,
-        #         num_images=config.num_images,
-        #         wandb_run=run,
-        #         epoch=epoch+1
-        #     )
-        #     # Add reconstruction logs to the epoch metrics
-        #     epoch_metrics.update(recon_logs)
+        # Generate reconstructions every N epochs (and for the final epoch)
+        if (epoch + 1) % 20 == 0 or epoch == config.epochs - 1 or (config.use_early_stopping and early_stopped and epoch == early_stopped_epoch):
+            print(f"Generating reconstructions for epoch {epoch+1}...")
+            _, _, recon_path, recon_logs = visualize_reconstruction(
+                model, 
+                optim_h, 
+                train_loader, 
+                T_values=config.reconstruction_steps, 
+                use_corruption=False,
+                num_images=config.num_images,
+                wandb_run=run,
+                epoch=epoch+1
+            )
+            # Add reconstruction logs to the epoch metrics
+            epoch_metrics.update(recon_logs)
         
         # Add system metrics
         epoch_metrics.update({
@@ -865,6 +863,24 @@ def main():
         
         epoch_time = time.time() - epoch_start
         print(f"Epoch completed in {epoch_time:.2f} seconds")
+        
+        # Early stopping check
+        if config.use_early_stopping:
+            if val_loss < (best_val_loss - config.early_stopping_min_delta):
+                # Found a better model
+                best_val_loss = val_loss
+                epochs_without_improvement = 0
+                # Save the best model here if desired
+                # Could implement model state saving logic here
+            else:
+                epochs_without_improvement += 1
+                print(f"No improvement for {epochs_without_improvement} epochs (best: {best_val_loss:.6f})")
+                
+                if epochs_without_improvement >= config.early_stopping_patience:
+                    print(f"Early stopping triggered after {epoch+1} epochs!")
+                    early_stopped = True
+                    early_stopped_epoch = epoch
+                    break
     
     # Create summary tables after training is complete
     if all_epochs_energy_data:
