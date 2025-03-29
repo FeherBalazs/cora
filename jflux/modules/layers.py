@@ -395,6 +395,88 @@ class SingleStreamBlock(nnx.Module):
         return x + mod.gate * output
 
 
+class SingleStreamBlockStandard(nnx.Module):
+    """
+    A standard transformer block that maintains the parallel computation of attention
+    and MLP from DiT, but without any conditioning mechanisms.
+    """
+
+    def __init__(
+        self,
+        hidden_size: int,
+        num_heads: int,
+        rngs: nnx.Rngs,
+        param_dtype: DTypeLike = jnp.bfloat16,
+        mlp_ratio: float = 4.0,
+        qk_scale: float | None = None,
+    ):
+        self.hidden_dim = hidden_size
+        self.num_heads = num_heads
+        head_dim = hidden_size // num_heads
+        self.scale = qk_scale or head_dim**-0.5
+
+        self.mlp_hidden_dim = int(hidden_size * mlp_ratio)
+        # qkv and mlp_in
+        self.linear1 = nnx.Linear(
+            in_features=hidden_size,
+            out_features=hidden_size * 3 + self.mlp_hidden_dim,
+            rngs=rngs,
+            param_dtype=param_dtype,
+        )
+        # proj and mlp_out
+        self.linear2 = nnx.Linear(
+            in_features=hidden_size + self.mlp_hidden_dim,
+            out_features=hidden_size,
+            rngs=rngs,
+            param_dtype=param_dtype,
+        )
+
+        self.norm = QKNorm(dim=head_dim, rngs=rngs, param_dtype=param_dtype)
+
+        self.hidden_size = hidden_size
+        self.pre_norm = nnx.LayerNorm(
+            num_features=hidden_size,
+            use_scale=False,
+            use_bias=False,
+            epsilon=1e-6,
+            rngs=rngs,
+            param_dtype=param_dtype,
+        )
+
+        self.mlp_act = nnx.gelu
+
+    def __call__(self, x: Array, pe: Array) -> Array:
+        # Standard layer normalization without modulation
+        # x_norm = self.pre_norm(x)
+
+        # Ignore normalization
+        x_norm = x
+        
+        # Since we always process single samples (no batch dimension) due to vmapping outside,
+        # we'll always need to add a batch dimension for the attention operations
+        
+        # Add batch dimension
+        x_batch = jnp.expand_dims(x, axis=0)  # (1, L, D)
+        x_norm_batch = jnp.expand_dims(x_norm, axis=0)  # (1, L, D)
+        
+        # Process with batch dimension
+        qkv, mlp = jnp.split(self.linear1(x_norm_batch), [3 * self.hidden_size], axis=-1)
+        q, k, v = rearrange(qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
+        q, k = self.norm(q, k, v)
+        
+        # Compute attention
+        attn = attention(q, k, v, pe=pe)
+        
+        # Compute activation in mlp stream, cat again and run second linear layer
+        output = self.linear2(jnp.concatenate((attn, self.mlp_act(mlp)), 2))
+        
+        # Standard residual connection without gating
+        result_batch = x_batch + output
+        
+        # Remove the batch dimension we added
+        return jnp.squeeze(result_batch, axis=0)
+
+
 class LastLayer(nnx.Module):
     def __init__(
         self,
@@ -439,3 +521,45 @@ class LastLayer(nnx.Module):
         x = (1 + scale[:, None, :]) * self.norm_final(x) + shift[:, None, :]
         x = self.linear(x)
         return x
+
+
+class LastLayerStandard(nnx.Module):
+    """
+    Standard variant of LastLayer without adaptive conditioning.
+    Uses standard layer normalization and linear projection.
+    """
+    def __init__(
+        self,
+        hidden_size: int,
+        patch_size: int,
+        out_channels: int,
+        rngs: nnx.Rngs,
+        param_dtype: DTypeLike = jnp.bfloat16,
+    ):
+        
+        # Same linear projection as LastLayer
+        self.linear = nnx.Linear(
+            in_features=hidden_size,
+            out_features=patch_size * patch_size * out_channels,
+            use_bias=True,
+            rngs=rngs,
+            param_dtype=param_dtype,
+        )
+
+    def __call__(self, x: Array) -> Array:
+        """
+        Standard layer projection without conditioning.
+        
+        Args:
+            x: Input tensor of shape (B, L, D)
+            
+        Returns:
+            Output tensor of shape (B, L, patch_size * patch_size * out_channels)
+        """
+        
+        # Apply linear projection
+        x = self.linear(x)
+        
+        return x
+
+

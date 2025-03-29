@@ -85,10 +85,12 @@ def get_dataloaders(
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
         ])
         dataset_root = root_path + "cifar10/"
+        dataset_root = root_path
+        print("dataset_root:", dataset_root)
         train_dataset = torchvision.datasets.CIFAR10(
             root=dataset_root,
             transform=transform,
-            download=True,
+            download=False,
             train=True,
         )
         test_dataset = torchvision.datasets.CIFAR10(

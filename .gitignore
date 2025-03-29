@@ -6,6 +6,33 @@
 **/results
 **/wandb
 
+# Specific directories to ignore
+examples/experiment_results
+examples/datacifar10
+datasets
+debug_logs
+
+# Specific example files to ignore
+examples/08_mnist_classification.ipynb
+examples/08_mnist_classification.py
+examples/0_two_moons copy.ipynb
+examples/0_two_moons.ipynb
+examples/0b_two_moons_backprop.ipynb
+examples/1_gradient_analysis.ipynb
+examples/1_gradient_analysis_balazs.ipynb
+examples/2_randomness.ipynb
+examples/3_flow.ipynb
+examples/4_alexnet_pc.ipynb
+examples/5_decoder_pc.ipynb
+examples/6_zil.ipynb
+examples/7_mcpc.ipynb
+examples/check_jax_gpu.py
+examples/decoder.py
+examples/decoder_1.1.py
+examples/decoder_1.1_vis.py
+examples/decoder_1.py
+examples/decoder_2.py
+examples/decoder_cnn.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

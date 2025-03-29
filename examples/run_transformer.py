@@ -8,6 +8,7 @@ import jax
 import jax.numpy as jnp
 import optax
 import pcx.utils as pxu
+import pcx.nn as pxnn
 import argparse
 from torchvision import datasets, transforms
 
@@ -25,7 +26,7 @@ from src.decoder_transformer import (
     visualize_reconstruction
 )
 # Import PCX-compatible transformer components (though not directly used in this example)
-from src.pcx_transformer import PCXDoubleStreamBlock, PCXEmbedND
+from src.pcx_transformer import PCXDoubleStreamBlock, PCXEmbedND, PCXLastLayer
 
 # Set up basic parameters
 BATCH_SIZE = 16
@@ -235,7 +236,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Train a transformer-based predictive coding model')
     parser.add_argument('--dataset', type=str, default='cifar10', choices=['fashionmnist', 'cifar10', 'imagenet'],
                         help='Dataset to use (default: cifar10)')
-    parser.add_argument('--use-real-data', action='store_true', default=False,
+    parser.add_argument('--use-real-data', action='store_true', default=True,
                         help='Use real dataset instead of synthetic data')
     parser.add_argument('--batch-size', type=int, default=BATCH_SIZE,
                         help=f'Batch size for training (default: {BATCH_SIZE})')
@@ -275,19 +276,8 @@ def main():
     model = TransformerDecoder(config)
     
     # Create optimizers
-    optim_w = pxu.Optim(
-        core_optim=optax.chain(
-            optax.clip_by_global_norm(1.0),
-            optax.adamw(learning_rate=LR_WEIGHTS, weight_decay=1e-4)
-        )
-    )
-    
-    optim_h = pxu.Optim(
-        core_optim=optax.chain(
-            optax.clip_by_global_norm(1.0),
-            optax.adam(learning_rate=LR_HIDDEN)
-        )
-    )
+    optim_h = pxu.Optim(lambda: optax.sgd(5e-1, momentum=0.1))
+    optim_w = pxu.Optim(lambda: optax.adamw(1e-4), pxu.M(pxnn.LayerParam)(model))
     
     # Train model
     print(f"Training for {args.epochs} epochs...")

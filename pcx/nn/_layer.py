@@ -12,14 +12,20 @@ __all__ = [
     "AdaptiveMaxPool2d",
     "Dropout",
     "LayerNorm",
+    "PatchEmbedding",
+    "MultiHeadAttention",
+    "TransformerBlock"
 ]
 
 
-from typing import Tuple, Sequence, Callable
+from typing import Tuple, Sequence, Callable, Optional, List
 
 import jax
+import jax.numpy as jnp
 import jax.tree_util as jtu
 import equinox as eqx
+import einops
+import pcx as px
 
 from ..core._module import Module
 from ..core._random import RandomKeyGenerator, RKG
@@ -307,3 +313,136 @@ class LayerNorm(Layer):
             dtype,
             elementwise_affine=elementwise_affine,
         )
+
+
+# Transformer Components ##################################################################################################
+
+class PatchEmbedding(Layer):
+    """
+    Layer that converts images into patch embeddings for Vision Transformers.
+    """
+    def __init__(
+        self,
+        input_channels: int,
+        embed_dim: int,
+        patch_size: int,
+        *,
+        rkg: RandomKeyGenerator = RKG,
+        **kwargs,
+    ):
+        super().__init__(
+            eqx.nn.Linear,
+            patch_size * patch_size * input_channels,
+            embed_dim,
+            key=rkg(),
+            **kwargs,
+        )
+        # Store parameters needed for patching operation
+        self.patch_size = px.static(patch_size)
+        self.input_channels = px.static(input_channels)
+        self.embed_dim = px.static(embed_dim)
+
+    def __call__(self, x, key=None):
+        # x shape: (C, H, W)
+        # Rearrange image into patches and flatten each patch
+        x = einops.rearrange(
+            x,
+            "c (h p1) (w p2) -> (h w) (c p1 p2)",
+            p1=self.patch_size,
+            p2=self.patch_size,
+        )
+        # Apply projection to each flattened patch
+        x = super().__call__(x, key=key)
+        return x
+
+
+class MultiHeadAttention(Layer):
+    """
+    Multi-head attention layer for transformer architectures.
+    Wrapper around Equinox's MultiheadAttention.
+    """
+    def __init__(
+        self,
+        num_heads: int,
+        query_size: int,
+        key_size: int | None = None,
+        value_size: int | None = None,
+        output_size: int | None = None,
+        qk_size: int | None = None,
+        vo_size: int | None = None,
+        use_query_bias: bool = False,
+        use_key_bias: bool = False,
+        use_value_bias: bool = False,
+        use_output_bias: bool = False,
+        dropout_p: float = 0.0,
+        inference: bool = False,
+        dtype = None,
+        *,
+        rkg: RandomKeyGenerator = RKG,
+        **kwargs,
+    ):
+        super().__init__(
+            eqx.nn.MultiheadAttention,
+            num_heads,
+            query_size,
+            key_size,
+            value_size,
+            output_size,
+            qk_size,
+            vo_size,
+            use_query_bias,
+            use_key_bias,
+            use_value_bias,
+            use_output_bias,
+            dropout_p,
+            inference,
+            dtype,
+            key=rkg(),
+            **kwargs,
+        )
+
+
+class TransformerBlock(Module):
+    """
+    Transformer block with self-attention and feedforward network.
+    """
+
+    def __init__(
+        self,
+        input_shape: int,
+        hidden_dim: int,
+        num_heads: int,
+        dropout_rate: float,
+    ):
+        super().__init__()
+
+        self.layer_norm1 = LayerNorm(input_shape)
+        self.layer_norm2 = LayerNorm(input_shape)
+        self.attention = MultiHeadAttention(num_heads, input_shape)
+
+        self.linear1 = Linear(input_shape, hidden_dim)
+        self.linear2 = Linear(hidden_dim, input_shape)
+        self.dropout1 = Dropout(dropout_rate)
+        self.dropout2 = Dropout(dropout_rate)
+        
+    def __call__(self, x, enable_dropout: bool=False):
+        
+        # Apply layer normalization
+        input_x = jax.vmap(self.layer_norm1)(x)
+
+        # Apply self-attention and add residual connection
+        x = x + self.attention(input_x, input_x, input_x)
+
+        # Apply layer normalization and feedforward network
+        input_x = jax.vmap(self.layer_norm2)(x)
+        input_x = jax.vmap(self.linear1)(input_x)
+        input_x = jax.nn.gelu(input_x)
+
+        input_x = self.dropout1(input_x, inference=not enable_dropout)
+        input_x = jax.vmap(self.linear2)(input_x)
+        input_x = self.dropout2(input_x, inference=not enable_dropout)
+
+        x = x + input_x
+
+        return x
+    

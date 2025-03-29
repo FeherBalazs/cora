@@ -190,7 +190,6 @@ def train_on_batch(T: int, x: jax.Array, *, model: Decoder, optim_w: pxu.Optim, 
     optim_h.init(pxu.M_hasnot(pxc.VodeParam, frozen=True)(model))
 
     # Inference and learning steps
-    # Here we could  add logic to do this until convergence for each sample or batch
     for _ in range(T):
         with pxu.step(model, clear_params=pxc.VodeParam.Cache):
             (h_energy, y_), h_grad = inference_step(model=model)
@@ -395,7 +394,8 @@ def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corr
 if __name__ == '__main__':
     # Added dataset selection and configuration
     dataset_name = "cifar10"  # Change to "cifar10" or "imagenet" "fashionmnist" as needed
-    root_path = "../datasets/"  # Adjust to your dataset root path
+    root_path = "../examples/datacifar10/"
+    
     batch_size = 100
     nm_epochs = 20
     target_class = None
