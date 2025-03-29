@@ -458,14 +458,14 @@ class TransformerDecoder(pxc.EnergyModule):
         # Process through transformer blocks
         for i, block in enumerate(self.transformer_blocks):
             x = block(x) # Apply transformer block
-            x = jnp.tanh(x)
+            # x = jnp.tanh(x)
             x = self.vodes[i+1](x) # Apply Vode
     
         # Project back to patch_dim
         x = jax.vmap(self.output_projection)(x)
         
         # Apply tanh activation to constrain output values to [-1, 1] range
-        x = jnp.tanh(x)
+        # x = jnp.tanh(x)
         
         # Unpatchify back to image
         x = self.unpatchify(x, patch_size=self.config.patch_size, image_size=self.config.image_shape[1], channel_size=self.config.image_shape[0])
@@ -608,9 +608,6 @@ def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.
     for x, y in dl:
         h_energy, w_energy, h_grad, w_grad = train_on_batch(T, x.numpy(), model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch, step=step)
         step += 1
-    
-    # Save all logs after each epoch
-    # model_debugger.save_all_logs()
 
     return h_energy, w_energy, h_grad, w_grad
 
@@ -630,9 +627,10 @@ def eval_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_h: p
     optim_h.init(pxu.M_hasnot(pxc.VodeParam, frozen=True)(model))
 
     # Inference steps
-    for _ in range(T):
+    for t in range(T):
         with pxu.step(model, clear_params=pxc.VodeParam.Cache):
             (h_energy, y_), h_grad = inference_step(model=model)
+            print("h_energy:", h_energy, "at step t:", t)
 
         optim_h.step(model, h_grad["model"])
     
@@ -641,7 +639,9 @@ def eval_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_h: p
     with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
         x_hat = forward(None, model=model)
 
-    loss = jnp.square(jnp.clip(x_hat.flatten(), 0.0, 1.0) - x.flatten()).mean()
+    # loss = jnp.square(jnp.clip(x_hat.flatten(), 0.0, 1.0) - x.flatten()).mean()
+
+    loss = jnp.square(x_hat.flatten() - x.flatten()).mean()
 
     return loss, x_hat
 
@@ -767,23 +767,7 @@ def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corr
         for T in T_values:
             # Enhanced eval_on_batch_partial to capture intermediate outputs
             x_hat = eval_on_batch_partial(use_corruption=use_corruption, corrupt_ratio=corrupt_ratio, T=T, x=x, model=model, optim_h=optim_h)
-            
-            # For debugging, capture last layer outputs
-            try:
-                with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
-                    z = forward(None, model=model)
-                    if model.final_layer:
-                        # The TransformerDecoder doesn't have a 'latent' attribute directly
-                        # Instead, we can get the conditioning parameter
-                        cond_param = param_get(model.cond_param)
-                        last_layer_out = model.final_layer.module(z, cond_param)
-                        # Store for debugging
-                        if T not in debug_info['last_layer_outputs']:
-                            debug_info['last_layer_outputs'][T] = []
-                        debug_info['last_layer_outputs'][T].append(last_layer_out)
-            except Exception as e:
-                print(f"Error capturing last layer outputs: {e}")
-            
+                        
             x_hat_single = jnp.reshape(x_hat[1][0], image_shape)
             recon_images[T].append(x_hat_single)
     
