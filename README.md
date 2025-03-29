@@ -25,6 +25,15 @@ Cora is designed to run using a Docker-based setup. Follow these steps to get st
       ```bash
       ./docker/run.sh
       ```
+4. **Login to Weights and Biases**:
+      ```bash
+      wandb login
+      ```
+
+5. **Run training**:
+      ```bash
+      python examples/debug_transformer_wandb.py --config debug_tiny
+      ```
 
 ## Motivation
 Predictive coding is a computational framework inspired by the brain’s way of processing information, where higher cortical areas predict sensory input and the errors between predicted and actual sensory inputs are used to update the model. This hierarchical approach has shown promise in neuroscience, and recent advances in deep learning have demonstrated its potential to improve efficiency by reducing the need for global error propagation and focusing on local prediction errors.
