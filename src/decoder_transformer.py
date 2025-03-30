@@ -565,7 +565,7 @@ def masked_se_energy(vode, rkg, mask):
     return jnp.sum(masked_error) / jnp.sum(mask)  # Normalize by number of known pixels
 
 
-# @pxf.jit(static_argnums=0)
+@pxf.jit(static_argnums=0)
 def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.Optim, epoch=None, step=None):
     model.train()
 
@@ -585,12 +585,12 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
     for t in range(T):
         with pxu.step(model, clear_params=pxc.VodeParam.Cache):
             (h_energy, y_), h_grad = inference_step(model=model)
-            print("h_energy:", h_energy, "at step t:", t)
+            # print("h_energy:", h_energy, "at step t:", t)
         optim_h.step(model, h_grad["model"])
 
         with pxu.step(model, clear_params=pxc.VodeParam.Cache):
             (w_energy, y_), w_grad = learning_step(model=model)
-            print("w_energy:", w_energy, "at step t:", t)
+            # print("w_energy:", w_energy, "at step t:", t)
         optim_w.step(model, w_grad["model"], scale_by=1.0/x.shape[0])
 
     # After training, forward once more to get final activations
@@ -612,9 +612,11 @@ def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.
     return h_energy, w_energy, h_grad, w_grad
 
 
-# @pxf.jit(static_argnums=0)
+@pxf.jit(static_argnums=0)
 def eval_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim):
-    # model.eval()
+    model.eval()
+    optim_h.clear()
+    optim_h.init(pxu.M_hasnot(pxc.VodeParam, frozen=True)(model))
 
     inference_step = pxf.value_and_grad(pxu.M_hasnot(pxc.VodeParam, frozen=True).to([False, True]), has_aux=True)(
         energy
@@ -623,14 +625,12 @@ def eval_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_h: p
     # Init step
     with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
         forward(x, model=model)
-    
-    optim_h.init(pxu.M_hasnot(pxc.VodeParam, frozen=True)(model))
 
     # Inference steps
     for t in range(T):
         with pxu.step(model, clear_params=pxc.VodeParam.Cache):
             (h_energy, y_), h_grad = inference_step(model=model)
-            print("h_energy:", h_energy, "at step t:", t)
+            # print("h_energy:", h_energy, "at step t:", t)
 
         optim_h.step(model, h_grad["model"])
     
@@ -638,8 +638,6 @@ def eval_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_h: p
 
     with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
         x_hat = forward(None, model=model)
-
-    # loss = jnp.square(jnp.clip(x_hat.flatten(), 0.0, 1.0) - x.flatten()).mean()
 
     loss = jnp.square(x_hat.flatten() - x.flatten()).mean()
 
