@@ -51,9 +51,12 @@ class ModelConfig:
     # Dataset settings
     dataset: str = "cifar10"
     data_dir: str = "../datasets/"
-    train_subset: int = 1
-    test_subset: int = 1
+    train_subset: int = 2
+    test_subset: int = 2
     target_class: Optional[int] = None
+    log_every_n_epochs: int = 5
+    # Visualization settings
+    num_images: int = 2
     
     # Model architecture
     hidden_size: int = 48
@@ -66,52 +69,41 @@ class ModelConfig:
     use_noise: bool = True
     
     # Training settings
-    batch_size: int = 1
+    batch_size: int = 2
     epochs: int = 100
     inference_steps: int = 10
     eval_inference_steps: int = 10
-    # reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 4, 8, 16, 32, 64, 128])
     reconstruction_steps: List[int] = field(default_factory=lambda: [1, 10, 50])
-    peak_lr_weights: float = 1e-3
-    peak_lr_hidden: float = 0.01
+    # peak_lr_weights: float = 1e-3
+    peak_lr_weights: float = 1e-2
+    # peak_lr_hidden: float = 0.01
+    peak_lr_hidden: float = 0.1
     weight_decay: float = 2e-4
     warmup_epochs: int = 1
-    use_lr_schedule: bool = True  # New option to control whether to use LR scheduling
+    use_lr_schedule: bool = True
     seed: int = 42
     
     # Early stopping settings
-    use_early_stopping: bool = False
+    use_early_stopping: bool = True
     early_stopping_patience: int = 10
     early_stopping_min_delta: float = 0.0001
-    
-    # Visualization settings
-    num_images: int = 1
 
 # Predefined configurations for easy experimentation
 MODEL_CONFIGS = {
     "debug_tiny": ModelConfig(
         name="debug_tiny",
-        batch_size=1,
         hidden_size=128,
         num_heads=4,
         num_blocks=6,
-        train_subset=1,
-        test_subset=1,
-        use_lr_schedule=False
     ),
     "debug_small": ModelConfig(
         name="debug_small",
-        batch_size=1,
         hidden_size=512,
         num_heads=8,
         num_blocks=6,
-        train_subset=1,
-        test_subset=1,
-        use_lr_schedule=False
     ),
     "baseline": ModelConfig(
         name="baseline",
-        batch_size=10,
         hidden_size=128,
         num_heads=8,
         num_blocks=6,
@@ -119,7 +111,6 @@ MODEL_CONFIGS = {
         test_subset=100,
         peak_lr_weights=5e-4,
         peak_lr_hidden=0.005,
-        use_lr_schedule=True
     )
 }
 
@@ -154,48 +145,6 @@ def parse_args():
                         help=f'Predefined configuration to use. Options: {", ".join(MODEL_CONFIGS.keys())}')
     parser.add_argument('--batch-size', type=int, default=None,
                         help='Batch size for training')
-    parser.add_argument('--hidden-size', type=int, default=None,
-                        help='Hidden dimension size')
-    parser.add_argument('--num-heads', type=int, default=None,
-                        help='Number of attention heads')
-    parser.add_argument('--num-blocks', type=int, default=None,
-                        help='Number of transformer blocks')
-    parser.add_argument('--epochs', type=int, default=None,
-                        help='Number of training epochs')
-    parser.add_argument('--inference-steps', type=int, default=None,
-                        help='Number of inference steps')
-    parser.add_argument('--data-dir', type=str, default=None,
-                        help='Directory to store datasets')
-    parser.add_argument('--train-subset', type=int, default=None,
-                        help='Number of samples to use from the training set')
-    parser.add_argument('--test-subset', type=int, default=None,
-                        help='Number of samples to use from the test set')
-    parser.add_argument('--target-class', type=int, default=None,
-                        help='Filter the dataset to a specific class (0-9 for CIFAR-10)')
-    parser.add_argument('--peak-lr-weights', type=float, default=None,
-                        help='Peak learning rate for weights')
-    parser.add_argument('--peak-lr-hidden', type=float, default=None,
-                        help='Peak learning rate for hidden states')
-    parser.add_argument('--weight-decay', type=float, default=None,
-                        help='Weight decay for AdamW optimizer')
-    parser.add_argument('--warmup-epochs', type=int, default=None,
-                        help='Number of warmup epochs for learning rate')
-    parser.add_argument('--use-lr-schedule', action='store_true', dest='use_lr_schedule',
-                        help='Use learning rate schedule with warmup and decay')
-    parser.add_argument('--no-lr-schedule', action='store_false', dest='use_lr_schedule',
-                        help='Use constant learning rate without scheduling')
-    parser.add_argument('--use-early-stopping', action='store_true', dest='use_early_stopping',
-                        help='Use early stopping to prevent overfitting')
-    parser.add_argument('--no-early-stopping', action='store_false', dest='use_early_stopping',
-                        help='Disable early stopping')
-    parser.add_argument('--early-stopping-patience', type=int, default=None,
-                        help='Number of epochs with no improvement before stopping training')
-    parser.add_argument('--early-stopping-min-delta', type=float, default=None,
-                        help='Minimum change to qualify as an improvement')
-    parser.add_argument('--seed', type=int, default=None,
-                      help='Random seed for reproducibility')
-    parser.add_argument('--num-images', type=int, default=None,
-                      help='Number of images to use for reconstruction visualization')
     return parser.parse_args()
 
 def create_learning_rate_schedule(base_lr, warmup_epochs, total_epochs, steps_per_epoch):
@@ -265,13 +214,13 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
         train_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=2,
+        num_workers=4,
     )
     test_dataloader = DataLoader(
         test_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=2,
+        num_workers=4,
     )
     
     class TorchDataloader:
@@ -301,9 +250,6 @@ def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corr
     labels_list = []
     dataloader_iter = iter(dataloader)
     
-    # Add debug information for reconstruction
-    debug_info = {'patched_outputs': {}, 'last_layer_outputs': {}}
-    
     # Load and reshape images
     for _ in range(num_images):
         x, label = next(dataloader_iter)
@@ -319,10 +265,10 @@ def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corr
             
         for T in T_values:
             # Enhanced eval_on_batch_partial to capture intermediate outputs
-            # loss, x_hat = eval_on_batch_partial(use_corruption=use_corruption, corrupt_ratio=corrupt_ratio, T=T, x=x, model=model, optim_h=optim_h)
-            loss, x_hat = eval_on_batch(T=T, x=x, model=model, optim_h=optim_h)
+            loss, x_hat = eval_on_batch_partial(use_corruption=use_corruption, corrupt_ratio=corrupt_ratio, T=T, x=x, model=model, optim_h=optim_h)
+            # loss, x_hat = eval_on_batch(T=T, x=x, model=model, optim_h=optim_h)
 
-            print("reconstruction loss with T:", T, "loss:", loss)
+            # print("reconstruction loss with T:", T, "loss:", loss)
             
             x_hat_single = jnp.reshape(x_hat[0], image_shape)
             recon_images[T].append(x_hat_single)
@@ -405,20 +351,25 @@ def log_vode_stats(model, h_grad, w_grad, run, epoch):
     for i, (energy, grad_norm) in enumerate(zip(vode_energies, vode_grad_norms)):
         # Process energy values
         if energy is not None:
-            # Convert to scalar if needed
-            if hasattr(energy, 'item'):
+            if hasattr(energy, 'size') and energy.size == 1:
                 energy_value = energy.item()
-            elif hasattr(energy, 'shape'):
+            elif isinstance(energy, (float, int)):
+                # Handle cases where it might already be a Python scalar (less likely from JAX)
                 energy_value = float(energy)
             else:
-                energy_value = energy
-                
-            # Log individual metrics
-            vode_stats[f"VodeEnergy/vode_{i}"] = energy_value
-            
-            # Store for tables
-            energy_data.append([i, energy_value])
-            processed_energy_data.append([epoch+1, i, energy_value])
+                # Handle unexpected non-scalar or non-array case
+                print(f"Warning: Energy for vode {i} is not a scalar JAX array or Python number (type: {type(energy)}, value: {energy}). Logging NaN.")
+                energy_value = float('nan') # Assign NaN or another placeholder
+
+            # Log individual metrics (now energy_value is always defined)
+            # Check for NaN before adding to data lists used for tables/plots
+            if not np.isnan(energy_value):
+                 vode_stats[f"VodeEnergy/vode_{i}"] = energy_value
+                 energy_data.append([i, energy_value])
+                 processed_energy_data.append([epoch+1, i, energy_value])
+            else:
+                 # Optionally log the NaN value to wandb if desired, or skip
+                 vode_stats[f"VodeEnergy/vode_{i}"] = energy_value # Log NaN to wandb
         
         # Process gradient values
         if grad_norm is not None:
@@ -699,7 +650,7 @@ def main():
         entity="neural-machines",
         project="debug-transformer",
         config=vars(config),
-        mode="online"  # Change to online for immediate verification
+        mode="offline"  # Change to online for immediate verification
     )
     
     # Upload code artifacts to W&B
@@ -816,27 +767,29 @@ def main():
         # Train for one epoch
         h_energy, w_energy, h_grad, w_grad = train(train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch)
         
-        # Log detailed vode statistics and get processed data for summary
-        processed_energy_data, processed_grad_data = log_vode_stats(model, h_grad, w_grad, run, epoch)
-        
-        # Add the processed data to our summary collections
-        all_epochs_energy_data.extend(processed_energy_data)
-        all_epochs_grad_data.extend(processed_grad_data)
-        
-        # Evaluate on validation set
-        val_loss = eval(train_loader, config.eval_inference_steps, model=model, optim_h=optim_h)
-        val_losses.append(val_loss)
-        print(f"Validation loss: {val_loss:.6f}")
-        
-        # Collect all metrics for this epoch in a single dictionary
-        epoch_metrics = {
-            'Losses/validation_loss': val_loss,
-            'LearningRate/weights': current_w_lr,
-            'LearningRate/hidden': current_h_lr
-        }
+        # Create logs and evaluate on validation set every N epochs (and for the final epoch)
+        if (epoch + 1) % config.log_every_n_epochs == 0 or epoch == config.epochs - 1 or (config.use_early_stopping and early_stopped and epoch == early_stopped_epoch):
+            # Log detailed vode statistics and get processed data for summary
+            processed_energy_data, processed_grad_data = log_vode_stats(model, h_grad, w_grad, run, epoch)
+            
+            # Add the processed data to our summary collections
+            all_epochs_energy_data.extend(processed_energy_data)
+            all_epochs_grad_data.extend(processed_grad_data)
+            
+            # Evaluate on validation set
+            val_loss = eval(train_loader, config.eval_inference_steps, model=model, optim_h=optim_h)
+            val_losses.append(val_loss)
+            print(f"Validation loss: {val_loss:.6f}")
+            
+            # Collect all metrics for this epoch in a single dictionary
+            epoch_metrics = {
+                'Losses/validation_loss': val_loss,
+                'LearningRate/weights': current_w_lr,
+                'LearningRate/hidden': current_h_lr
+            }
         
         # Generate reconstructions every N epochs (and for the final epoch)
-        if (epoch + 1) % 20 == 0 or epoch == config.epochs - 1 or (config.use_early_stopping and early_stopped and epoch == early_stopped_epoch):
+        if (epoch + 1) % config.log_every_n_epochs == 0 or epoch == config.epochs - 1 or (config.use_early_stopping and early_stopped and epoch == early_stopped_epoch):
             print(f"Generating reconstructions for epoch {epoch+1}...")
             _, _, recon_path, recon_logs = visualize_reconstruction(
                 model, 
@@ -851,36 +804,36 @@ def main():
             # Add reconstruction logs to the epoch metrics
             epoch_metrics.update(recon_logs)
         
-        # Add system metrics
-        epoch_metrics.update({
-            'System/GPU_Memory_Allocated': torch.cuda.memory_allocated() / 1024**2 if torch.cuda.is_available() else 0,
-            'System/GPU_Memory_Cached': torch.cuda.memory_reserved() / 1024**2 if torch.cuda.is_available() else 0,
-            'System/CPU_Memory_Usage': psutil.Process().memory_info().rss / 1024**2
-        })
+            # Add system metrics
+            epoch_metrics.update({
+                'System/GPU_Memory_Allocated': torch.cuda.memory_allocated() / 1024**2 if torch.cuda.is_available() else 0,
+                'System/GPU_Memory_Cached': torch.cuda.memory_reserved() / 1024**2 if torch.cuda.is_available() else 0,
+                'System/CPU_Memory_Usage': psutil.Process().memory_info().rss / 1024**2
+            })
+            
+            # Log all metrics for this epoch with a consistent step number
+            run.log(epoch_metrics, step=epoch+1)  # Use epoch+1 to start from step 1
         
-        # Log all metrics for this epoch with a consistent step number
-        run.log(epoch_metrics, step=epoch+1)  # Use epoch+1 to start from step 1
+            # Early stopping check
+            if config.use_early_stopping:
+                if val_loss < (best_val_loss - config.early_stopping_min_delta):
+                    # Found a better model
+                    best_val_loss = val_loss
+                    epochs_without_improvement = 0
+                    # Save the best model here if desired
+                    # Could implement model state saving logic here
+                else:
+                    epochs_without_improvement += 1
+                    print(f"No improvement for {epochs_without_improvement} epochs (best: {best_val_loss:.6f})")
+                    
+                    if epochs_without_improvement >= config.early_stopping_patience:
+                        print(f"Early stopping triggered after {epoch+1} epochs!")
+                        early_stopped = True
+                        early_stopped_epoch = epoch
+                        break
         
         epoch_time = time.time() - epoch_start
         print(f"Epoch completed in {epoch_time:.2f} seconds")
-        
-        # Early stopping check
-        if config.use_early_stopping:
-            if val_loss < (best_val_loss - config.early_stopping_min_delta):
-                # Found a better model
-                best_val_loss = val_loss
-                epochs_without_improvement = 0
-                # Save the best model here if desired
-                # Could implement model state saving logic here
-            else:
-                epochs_without_improvement += 1
-                print(f"No improvement for {epochs_without_improvement} epochs (best: {best_val_loss:.6f})")
-                
-                if epochs_without_improvement >= config.early_stopping_patience:
-                    print(f"Early stopping triggered after {epoch+1} epochs!")
-                    early_stopped = True
-                    early_stopped_epoch = epoch
-                    break
     
     # Create summary tables after training is complete
     if all_epochs_energy_data:
