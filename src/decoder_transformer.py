@@ -655,7 +655,7 @@ def eval(dl, T, *, model: TransformerDecoder, optim_h: pxu.Optim):
 
 
 def eval_on_batch_partial(use_corruption: bool, corrupt_ratio: float, T: int, x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim):
-    # model.eval()
+    model.eval()
 
     # Extract image shape information statically
     image_shape = model.config.image_shape
