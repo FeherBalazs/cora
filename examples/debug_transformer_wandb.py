@@ -51,12 +51,13 @@ class ModelConfig:
     # Dataset settings
     dataset: str = "cifar10"
     data_dir: str = "../datasets/"
-    train_subset: int = 10
-    test_subset: int = 10
+    train_subset: int = 10000
+    test_subset: int = 10000
     target_class: Optional[int] = None
-    log_every_n_epochs: int = 5
+    reconstruction_every_n_epochs: int = 50
+    validation_every_n_epochs: int = 5
     # Visualization settings
-    num_images: int = 2
+    num_images: int = 5
     
     # Model architecture
     hidden_size: int = 48
@@ -69,11 +70,11 @@ class ModelConfig:
     use_noise: bool = True
     
     # Training settings
-    batch_size: int = 5
+    batch_size: int = 500
     epochs: int = 100
-    inference_steps: int = 10
-    eval_inference_steps: int = 10
-    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 10, 50])
+    inference_steps: int = 6
+    eval_inference_steps: int = 6
+    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 10, 20])
     peak_lr_weights: float = 1e-3
     peak_lr_hidden: float = 0.01
     weight_decay: float = 2e-4
@@ -105,10 +106,6 @@ MODEL_CONFIGS = {
         hidden_size=128,
         num_heads=8,
         num_blocks=6,
-        train_subset=100,
-        test_subset=100,
-        peak_lr_weights=5e-4,
-        peak_lr_hidden=0.005,
     )
 }
 
@@ -648,7 +645,7 @@ def main():
         entity="neural-machines",
         project="debug-transformer",
         config=vars(config),
-        mode="offline"  # Change to online for immediate verification
+        mode="online"  # Change to online for immediate verification
     )
     
     # Upload code artifacts to W&B
@@ -766,14 +763,7 @@ def main():
         h_energy, w_energy, h_grad, w_grad = train(train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch)
         
         # Create logs and evaluate on validation set every N epochs (and for the final epoch)
-        if (epoch + 1) % config.log_every_n_epochs == 0 or epoch == config.epochs - 1 or (config.use_early_stopping and early_stopped and epoch == early_stopped_epoch):
-            # Log detailed vode statistics and get processed data for summary
-            processed_energy_data, processed_grad_data = log_vode_stats(model, h_grad, w_grad, run, epoch)
-            
-            # Add the processed data to our summary collections
-            all_epochs_energy_data.extend(processed_energy_data)
-            all_epochs_grad_data.extend(processed_grad_data)
-            
+        if (epoch + 1) % config.validation_every_n_epochs == 0 or epoch == config.epochs - 1 or (config.use_early_stopping and early_stopped and epoch == early_stopped_epoch):
             # Evaluate on validation set
             val_loss = eval(train_loader, config.eval_inference_steps, model=model, optim_h=optim_h)
             val_losses.append(val_loss)
@@ -785,30 +775,7 @@ def main():
                 'LearningRate/weights': current_w_lr,
                 'LearningRate/hidden': current_h_lr
             }
-        
-        # Generate reconstructions every N epochs (and for the final epoch)
-        if (epoch + 1) % config.log_every_n_epochs == 0 or epoch == config.epochs - 1 or (config.use_early_stopping and early_stopped and epoch == early_stopped_epoch):
-            print(f"Generating reconstructions for epoch {epoch+1}...")
-            _, _, recon_path, recon_logs = visualize_reconstruction(
-                model, 
-                optim_h, 
-                train_loader, 
-                T_values=config.reconstruction_steps, 
-                use_corruption=False,
-                num_images=config.num_images,
-                wandb_run=run,
-                epoch=epoch+1
-            )
-            # Add reconstruction logs to the epoch metrics
-            epoch_metrics.update(recon_logs)
-        
-            # Add system metrics
-            epoch_metrics.update({
-                'System/GPU_Memory_Allocated': torch.cuda.memory_allocated() / 1024**2 if torch.cuda.is_available() else 0,
-                'System/GPU_Memory_Cached': torch.cuda.memory_reserved() / 1024**2 if torch.cuda.is_available() else 0,
-                'System/CPU_Memory_Usage': psutil.Process().memory_info().rss / 1024**2
-            })
-            
+
             # Log all metrics for this epoch with a consistent step number
             run.log(epoch_metrics, step=epoch+1)  # Use epoch+1 to start from step 1
         
@@ -829,6 +796,36 @@ def main():
                         early_stopped = True
                         early_stopped_epoch = epoch
                         break
+        
+        # Generate reconstructions every N epochs (and for the final epoch)
+        if (epoch + 1) % config.reconstruction_every_n_epochs == 0 or epoch == config.epochs - 1 or (config.use_early_stopping and early_stopped and epoch == early_stopped_epoch):
+            # Log detailed vode statistics and get processed data for summary
+            processed_energy_data, processed_grad_data = log_vode_stats(model, h_grad, w_grad, run, epoch)
+            
+            # Add the processed data to our summary collections
+            all_epochs_energy_data.extend(processed_energy_data)
+            all_epochs_grad_data.extend(processed_grad_data)
+            
+            print(f"Generating reconstructions for epoch {epoch+1}...")
+            _, _, recon_path, recon_logs = visualize_reconstruction(
+                model, 
+                optim_h, 
+                train_loader, 
+                T_values=config.reconstruction_steps, 
+                use_corruption=False,
+                num_images=config.num_images,
+                wandb_run=run,
+                epoch=epoch+1
+            )
+            # Add reconstruction logs to the epoch metrics
+            epoch_metrics.update(recon_logs)
+        
+            # Add system metrics
+            epoch_metrics.update({
+                'System/GPU_Memory_Allocated': torch.cuda.memory_allocated() / 1024**2 if torch.cuda.is_available() else 0,
+                'System/GPU_Memory_Cached': torch.cuda.memory_reserved() / 1024**2 if torch.cuda.is_available() else 0,
+                'System/CPU_Memory_Usage': psutil.Process().memory_info().rss / 1024**2
+            })
         
         epoch_time = time.time() - epoch_start
         print(f"Epoch completed in {epoch_time:.2f} seconds")
