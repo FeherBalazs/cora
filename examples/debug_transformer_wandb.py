@@ -51,8 +51,8 @@ class ModelConfig:
     # Dataset settings
     dataset: str = "cifar10"
     data_dir: str = "../datasets/"
-    train_subset: int = 2
-    test_subset: int = 2
+    train_subset: int = 10
+    test_subset: int = 10
     target_class: Optional[int] = None
     log_every_n_epochs: int = 5
     # Visualization settings
@@ -69,18 +69,16 @@ class ModelConfig:
     use_noise: bool = True
     
     # Training settings
-    batch_size: int = 2
+    batch_size: int = 5
     epochs: int = 100
     inference_steps: int = 10
     eval_inference_steps: int = 10
     reconstruction_steps: List[int] = field(default_factory=lambda: [1, 10, 50])
-    # peak_lr_weights: float = 1e-3
-    peak_lr_weights: float = 1e-2
-    # peak_lr_hidden: float = 0.01
-    peak_lr_hidden: float = 0.1
+    peak_lr_weights: float = 1e-3
+    peak_lr_hidden: float = 0.01
     weight_decay: float = 2e-4
     warmup_epochs: int = 1
-    use_lr_schedule: bool = True
+    use_lr_schedule: bool = False
     seed: int = 42
     
     # Early stopping settings
