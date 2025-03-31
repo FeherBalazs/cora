@@ -29,6 +29,7 @@ from pcx.core._parameter import get as param_get  # Import get function for para
 
 STATUS_FORWARD = "forward"
 STATUS_REFINE = "refine"
+STATUS_PERTURB = "perturb"
 
 import jax.random as jrandom
 key = jrandom.PRNGKey(42)
@@ -399,7 +400,10 @@ class TransformerDecoder(pxc.EnergyModule):
         # Top-level latent Vode
         self.vodes = [pxc.Vode(
             energy_fn=None,
-            ruleset={pxc.STATUS.INIT: ("h, u <- u:to_init",)},
+            ruleset={
+                pxc.STATUS.INIT: ("h, u <- u:to_init",),
+                STATUS_PERTURB: ("h, u <- u:to_init",)
+                },
             tforms={
                 "to_init": lambda n, k, v, rkg: jax.random.normal(
                     px.RKG(), (config.num_patches, config.patch_dim)
@@ -410,7 +414,9 @@ class TransformerDecoder(pxc.EnergyModule):
         # Create Vodes for each transformer block output
         for _ in range(config.num_blocks):
             self.vodes.append(pxc.Vode(
-                ruleset={STATUS_FORWARD: ("h -> u",)}
+                ruleset={
+                    # pxc.STATUS.INIT: ("h, u <- u:to_zero",), 
+                    STATUS_FORWARD: ("h -> u",)}
             ))
 
         # Transformer blocks
@@ -565,7 +571,7 @@ def masked_se_energy(vode, rkg, mask):
     return jnp.sum(masked_error) / jnp.sum(mask)  # Normalize by number of known pixels
 
 
-@pxf.jit(static_argnums=0)
+# @pxf.jit(static_argnums=0)
 def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.Optim, epoch=None, step=None):
     model.train()
 
@@ -576,7 +582,8 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
     learning_step = pxf.value_and_grad(pxu.M_hasnot(pxnn.LayerParam).to([False, True]), has_aux=True)(energy)
 
     # Top down sweep and setting target value
-    with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
+    # If we STATUS_PERTURB we will have perturbations as we randomly initialize the top Vode
+    with pxu.step(model, STATUS_PERTURB, clear_params=pxc.VodeParam.Cache):
         forward(x, model=model)
 
     optim_h.init(pxu.M_hasnot(pxc.VodeParam, frozen=True)(model))
@@ -590,7 +597,7 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
 
         with pxu.step(model, clear_params=pxc.VodeParam.Cache):
             (w_energy, y_), w_grad = learning_step(model=model)
-            # print("w_energy:", w_energy, "at step t:", t)
+            print("w_energy:", w_energy, "at step t:", t)
         optim_w.step(model, w_grad["model"], scale_by=1.0/x.shape[0])
 
     # After training, forward once more to get final activations
@@ -612,7 +619,7 @@ def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.
     return h_energy, w_energy, h_grad, w_grad
 
 
-@pxf.jit(static_argnums=0)
+# @pxf.jit(static_argnums=0)
 def eval_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim):
     model.eval()
     optim_h.clear()
@@ -622,21 +629,24 @@ def eval_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_h: p
         energy
     )
 
-    # Init step
+    # Init step (make a clean sweep - as if waking from a dream, and making our first guess; we also set the target)
     with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
         forward(x, model=model)
 
-    # Inference steps
+    # Inference steps (then we start to refine our guess)
     for t in range(T):
         with pxu.step(model, clear_params=pxc.VodeParam.Cache):
             (h_energy, y_), h_grad = inference_step(model=model)
-            # print("h_energy:", h_energy, "at step t:", t)
+            print("h_energy:", h_energy, "at step t:", t)
 
         optim_h.step(model, h_grad["model"])
     
     optim_h.clear()
 
-    with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
+    # Final step (we make our final guess with our refined activations per layer)
+    # with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
+    # We do not clear the cache here as we want to keep the energy for logging
+    with pxu.step(model, STATUS_FORWARD):
         x_hat = forward(None, model=model)
 
     loss = jnp.square(x_hat.flatten() - x.flatten()).mean()
