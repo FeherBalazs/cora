@@ -51,13 +51,13 @@ class ModelConfig:
     # Dataset settings
     dataset: str = "cifar10"
     data_dir: str = "../datasets/"
-    train_subset: int = 10000
-    test_subset: int = 10000
+    train_subset: int = 2
+    test_subset: int = 2
     target_class: Optional[int] = None
-    reconstruction_every_n_epochs: int = 50
-    validation_every_n_epochs: int = 5
+    reconstruction_every_n_epochs: int = 1
+    validation_every_n_epochs: int = 1
     # Visualization settings
-    num_images: int = 5
+    num_images: int = 1
     
     # Model architecture
     hidden_size: int = 48
@@ -67,14 +67,14 @@ class ModelConfig:
     patch_size: int = 4
     axes_dim: List[int] = field(default_factory=lambda: [16, 16])
     theta: int = 10_000
-    use_noise: bool = True
     
     # Training settings
-    batch_size: int = 500
-    epochs: int = 100
-    inference_steps: int = 6
-    eval_inference_steps: int = 6
-    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 10, 20])
+    use_noise: bool = True
+    batch_size: int = 2
+    epochs: int = 2
+    inference_steps: int = 400
+    eval_inference_steps: int = 400
+    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 10, 20, 40, 80])
     peak_lr_weights: float = 1e-3
     peak_lr_hidden: float = 0.01
     weight_decay: float = 2e-4
@@ -744,6 +744,11 @@ def main():
     early_stopped = False
     
     print(f"Training for {config.epochs} epochs with W&B logging...")
+
+    # Initialize the model (set h values of the Vodes)
+    for x, _ in train_loader:
+        with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
+            forward(x.numpy(), model=model)
     
     for epoch in range(config.epochs):
         epoch_start = time.time()
@@ -775,10 +780,41 @@ def main():
                 'LearningRate/weights': current_w_lr,
                 'LearningRate/hidden': current_h_lr
             }
+        
+        # # Generate reconstructions every N epochs (and for the final epoch)
+        # if (epoch + 1) % config.reconstruction_every_n_epochs == 0 or epoch == config.epochs - 1 or (config.use_early_stopping and early_stopped and epoch == early_stopped_epoch):
+            
+            # # Log detailed vode statistics and get processed data for summary
+            # processed_energy_data, processed_grad_data = log_vode_stats(model, h_grad, w_grad, run, epoch)
+            
+            # # Add the processed data to our summary collections
+            # all_epochs_energy_data.extend(processed_energy_data)
+            # all_epochs_grad_data.extend(processed_grad_data)
+            
+            print(f"Generating reconstructions for epoch {epoch+1}...")
+            _, _, recon_path, recon_logs = visualize_reconstruction(
+                model, 
+                optim_h, 
+                train_loader, 
+                T_values=config.reconstruction_steps, 
+                use_corruption=False,
+                num_images=config.num_images,
+                wandb_run=run,
+                epoch=epoch+1
+            )
+            # Add reconstruction logs to the epoch metrics
+            epoch_metrics.update(recon_logs)
+        
+            # # Add system metrics
+            # epoch_metrics.update({
+            #     'System/GPU_Memory_Allocated': torch.cuda.memory_allocated() / 1024**2 if torch.cuda.is_available() else 0,
+            #     'System/GPU_Memory_Cached': torch.cuda.memory_reserved() / 1024**2 if torch.cuda.is_available() else 0,
+            #     'System/CPU_Memory_Usage': psutil.Process().memory_info().rss / 1024**2
+            # })
 
             # Log all metrics for this epoch with a consistent step number
             run.log(epoch_metrics, step=epoch+1)  # Use epoch+1 to start from step 1
-        
+
             # Early stopping check
             if config.use_early_stopping:
                 if val_loss < (best_val_loss - config.early_stopping_min_delta):
@@ -796,36 +832,6 @@ def main():
                         early_stopped = True
                         early_stopped_epoch = epoch
                         break
-        
-        # Generate reconstructions every N epochs (and for the final epoch)
-        if (epoch + 1) % config.reconstruction_every_n_epochs == 0 or epoch == config.epochs - 1 or (config.use_early_stopping and early_stopped and epoch == early_stopped_epoch):
-            # Log detailed vode statistics and get processed data for summary
-            processed_energy_data, processed_grad_data = log_vode_stats(model, h_grad, w_grad, run, epoch)
-            
-            # Add the processed data to our summary collections
-            all_epochs_energy_data.extend(processed_energy_data)
-            all_epochs_grad_data.extend(processed_grad_data)
-            
-            print(f"Generating reconstructions for epoch {epoch+1}...")
-            _, _, recon_path, recon_logs = visualize_reconstruction(
-                model, 
-                optim_h, 
-                train_loader, 
-                T_values=config.reconstruction_steps, 
-                use_corruption=False,
-                num_images=config.num_images,
-                wandb_run=run,
-                epoch=epoch+1
-            )
-            # Add reconstruction logs to the epoch metrics
-            epoch_metrics.update(recon_logs)
-        
-            # Add system metrics
-            epoch_metrics.update({
-                'System/GPU_Memory_Allocated': torch.cuda.memory_allocated() / 1024**2 if torch.cuda.is_available() else 0,
-                'System/GPU_Memory_Cached': torch.cuda.memory_reserved() / 1024**2 if torch.cuda.is_available() else 0,
-                'System/CPU_Memory_Usage': psutil.Process().memory_info().rss / 1024**2
-            })
         
         epoch_time = time.time() - epoch_start
         print(f"Epoch completed in {epoch_time:.2f} seconds")
@@ -857,16 +863,6 @@ def main():
         
     # Close W&B after all logging is complete
     wandb.finish()
-    
-    # Plot validation loss curve
-    plt.figure(figsize=(10, 6))
-    plt.plot(range(1, config.epochs + 1), val_losses, marker='o')
-    plt.title('Validation Loss Over Epochs')
-    plt.xlabel('Epoch')
-    plt.ylabel('Validation Loss')
-    plt.grid(True)
-    os.makedirs("../debug_logs", exist_ok=True)
-    plt.savefig("../debug_logs/validation_loss_curve.png")
     
     print("Debug run completed!")
 
