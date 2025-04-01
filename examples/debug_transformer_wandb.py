@@ -37,6 +37,7 @@ from src.decoder_transformer import (
     train, 
     eval, 
     eval_on_batch_partial,
+    eval_on_batch_partial_decoder_cnn,
     eval_on_batch,
     visualize_reconstruction,
     model_debugger,
@@ -57,7 +58,7 @@ class ModelConfig:
     reconstruction_every_n_epochs: int = 1
     validation_every_n_epochs: int = 1
     # Visualization settings
-    num_images: int = 1
+    num_images: int = 2
     
     # Model architecture
     hidden_size: int = 48
@@ -71,10 +72,10 @@ class ModelConfig:
     # Training settings
     use_noise: bool = True
     batch_size: int = 2
-    epochs: int = 2
-    inference_steps: int = 400
-    eval_inference_steps: int = 400
-    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 10, 20, 40, 80])
+    epochs: int = 50
+    inference_steps: int = 100
+    eval_inference_steps: int = 100
+    reconstruction_steps: List[int] = field(default_factory=lambda: [100])
     peak_lr_weights: float = 1e-3
     peak_lr_hidden: float = 0.01
     weight_decay: float = 2e-4
@@ -85,7 +86,7 @@ class ModelConfig:
     # Early stopping settings
     use_early_stopping: bool = True
     early_stopping_patience: int = 10
-    early_stopping_min_delta: float = 0.0001
+    early_stopping_min_delta: float = 0.00001
 
 # Predefined configurations for easy experimentation
 MODEL_CONFIGS = {
@@ -93,7 +94,7 @@ MODEL_CONFIGS = {
         name="debug_tiny",
         hidden_size=128,
         num_heads=4,
-        num_blocks=6,
+        num_blocks=1,
     ),
     "debug_small": ModelConfig(
         name="debug_small",
@@ -245,28 +246,40 @@ def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corr
     labels_list = []
     dataloader_iter = iter(dataloader)
     
-    # Load and reshape images
-    for _ in range(num_images):
+    # Get the single batch
+    try:
         x, label = next(dataloader_iter)
         x = jnp.array(x.numpy())
         
-        orig_images.append(jnp.reshape(x[0], image_shape))
-        
-        # Handle label as scalar or 1-element array
-        if hasattr(label, 'item'):
-            labels_list.append(label[0].item() if len(label.shape) > 0 else label.item())
-        else:
-            labels_list.append(None)
+        # Process each image in the batch separately
+        for i in range(num_images):
+            # Get single image and reshape
+            single_x = x[i:i+1]  # Keep batch dimension but with size 1
+            orig_images.append(jnp.reshape(single_x[0], image_shape))
             
-        for T in T_values:
-            # Enhanced eval_on_batch_partial to capture intermediate outputs
-            loss, x_hat = eval_on_batch_partial(use_corruption=use_corruption, corrupt_ratio=corrupt_ratio, T=T, x=x, model=model, optim_h=optim_h)
-            # loss, x_hat = eval_on_batch(T=T, x=x, model=model, optim_h=optim_h)
-
-            # print("reconstruction loss with T:", T, "loss:", loss)
-            
-            x_hat_single = jnp.reshape(x_hat[0], image_shape)
-            recon_images[T].append(x_hat_single)
+            # Handle label
+            if hasattr(label, 'item'):
+                labels_list.append(label[i].item() if len(label.shape) > 0 else label.item())
+            else:
+                labels_list.append(None)
+                
+            for T in T_values:
+                # Process single image
+                x_hat = eval_on_batch_partial_decoder_cnn(
+                    use_corruption=use_corruption, 
+                    corrupt_ratio=corrupt_ratio, 
+                    T=T, 
+                    x=single_x,  # Pass single image
+                    model=model, 
+                    optim_h=optim_h
+                )
+                
+                x_hat_single = jnp.reshape(x_hat[0], image_shape)
+                recon_images[T].append(x_hat_single)
+                
+    except StopIteration:
+        print("Warning: No data available in dataloader")
+        return [], {}
     
     # Create subplots
     fig, axes = plt.subplots(num_images, 1 + len(T_values), figsize=(4 * (1 + len(T_values)), 2 * num_images))
