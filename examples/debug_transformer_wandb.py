@@ -22,7 +22,6 @@ import wandb
 import psutil
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, Tuple
-import contextlib
 import re
 import matplotlib.pyplot as plt
 from datetime import datetime
@@ -36,13 +35,8 @@ from src.decoder_transformer import (
     TransformerConfig,
     train, 
     eval, 
-    eval_on_batch_partial,
-    eval_on_batch_partial_decoder_cnn,
-    eval_on_batch,
-    visualize_reconstruction,
-    model_debugger,
-    forward,
-    train_on_batch
+    unmask_on_batch,
+    forward
 )
 
 @dataclass
@@ -57,6 +51,9 @@ class ModelConfig:
     target_class: Optional[int] = None
     reconstruction_every_n_epochs: int = 1
     validation_every_n_epochs: int = 1
+    use_corruption: bool = True
+    corrupt_ratio: float = 0.5
+
     # Visualization settings
     num_images: int = 5
     
@@ -72,10 +69,10 @@ class ModelConfig:
     # Training settings
     use_noise: bool = True
     batch_size: int = 5
-    epochs: int = 2
+    epochs: int = 10
     inference_steps: int = 100
     eval_inference_steps: int = 100
-    reconstruction_steps: List[int] = field(default_factory=lambda: [100])
+    reconstruction_steps: List[int] = field(default_factory=lambda: [10, 200, 400])
     peak_lr_weights: float = 1e-3
     peak_lr_hidden: float = 0.01
     weight_decay: float = 2e-4
@@ -249,7 +246,8 @@ def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corr
     # Get the single batch
     try:
         x, label = next(dataloader_iter)
-        x = jnp.array(x.numpy())
+        
+        x = jnp.array(x)
         
         # Process each image in the batch separately
         for i in range(num_images):
@@ -265,7 +263,7 @@ def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corr
                 
             for T in T_values:
                 # Process single image
-                x_hat = eval_on_batch_partial_decoder_cnn(
+                loss, x_hat = unmask_on_batch(
                     use_corruption=use_corruption, 
                     corrupt_ratio=corrupt_ratio, 
                     T=T, 
@@ -658,7 +656,7 @@ def main():
         entity="neural-machines",
         project="debug-transformer",
         config=vars(config),
-        mode="online"  # Change to online for immediate verification
+        mode="offline"  # Change to online for immediate verification
     )
     
     # Upload code artifacts to W&B
@@ -810,7 +808,8 @@ def main():
                 optim_h, 
                 train_loader, 
                 T_values=config.reconstruction_steps, 
-                use_corruption=False,
+                use_corruption=config.use_corruption,
+                corrupt_ratio=config.corrupt_ratio,
                 num_images=config.num_images,
                 wandb_run=run,
                 epoch=epoch+1
