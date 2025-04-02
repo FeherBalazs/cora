@@ -341,8 +341,6 @@ def eval(dl, T, *, model: TransformerDecoder, optim_h: pxu.Optim):
     losses = []
 
     for x, y in dl:
-        # e, y_hat = eval_on_batch(T, x.numpy(), model=model, optim_h=optim_h)
-        # e, y_hat = eval_on_batch_partial_decoder_cnn(use_corruption=False, corrupt_ratio=0.0, T=T, x=x.numpy(), model=model, optim_h=optim_h)
         e, y_hat = unmask_on_batch(use_corruption=False, corrupt_ratio=0.0, T=T, x=jnp.array(x), model=model, optim_h=optim_h)
         losses.append(e)
 
