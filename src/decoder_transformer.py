@@ -373,17 +373,22 @@ def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, T: int, x: jax.A
     else:
         x_batch = x
 
-    # Create mask
-    x_c = x_batch.reshape((-1, 3, 32, 32)).copy()
-    x_c = x_c.at[:, :, 16:].set(0)
-    x_c = x_c.reshape((-1, 3, 32, 32))
-
     batch_size, channels, H, W = x_batch.shape
     assert model.config.image_shape == (channels, H, W), "Image shape mismatch"
 
-    # Initialize the model with the input
-    with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
-        forward(x_c, model=model)
+    if use_corruption:
+        # Create masked image
+        x_c = x_batch.reshape((-1, 3, 32, 32)).copy()
+        x_c = x_c.at[:, :, 16:].set(0)
+        x_c = x_c.reshape((-1, 3, 32, 32))
+        
+        # Initialize the model with the input
+        with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
+            forward(x_c, model=model)
+    else:
+        # Initialize the model with the input
+        with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
+            forward(x_batch, model=model)
 
     # Inference iterations
     for _ in range(T):
@@ -394,21 +399,25 @@ def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, T: int, x: jax.A
             # Run inference step
             with pxu.step(model, clear_params=pxc.VodeParam.Cache):
                 h_energy, h_grad = inference_step(model=model)
+            
+            # Update states
+            optim_h.step(model, h_grad["model"])
+
+            model.vodes[-1].h.set(
+                model.vodes[-1].h.reshape((-1, 3, 32, 32))
+                .at[:, :, :16].set(
+                    x_batch.reshape((-1, 3, 32, 32))
+                    [:, :, :16]
+                )
+            )
+
         else:
             # Standard inference step
             with pxu.step(model, clear_params=pxc.VodeParam.Cache):
                 h_energy, h_grad = inference_step(model=model)
 
-        # Update states
-        optim_h.step(model, h_grad["model"])
-
-        model.vodes[-1].h.set(
-            model.vodes[-1].h.reshape((-1, 3, 32, 32))
-            .at[:, :, :16].set(
-                x_batch.reshape((-1, 3, 32, 32))
-                [:, :, :16]
-            )
-        )
+            # Update states
+            optim_h.step(model, h_grad["model"])
 
     optim_h.clear()
 
@@ -419,6 +428,9 @@ def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, T: int, x: jax.A
         # x_hat_batch = model.vodes[-1].get("h") 
 
     loss = jnp.square(jnp.clip(x_hat_batch.reshape(-1), 0.0, 1.0) - x_batch.reshape(-1)).mean()
+
+    # Refreeze sensory layer
+    model.vodes[-1].h.frozen = True
 
     return loss, x_hat_batch
 
