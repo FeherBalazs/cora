@@ -49,9 +49,9 @@ class ModelConfig:
     train_subset: int = 5
     test_subset: int = 5
     target_class: Optional[int] = None
-    reconstruction_every_n_epochs: int = 1
+    # reconstruction_every_n_epochs: int = 1
     validation_every_n_epochs: int = 1
-    use_corruption: bool = True
+    use_corruption: bool = False # TODO: reconstruction is not working with corruption yet (at least not with current hyperparameters)
     corrupt_ratio: float = 0.5
 
     # Visualization settings
@@ -69,10 +69,10 @@ class ModelConfig:
     # Training settings
     use_noise: bool = True
     batch_size: int = 5
-    epochs: int = 10
+    epochs: int = 2
     inference_steps: int = 100
     eval_inference_steps: int = 100
-    reconstruction_steps: List[int] = field(default_factory=lambda: [10, 200, 400])
+    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 50, 100])
     peak_lr_weights: float = 1e-3
     peak_lr_hidden: float = 0.01
     weight_decay: float = 2e-4
