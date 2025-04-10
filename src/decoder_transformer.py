@@ -122,6 +122,12 @@ class TransformerDecoder(pxc.EnergyModule):
                 ) * 0.01 if config.use_noise else jnp.ones((config.num_patches, config.patch_dim))
             }
         )]
+
+        # Add a Vode for patch projection
+        self.vodes.append(pxc.Vode(
+                ruleset={ 
+                    STATUS_FORWARD: ("h -> u",)}
+            ))
         
         # Create Vodes for each transformer block output
         for _ in range(config.num_blocks):
@@ -173,17 +179,16 @@ class TransformerDecoder(pxc.EnergyModule):
         # Add positional embeddings
         x = x + self.positional_embedding
 
+        # Apply patch projection vode
+        x = self.vodes[1](x)
+
         # Process through transformer blocks
         for i, block in enumerate(self.transformer_blocks):
             x = block(x) # Apply transformer block
-            # x = jnp.tanh(x)
-            x = self.vodes[i+1](x) # Apply Vode
+            x = self.vodes[i+2](x) # Apply Vode
     
         # Project back to patch_dim
         x = jax.vmap(self.output_projection)(x)
-        
-        # Apply tanh activation to constrain output values to [-1, 1] range
-        # x = jnp.tanh(x)
         
         # Unpatchify back to image
         x = self.unpatchify(x, patch_size=self.config.patch_size, image_size=self.config.image_shape[1], channel_size=self.config.image_shape[0])
@@ -379,7 +384,7 @@ def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, T: int, x: jax.A
     if use_corruption:
         # Create masked image
         x_c = x_batch.reshape((-1, 3, 32, 32)).copy()
-        x_c = x_c.at[:, :, 16:].set(0)
+        x_c = x_c.at[:, :, 24:].set(0)
         x_c = x_c.reshape((-1, 3, 32, 32))
         
         # Initialize the model with the input
@@ -405,9 +410,9 @@ def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, T: int, x: jax.A
 
             model.vodes[-1].h.set(
                 model.vodes[-1].h.reshape((-1, 3, 32, 32))
-                .at[:, :, :16].set(
+                .at[:, :, :24].set(
                     x_batch.reshape((-1, 3, 32, 32))
-                    [:, :, :16]
+                    [:, :, :24]
                 )
             )
 
