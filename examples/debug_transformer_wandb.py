@@ -51,11 +51,11 @@ class ModelConfig:
     target_class: Optional[int] = None
     # reconstruction_every_n_epochs: int = 1
     validation_every_n_epochs: int = 1
-    use_corruption: bool = False # TODO: reconstruction is not working with corruption yet (at least not with current hyperparameters)
+    use_corruption: bool = True # TODO: reconstruction is not working with corruption yet (at least not with current hyperparameters)
     corrupt_ratio: float = 0.5
 
     # Visualization settings
-    num_images: int = 20
+    num_images: int = 1
     
     # Model architecture
     hidden_size: int = 48
@@ -69,10 +69,10 @@ class ModelConfig:
     # Training settings
     use_noise: bool = True
     batch_size: int = 100
-    epochs: int = 5
+    epochs: int = 10
     inference_steps: int = 100
     eval_inference_steps: int = 50
-    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 50])
+    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 50, 100, 250, 500])
     peak_lr_weights: float = 1e-3
     peak_lr_hidden: float = 0.01
     weight_decay: float = 2e-4
@@ -89,9 +89,9 @@ class ModelConfig:
 MODEL_CONFIGS = {
     "debug_tiny": ModelConfig(
         name="debug_tiny",
-        hidden_size=128,
-        num_heads=4,
-        num_blocks=1,
+        hidden_size=256,
+        num_heads=8,
+        num_blocks=3,
     ),
     "debug_small": ModelConfig(
         name="debug_small",
