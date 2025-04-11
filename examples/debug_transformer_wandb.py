@@ -69,10 +69,10 @@ class ModelConfig:
     # Training settings
     use_noise: bool = True
     batch_size: int = 100
-    epochs: int = 10
-    inference_steps: int = 100
-    eval_inference_steps: int = 50
-    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 50, 100, 250, 500])
+    epochs: int = 5
+    inference_steps: int = 50
+    eval_inference_steps: List[int] = field(default_factory=lambda: [50])
+    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 4, 6, 8, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100])
     peak_lr_weights: float = 1e-3
     peak_lr_hidden: float = 0.01
     weight_decay: float = 2e-4
@@ -261,19 +261,29 @@ def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corr
             else:
                 labels_list.append(None)
                 
+            # Call unmask_on_batch ONCE
+            final_loss, intermediate_recons = unmask_on_batch(
+                use_corruption=use_corruption, 
+                corrupt_ratio=corrupt_ratio, 
+                target_T_values=T_values, # Pass the list of desired T steps
+                x=single_x,               
+                model=model, 
+                optim_h=optim_h
+            )
+
+            # Populate recon_images from result
             for T in T_values:
-                # Process single image
-                loss, x_hat = unmask_on_batch(
-                    use_corruption=use_corruption, 
-                    corrupt_ratio=corrupt_ratio, 
-                    T=T, 
-                    x=single_x,  # Pass single image
-                    model=model, 
-                    optim_h=optim_h
-                )
-                
-                x_hat_single = jnp.reshape(x_hat[0], image_shape)
-                recon_images[T].append(x_hat_single)
+                if T in intermediate_recons:
+                    # intermediate_recons[T] might have shape (B, C, H, W) where B is expected_bs
+                    # Extract the first image [0] as we process one input image `i` at a time
+                    x_hat_for_T = intermediate_recons[T][0] # Take first element from potential batch
+                    x_hat_single = jnp.reshape(x_hat_for_T, image_shape) 
+                    recon_images[T].append(x_hat_single)
+                else:
+                    # Handle case where T might be 0 or step wasn't generated
+                    print(f"Warning: Reconstruction for T={T} not found in results for image {i}.")
+                    # Append a placeholder or handle as needed - for minimal change, we can just skip
+                    # recon_images[T].append(jnp.zeros(image_shape)) # Example placeholder
                 
     except StopIteration:
         print("Warning: No data available in dataloader")

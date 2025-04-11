@@ -346,16 +346,17 @@ def eval(dl, T, *, model: TransformerDecoder, optim_h: pxu.Optim):
     losses = []
 
     for x, y in dl:
-        e, y_hat = unmask_on_batch(use_corruption=False, corrupt_ratio=0.0, T=T, x=jnp.array(x), model=model, optim_h=optim_h)
+        e, y_hat = unmask_on_batch(use_corruption=False, corrupt_ratio=0.0, target_T_values=T, x=jnp.array(x), model=model, optim_h=optim_h)
         losses.append(e)
 
     return jnp.mean(jnp.array(losses))
 
 
 
-def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, T: int, x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim):
+def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, target_T_values: List[int], x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim):
     """
-    Runs inference on a batch (x) and returns the reconstructed output (x_hat).
+    Runs inference on a batch (x), potentially corrupted, and returns the final loss
+    and reconstructed outputs at specified T values.
     """
     model.eval()
     # TODO: in other scripts optim_h is not cleared and not initialised each time, only once. Check behavior.
@@ -365,7 +366,11 @@ def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, T: int, x: jax.A
     # Define inference step with the regular energy function
     inference_step = pxf.value_and_grad(pxu.M_hasnot(pxc.VodeParam, frozen=True).to([False, True]), has_aux=True)(energy)
 
-    # Determine expected batch size from model state
+    max_T = max(target_T_values) if target_T_values else 0
+    # Store reconstructions at target T values (step t corresponds to T=t+1)
+    save_steps = {t - 1 for t in target_T_values if t > 0} 
+    intermediate_recons = {}
+
     expected_bs = 1
     for vode in model.vodes:
         if vode.h._value is not None:
@@ -396,7 +401,7 @@ def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, T: int, x: jax.A
             forward(x_batch, model=model)
 
     # Inference iterations
-    for _ in range(T):
+    for t in range(max_T):
         if use_corruption:
             # Unfreeze sensory layer for inference
             model.vodes[-1].h.frozen = False
@@ -416,6 +421,11 @@ def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, T: int, x: jax.A
                 )
             )
 
+            if t in save_steps:
+                # Read current state, clip, and store
+                # intermediate_recons[t + 1] = model.vodes[-1].get("h")
+                intermediate_recons[t + 1] = forward(None, model=model)
+
         else:
             # Standard inference step
             with pxu.step(model, clear_params=pxc.VodeParam.Cache):
@@ -423,6 +433,11 @@ def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, T: int, x: jax.A
 
             # Update states
             optim_h.step(model, h_grad["model"])
+
+            if t in save_steps:
+                # Read current state, clip, and store
+                # intermediate_recons[t + 1] = model.vodes[-1].get("h")
+                intermediate_recons[t + 1] = forward(None, model=model)
 
     optim_h.clear()
 
@@ -437,7 +452,7 @@ def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, T: int, x: jax.A
     # Refreeze sensory layer
     model.vodes[-1].h.frozen = True
 
-    return loss, x_hat_batch
+    return loss, intermediate_recons
 
 
 def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corruption=False, corrupt_ratio=0.5, target_class=None, num_images=2):
