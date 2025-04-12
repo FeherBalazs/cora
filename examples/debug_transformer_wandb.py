@@ -36,6 +36,7 @@ from src.decoder_transformer import (
     train, 
     eval, 
     unmask_on_batch,
+    unmask_on_batch_enhanced,
     forward
 )
 
@@ -46,8 +47,8 @@ class ModelConfig:
     # Dataset settings
     dataset: str = "cifar10"
     data_dir: str = "../datasets/"
-    train_subset: int = 100
-    test_subset: int = 100
+    train_subset: int = 1
+    test_subset: int = 1
     target_class: Optional[int] = None
     # reconstruction_every_n_epochs: int = 1
     validation_every_n_epochs: int = 1
@@ -64,15 +65,15 @@ class ModelConfig:
     mlp_ratio: float = 4.0
     patch_size: int = 4
     axes_dim: List[int] = field(default_factory=lambda: [16, 16])
-    theta: int = 10_000
+    theta: int = 100
     
     # Training settings
     use_noise: bool = True
-    batch_size: int = 100
-    epochs: int = 5
-    inference_steps: int = 50
-    eval_inference_steps: List[int] = field(default_factory=lambda: [50])
-    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 4, 6, 8, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100])
+    batch_size: int = 1
+    epochs: int = 50
+    inference_steps: int = 100
+    eval_inference_steps: List[int] = field(default_factory=lambda: [100])
+    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 4, 6, 8, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 150, 200, 300])
     peak_lr_weights: float = 1e-3
     peak_lr_hidden: float = 0.01
     weight_decay: float = 2e-4
@@ -90,8 +91,8 @@ MODEL_CONFIGS = {
     "debug_tiny": ModelConfig(
         name="debug_tiny",
         hidden_size=256,
-        num_heads=8,
-        num_blocks=3,
+        num_heads=12,
+        num_blocks=6,
     ),
     "debug_small": ModelConfig(
         name="debug_small",
@@ -109,6 +110,7 @@ MODEL_CONFIGS = {
 
 # Default configuration to use
 DEFAULT_CONFIG = "debug_small"
+
 
 def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
                  mlp_ratio=4.0, patch_size=4, axes_dim=None, theta=10_000, use_noise=True):
@@ -132,6 +134,7 @@ def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
     else:
         raise ValueError(f"Unsupported dataset: {dataset}")
 
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Debug a transformer model with W&B logging')
     parser.add_argument('--config', type=str, default=DEFAULT_CONFIG,
@@ -139,6 +142,7 @@ def parse_args():
     parser.add_argument('--batch-size', type=int, default=None,
                         help='Batch size for training')
     return parser.parse_args()
+
 
 def create_learning_rate_schedule(base_lr, warmup_epochs, total_epochs, steps_per_epoch):
     """Create a learning rate schedule with warmup and cosine decay to half of the peak rate."""
@@ -163,6 +167,7 @@ def create_learning_rate_schedule(base_lr, warmup_epochs, total_epochs, steps_pe
         return jnp.where(epoch < warmup_epochs, warmup_lr, decay_lr)
     
     return lr_schedule
+
 
 def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=None, test_subset_n=None, target_class=None):
     """Get data loaders with simple augmentation for debugging."""
@@ -228,6 +233,7 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
             return len(self.dataloader)
     
     return TorchDataloader(train_dataloader), TorchDataloader(test_dataloader)
+
 
 def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corruption=False, corrupt_ratio=0.5, target_class=None, num_images=2, wandb_run=None, epoch=None, step=None):
     
@@ -335,6 +341,7 @@ def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corr
         
     plt.close(fig)
     return orig_images, recon_images, reconstruction_path, log_dict
+
 
 def log_vode_stats(model, h_grad, w_grad, run, epoch):
     """
