@@ -47,8 +47,8 @@ class ModelConfig:
     # Dataset settings
     dataset: str = "cifar10"
     data_dir: str = "../datasets/"
-    train_subset: int = 1
-    test_subset: int = 1
+    train_subset: int = 100
+    test_subset: int = 100
     target_class: Optional[int] = None
     # reconstruction_every_n_epochs: int = 1
     validation_every_n_epochs: int = 1
@@ -56,7 +56,7 @@ class ModelConfig:
     corrupt_ratio: float = 0.5
 
     # Visualization settings
-    num_images: int = 1
+    num_images: int = 10
     
     # Model architecture
     hidden_size: int = 48
@@ -69,11 +69,11 @@ class ModelConfig:
     
     # Training settings
     use_noise: bool = True
-    batch_size: int = 1
-    epochs: int = 50
+    batch_size: int = 100
+    epochs: int = 5
     inference_steps: int = 100
     eval_inference_steps: List[int] = field(default_factory=lambda: [100])
-    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 4, 6, 8, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 150, 200, 300])
+    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 30])
     peak_lr_weights: float = 1e-3
     peak_lr_hidden: float = 0.01
     weight_decay: float = 2e-4
