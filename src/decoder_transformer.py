@@ -381,7 +381,7 @@ def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, target_T_values:
     if use_corruption:
         # Create masked image
         x_c = x_batch.reshape((-1, 3, 32, 32)).copy()
-        x_c = x_c.at[:, :, 24:].set(0)
+        x_c = x_c.at[:, :, 16:].set(0)
         x_c = x_c.reshape((-1, 3, 32, 32))
         
         # Initialize the model with the input
@@ -407,9 +407,9 @@ def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, target_T_values:
 
             model.vodes[-1].h.set(
                 model.vodes[-1].h.reshape((-1, 3, 32, 32))
-                .at[:, :, :24].set(
+                .at[:, :, :16].set(
                     x_batch.reshape((-1, 3, 32, 32))
-                    [:, :, :24]
+                    [:, :, :16]
                 )
             )
 
@@ -483,7 +483,9 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
     if use_corruption:
         # Create masked image with random masking based on corrupt_ratio
         mask = jax.random.bernoulli(px.RKG(), p=corrupt_ratio, shape=(batch_size, 1, H, W))
-        x_c = x_batch * (1 - mask)  # Masked regions are set to 0
+        # Initialize masked regions with random noise instead of 0 to avoid trivial solution
+        noise = jax.random.normal(px.RKG(), shape=x_batch.shape) * 0.1
+        x_c = jnp.where(mask, noise, x_batch)  # Masked regions get noise, unmasked get original
         
         # Log the masking ratio for debugging
         actual_mask_ratio = jnp.mean(mask)
@@ -510,17 +512,33 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
             # Log energy for debugging
             print(f"Inference step {t+1}/{max_T}, Energy: {h_energy}")
             
+            # Zero out gradients for unmasked regions to focus updates on masked areas
+            sensory_h_grad = h_grad["model"].vodes[-1].h._value
+            # Reshape mask to match sensory layer output dimensions (batch_size, channels, H, W)
+            mask_broadcasted = mask[:, :, :, :]
+            # Repeat mask across the channel dimension to match sensory_h_grad shape
+            mask_broadcasted = jnp.repeat(mask_broadcasted, sensory_h_grad.shape[1], axis=1)
+            # Flatten mask and sensory gradients for element-wise operation
+            mask_flat = mask_broadcasted.reshape(sensory_h_grad.shape)
+            # Set gradients to 0 for unmasked regions (where mask is 0)
+            modified_sensory_h_grad = jnp.where(mask_flat == 0, 0.0, sensory_h_grad)
+            # Update the gradient value in h_grad
+            h_grad["model"].vodes[-1].h._value = modified_sensory_h_grad
+            
             # Update states
             optim_h.step(model, h_grad["model"])
 
-            # Do not reset unmasked regions to allow holistic refinement
-            # model.vodes[-1].h.set(
-            #     model.vodes[-1].h.reshape((-1, 3, 32, 32))
-            #     .at[:, :, :24].set(
-            #         x_batch.reshape((-1, 3, 32, 32))
-            #         [:, :, :24]
-            #     )
-            # )
+            # Reset unmasked regions to original input to prevent degradation
+            reset_output = model.vodes[-1].h.reshape(x_batch.shape)
+            reset_output = jnp.where(mask == 0, x_batch, reset_output)
+            model.vodes[-1].h.set(reset_output)
+
+            # Log mean value of masked regions for debugging
+            masked_region_values = reset_output * mask
+            # Repeat mask across channels to match reset_output shape
+            mask_expanded = jnp.repeat(mask, reset_output.shape[1], axis=1)
+            mean_masked_value = jnp.mean(masked_region_values[mask_expanded > 0]) if jnp.any(mask_expanded > 0) else 0.0
+            print(f"Inference step {t+1}/{max_T}, Mean value in masked regions: {mean_masked_value}")
 
             if t in save_steps:
                 # Read current state, clip, and store
@@ -548,8 +566,6 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
     # Final forward pass to get reconstruction
     with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
         x_hat_batch = forward(None, model=model)
-        # TODO: this is how it is fetched in associative memory script - test if it works
-        # x_hat_batch = model.vodes[-1].get("h") 
 
     # Compute loss, focusing on masked regions if corruption is used
     if use_corruption:
