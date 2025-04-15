@@ -25,6 +25,7 @@ from typing import List, Optional, Dict, Any, Tuple
 import re
 import matplotlib.pyplot as plt
 from datetime import datetime
+from typing import Callable
 
 # Add the src directory to the path
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
@@ -40,6 +41,7 @@ from src.decoder_transformer import (
     forward
 )
 
+#TODO: simplify config across scripts
 @dataclass
 class ModelConfig:
     """Configuration for transformer models with all hyperparameters in one place."""
@@ -50,13 +52,14 @@ class ModelConfig:
     train_subset: int = 100
     test_subset: int = 100
     target_class: Optional[int] = None
-    # reconstruction_every_n_epochs: int = 1
+    reconstruction_every_n_epochs: int = 10
     validation_every_n_epochs: int = 1
     use_corruption: bool = True # TODO: reconstruction is not working with corruption yet (at least not with current hyperparameters)
     corrupt_ratio: float = 0.5
+    use_lower_half_mask: bool = True
 
     # Visualization settings
-    num_images: int = 10
+    num_images: int = 5
     
     # Model architecture
     hidden_size: int = 48
@@ -66,19 +69,22 @@ class ModelConfig:
     patch_size: int = 4
     axes_dim: List[int] = field(default_factory=lambda: [16, 16])
     theta: int = 100
+    act_fn: Callable = jax.nn.relu
     
     # Training settings
-    use_noise: bool = True
+    use_noise: bool = False
     batch_size: int = 100
-    epochs: int = 5
-    inference_steps: int = 100
-    eval_inference_steps: List[int] = field(default_factory=lambda: [100])
-    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 30])
+    epochs: int = 100
+    inference_steps: int = 32
+    eval_inference_steps: List[int] = field(default_factory=lambda: [32])
+    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 32, 64, 128])
     peak_lr_weights: float = 1e-3
     peak_lr_hidden: float = 0.01
+    # peak_lr_weights: float = 1e-4
+    # peak_lr_hidden: float = 0.05
     weight_decay: float = 2e-4
-    warmup_epochs: int = 1
-    use_lr_schedule: bool = False
+    warmup_epochs: int = 5
+    use_lr_schedule: bool = True
     seed: int = 42
     
     # Early stopping settings
@@ -90,9 +96,9 @@ class ModelConfig:
 MODEL_CONFIGS = {
     "debug_tiny": ModelConfig(
         name="debug_tiny",
-        hidden_size=256,
+        hidden_size=64,
         num_heads=12,
-        num_blocks=6,
+        num_blocks=3,
     ),
     "debug_small": ModelConfig(
         name="debug_small",
@@ -113,7 +119,7 @@ DEFAULT_CONFIG = "debug_small"
 
 
 def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
-                 mlp_ratio=4.0, patch_size=4, axes_dim=None, theta=10_000, use_noise=True):
+                 mlp_ratio=4.0, patch_size=4, axes_dim=None, theta=10_000, use_noise=True, use_lower_half_mask=False):
     """Create a TransformerConfig based on the dataset name and parameters."""
     axes_dim = axes_dim or [16, 16]
     
@@ -129,7 +135,8 @@ def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
             patch_size=patch_size,
             axes_dim=axes_dim,
             theta=theta,
-            use_noise=use_noise
+            use_noise=use_noise,
+            use_lower_half_mask=use_lower_half_mask
         )
     else:
         raise ValueError(f"Unsupported dataset: {dataset}")
@@ -212,13 +219,13 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
         train_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=4,
+        num_workers=0,
     )
     test_dataloader = DataLoader(
         test_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=4,
+        num_workers=0,
     )
     
     class TorchDataloader:
@@ -236,9 +243,6 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
 
 
 def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corruption=False, corrupt_ratio=0.5, target_class=None, num_images=2, wandb_run=None, epoch=None, step=None):
-    
-    # Import or define STATUS_FORWARD constant
-    STATUS_FORWARD = "forward"
     
     # Extract image shape statically
     image_shape = model.config.image_shape
@@ -707,7 +711,8 @@ def main():
         patch_size=config.patch_size,
         axes_dim=config.axes_dim,
         theta=config.theta,
-        use_noise=config.use_noise
+        use_noise=config.use_noise,
+        use_lower_half_mask=config.use_lower_half_mask
     )
     
     print(f"Creating debug dataloaders for CIFAR-10...")
@@ -753,7 +758,7 @@ def main():
         print(f"Using constant learning rates - Weights: {weights_lr_fn}, Hidden: {hidden_lr_fn}")
     
     # Create optimizers with the appropriate learning rate function
-    optim_h = pxu.Optim(lambda: optax.sgd(hidden_lr_fn, momentum=0.9))
+    optim_h = pxu.Optim(lambda: optax.sgd(hidden_lr_fn, momentum=0.1))
     optim_w = pxu.Optim(
         lambda: optax.adamw(weights_lr_fn, weight_decay=config.weight_decay), 
         pxu.M(pxnn.LayerParam)(model)
@@ -790,7 +795,7 @@ def main():
             current_w_lr = weights_lr_fn
             current_h_lr = hidden_lr_fn
             
-        print(f"Current learning rates - Weights: {current_w_lr:.6f}, Hidden: {current_h_lr:.6f}")
+        # print(f"Current learning rates - Weights: {current_w_lr:.6f}, Hidden: {current_h_lr:.6f}")
         
         # Train for one epoch
         h_energy, w_energy, h_grad, w_grad = train(train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch)
@@ -809,8 +814,13 @@ def main():
                 'LearningRate/hidden': current_h_lr
             }
         
-        # # Generate reconstructions every N epochs (and for the final epoch)
-        # if (epoch + 1) % config.reconstruction_every_n_epochs == 0 or epoch == config.epochs - 1 or (config.use_early_stopping and early_stopped and epoch == early_stopped_epoch):
+        # Generate reconstructions every N epochs (and for the final epoch)
+        if (((epoch + 1) % config.reconstruction_every_n_epochs == 0 and val_loss < 0.20) or 
+            (epoch > 0 and val_loss < 0.20 and val_loss < last_reconstruction_loss - 0.01) or 
+            epoch == config.epochs - 1 or 
+            (config.use_early_stopping and early_stopped and epoch == early_stopped_epoch)):
+
+            last_reconstruction_loss = val_loss
             
             # # Log detailed vode statistics and get processed data for summary
             # processed_energy_data, processed_grad_data = log_vode_stats(model, h_grad, w_grad, run, epoch)
