@@ -27,6 +27,7 @@ from pcx.core._parameter import get as param_get  # Import get function for para
 
 import matplotlib.pyplot as plt
 from datetime import datetime
+import time
 
 STATUS_FORWARD = "forward"
 STATUS_REFINE = "refine"
@@ -56,6 +57,7 @@ class TransformerConfig:
     mlp_ratio: float = 4.0
     dropout_rate: float = 0.1
     mlp_hidden_dim: int = 256
+    act_fn: Callable = jax.nn.swish # Default activation function
     
     # Patch settings
     patch_size: int = 4
@@ -66,6 +68,7 @@ class TransformerConfig:
     
     # Training settings
     use_noise: bool = False
+    use_lower_half_mask: bool = False
     param_dtype: DTypeLike = jnp.float32
     
     def __post_init__(self):
@@ -119,7 +122,7 @@ class TransformerDecoder(pxc.EnergyModule):
             tforms={
                 "to_init": lambda n, k, v, rkg: jax.random.normal(
                     px.RKG(), (config.num_patches, config.patch_dim)
-                ) * 0.01 if config.use_noise else jnp.ones((config.num_patches, config.patch_dim))
+                ) * 0.01 if config.use_noise else jnp.zeros((config.num_patches, config.patch_dim))
             }
         )]
 
@@ -154,7 +157,7 @@ class TransformerDecoder(pxc.EnergyModule):
         self.vodes[-1].h.frozen = True  # Freeze the output Vode's hidden state
 
         # Add projection layer to map from patch_dim to hidden_size
-        self.patch_projection = pxnn.Linear(in_features=48, out_features=config.hidden_size)
+        self.patch_projection = pxnn.Linear(in_features=config.patch_dim, out_features=config.hidden_size)
         
         # Add output projection layer to map from hidden_size back to patch_dim
         self.output_projection = pxnn.Linear(in_features=config.hidden_size, out_features=config.patch_dim)
@@ -201,6 +204,83 @@ class TransformerDecoder(pxc.EnergyModule):
             self.vodes[-1].set("h", y)
         
         return self.vodes[-1].get("u")  # Return prediction
+
+    # def __init__(self, config: TransformerConfig) -> None:
+    #     super().__init__()
+    #     self.config = px.static(config)
+        
+    #     # Initialize random key
+    #     key = jax.random.PRNGKey(0)
+
+    #     print(f"Model initialized with {self.config.num_patches} patches, each with dimension {self.config.patch_dim}")
+    #     print(f"Model initialized with {self.config.hidden_size} hidden_size, {self.config.mlp_hidden_dim} mlp_hidden_dim")
+    #     print(f"Using {'video' if self.config.is_video else 'image'} mode with shape {self.config.image_shape}")
+
+    #     # Define Vodes for predictive coding
+    #     # Top-level latent Vode
+    #     self.vodes = [pxc.Vode(
+    #         energy_fn=None,
+    #         ruleset={
+    #             pxc.STATUS.INIT: ("h, u <- u:to_init",),
+    #             },
+    #         tforms={
+    #             "to_init": lambda n, k, v, rkg: jax.random.normal(
+    #                 px.RKG(), (config.hidden_size,)
+    #             ) * 0.01 if config.use_noise else jnp.zeros((config.hidden_size,))
+    #         }
+    #     )]
+        
+    #     # Create Vodes for each transformer block output except final one where we want different ruleset
+    #     for _ in range(config.num_blocks):
+    #         self.vodes.append(pxc.Vode(
+    #             ruleset={
+    #                 STATUS_FORWARD: ("h -> u",)}
+    #         ))
+
+    #     # Add final output Vode (sensory layer) - shape depends on whether we're handling video or images
+    #     self.vodes.append(pxc.Vode())
+        
+    #     # Freeze the output Vode's hidden state
+    #     self.vodes[-1].h.frozen = True  
+
+    #     # DEBUG: Try FC blocks instead of transformer blocks to see if it works better for reconstruction
+    #     self.fc_blocks = []
+    #     for i in range(config.num_blocks):
+    #         self.fc_blocks.append(
+    #             pxnn.Linear(
+    #                 in_features=config.hidden_size,
+    #                 out_features=config.hidden_size
+    #             )
+    #         )
+
+    #     # Add output projection layer to map from hidden_size back to output_dim
+    #     self.output_projection = pxnn.Linear(in_features=config.hidden_size, out_features=32 * 32 * 3)
+        
+    
+    # def __call__(self, y: jax.Array | None = None):        
+    #     # Get the initial sequence of patch embeddings from Vode 0
+    #     x = self.vodes[0](jnp.empty(()))
+
+    #     # Process through FC blocks
+    #     for i, block in enumerate(self.fc_blocks):
+    #         x_after_block = block(x) 
+    #         x = self.config.act_fn(x_after_block) 
+    #         x = self.vodes[i+1](x) # Apply Vode
+
+    #     # Apply output projection layer
+    #     x = self.output_projection(x)
+        
+    #     # Reshape to match the expected image dimensions (channels, height, width)
+    #     x = jnp.reshape(x, (3, 32, 32))
+        
+    #     # Apply sensory Vode
+    #     x = self.vodes[-1](x)
+        
+    #     # Set target if provided
+    #     if y is not None:
+    #         self.vodes[-1].set("h", y)
+        
+    #     return self.vodes[-1].get("u")  # Return prediction
     
 
     def unpatchify(self, x, patch_size, image_size, channel_size):
@@ -252,7 +332,7 @@ def energy(*, model: TransformerDecoder):
     return jax.lax.psum(model.energy(), "batch"), y_
 
 
-# @pxf.jit(static_argnums=0)
+@pxf.jit(static_argnums=0)
 def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.Optim, epoch=None, step=None):
     model.train()
 
@@ -278,7 +358,7 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
 
         with pxu.step(model, clear_params=pxc.VodeParam.Cache):
             (w_energy, y_), w_grad = learning_step(model=model)
-            print("w_energy:", w_energy, "at step t:", t)
+            # print("w_energy:", w_energy, "at step t:", t)
         optim_w.step(model, w_grad["model"], scale_by=1.0/x.shape[0])
 
     # After training, forward once more to get final activations
@@ -295,6 +375,7 @@ def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.
     step = 0
     for x, y in dl:
         h_energy, w_energy, h_grad, w_grad = train_on_batch(T, jnp.array(x), model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch, step=step)
+        print("w_energy:", w_energy, "at step t:", step)
         step += 1
 
     return h_energy, w_energy, h_grad, w_grad
@@ -384,8 +465,8 @@ def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, target_T_values:
         x_c = x_c.at[:, :, 16:].set(0)
         x_c = x_c.reshape((-1, 3, 32, 32))
         
-        # Initialize the model with the input
-        with pxu.step(model, clear_params=pxc.VodeParam.Cache):
+        # Initialize the model with the masked input
+        with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
             forward(x_c, model=model)
     else:
         # Initialize the model with the input
@@ -395,6 +476,11 @@ def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, target_T_values:
     # Inference iterations
     for t in range(max_T):
         if use_corruption:
+            if t in save_steps:
+                # intermediate_recons[t + 1] = model.vodes[-1].get("h")
+                with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
+                    intermediate_recons[t + 1] = forward(None, model=model)
+
             # Unfreeze sensory layer for inference
             model.vodes[-1].h.frozen = False
 
@@ -413,11 +499,6 @@ def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, target_T_values:
                 )
             )
 
-            if t in save_steps:
-                # Read current state, clip, and store
-                # intermediate_recons[t + 1] = model.vodes[-1].get("h")
-                intermediate_recons[t + 1] = forward(None, model=model)
-
         else:
             # Standard inference step
             with pxu.step(model, clear_params=pxc.VodeParam.Cache):
@@ -427,9 +508,9 @@ def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, target_T_values:
             optim_h.step(model, h_grad["model"])
 
             if t in save_steps:
-                # Read current state, clip, and store
                 # intermediate_recons[t + 1] = model.vodes[-1].get("h")
-                intermediate_recons[t + 1] = forward(None, model=model)
+                with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
+                    intermediate_recons[t + 1] = forward(None, model=model)
 
     optim_h.clear()
 
@@ -443,6 +524,10 @@ def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, target_T_values:
 
     # Refreeze sensory layer
     model.vodes[-1].h.frozen = True
+
+    # Reset model as the inference could mess up the model state if diverged
+    with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
+        forward(None, model=model)
 
     return loss, intermediate_recons
 
@@ -481,22 +566,33 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
     assert model.config.image_shape == (channels, H, W), "Image shape mismatch"
 
     if use_corruption:
-        # Create masked image with random masking based on corrupt_ratio
-        mask = jax.random.bernoulli(px.RKG(), p=corrupt_ratio, shape=(batch_size, 1, H, W))
-        # Initialize masked regions with random noise instead of 0 to avoid trivial solution
-        noise = jax.random.normal(px.RKG(), shape=x_batch.shape) * 0.1
-        x_c = jnp.where(mask, noise, x_batch)  # Masked regions get noise, unmasked get original
+        # Determine masking type: random or lower half
+        use_lower_half_mask = model.config.use_lower_half_mask  # Access config through model
+
+        if use_lower_half_mask:
+            # Create mask for lower half of the image
+            mask = jnp.zeros((batch_size, 1, H, W))
+            # Set lower half to 1 (masked)
+            mask = mask.at[:, :, H//2:, :].set(0.0)
+            # Use zeros for lower half mask
+            x_c = jnp.where(mask, 1.0, x_batch)  # Masked regions get zeros, unmasked get original
+        else:
+            # Create masked image with random masking based on corrupt_ratio
+            mask = jax.random.bernoulli(px.RKG(), p=corrupt_ratio, shape=(batch_size, 1, H, W))
+            # Use noise for random masking to avoid trivial solution
+            noise = jax.random.normal(px.RKG(), shape=x_batch.shape) * 0.1
+            x_c = jnp.where(mask, noise, x_batch)  # Masked regions get noise, unmasked get original
         
         # Log the masking ratio for debugging
         actual_mask_ratio = jnp.mean(mask)
         print(f"Applied random mask with target ratio {corrupt_ratio}, actual ratio: {actual_mask_ratio}")
         
         # Initialize the model with the masked input
-        with pxu.step(model, clear_params=pxc.VodeParam.Cache):
+        with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
             forward(x_c, model=model)
     else:
         # Initialize the model with the input
-        with pxu.step(model, clear_params=pxc.VodeParam.Cache):
+        with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
             forward(x_batch, model=model)
 
     # Inference iterations
@@ -508,9 +604,6 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
             # Run inference step
             with pxu.step(model, clear_params=pxc.VodeParam.Cache):
                 (h_energy, y_), h_grad = inference_step(model=model)
-            
-            # Log energy for debugging
-            print(f"Inference step {t+1}/{max_T}, Energy: {h_energy}")
             
             # Zero out gradients for unmasked regions to focus updates on masked areas
             sensory_h_grad = h_grad["model"].vodes[-1].h._value
@@ -528,21 +621,22 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
             # Update states
             optim_h.step(model, h_grad["model"])
 
-            # Reset unmasked regions to original input to prevent degradation
-            reset_output = model.vodes[-1].h.reshape(x_batch.shape)
-            reset_output = jnp.where(mask == 0, x_batch, reset_output)
-            model.vodes[-1].h.set(reset_output)
+            # # Reset unmasked regions to original input to prevent degradation
+            # reset_output = model.vodes[-1].h.reshape(x_batch.shape)
+            # reset_output = jnp.where(mask == 0, x_batch, reset_output)
+            # model.vodes[-1].h.set(reset_output)
 
-            # Log mean value of masked regions for debugging
-            masked_region_values = reset_output * mask
-            # Repeat mask across channels to match reset_output shape
-            mask_expanded = jnp.repeat(mask, reset_output.shape[1], axis=1)
-            mean_masked_value = jnp.mean(masked_region_values[mask_expanded > 0]) if jnp.any(mask_expanded > 0) else 0.0
-            print(f"Inference step {t+1}/{max_T}, Mean value in masked regions: {mean_masked_value}")
+            # # Log mean value of masked regions for debugging
+            # masked_region_values = reset_output * mask
+            # # Repeat mask across channels to match reset_output shape
+            # mask_expanded = jnp.repeat(mask, reset_output.shape[1], axis=1)
+            # mean_masked_value = jnp.mean(masked_region_values[mask_expanded > 0]) if jnp.any(mask_expanded > 0) else 0.0
+            # print(f"Inference step {t+1}/{max_T}, Mean value in masked regions: {mean_masked_value}")
 
             if t in save_steps:
-                # Read current state, clip, and store
-                intermediate_recons[t + 1] = forward(None, model=model)
+                # intermediate_recons[t + 1] = model.vodes[-1].get("h")
+                with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
+                    intermediate_recons[t + 1] = forward(None, model=model)
                 print(f"Saved intermediate reconstruction at T={t+1}")
 
         else:
@@ -557,9 +651,13 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
             optim_h.step(model, h_grad["model"])
 
             if t in save_steps:
-                # Read current state, clip, and store
-                intermediate_recons[t + 1] = forward(None, model=model)
+                # intermediate_recons[t + 1] = model.vodes[-1].get("h")
+                with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
+                    intermediate_recons[t + 1] = forward(None, model=model)
                 print(f"Saved intermediate reconstruction at T={t+1}")
+
+    # Log energy for debugging
+    print(f"Inference step {t+1}/{max_T}, Energy: {h_energy}")
 
     optim_h.clear()
 
@@ -579,6 +677,10 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
 
     # Refreeze sensory layer
     model.vodes[-1].h.frozen = True
+
+    # Reset model as the inference could mess up the model state if diverged
+    with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
+        forward(None, model=model)
 
     return loss, intermediate_recons
 
