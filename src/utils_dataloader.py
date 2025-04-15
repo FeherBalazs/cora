@@ -142,13 +142,13 @@ def get_dataloaders(
         train_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=4,
+        num_workers=1,
     )
     test_dataloader = TorchDataloader(
         test_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=4,
+        num_workers=1,
     )
 
     return train_dataloader, test_dataloader
