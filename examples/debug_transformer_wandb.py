@@ -78,10 +78,10 @@ class ModelConfig:
     inference_steps: int = 32
     eval_inference_steps: List[int] = field(default_factory=lambda: [32])
     reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 32, 64, 128])
+    # peak_lr_weights: float = 1e-3
+    # peak_lr_hidden: float = 0.01
     peak_lr_weights: float = 1e-3
-    peak_lr_hidden: float = 0.01
-    # peak_lr_weights: float = 1e-4
-    # peak_lr_hidden: float = 0.05
+    peak_lr_hidden: float = 0.05
     weight_decay: float = 2e-4
     warmup_epochs: int = 5
     use_lr_schedule: bool = True
@@ -816,11 +816,9 @@ def main():
         
         # Generate reconstructions every N epochs (and for the final epoch)
         if (((epoch + 1) % config.reconstruction_every_n_epochs == 0 and val_loss < 0.20) or 
-            (epoch > 0 and val_loss < 0.20 and val_loss < last_reconstruction_loss - 0.01) or 
+            (epoch > 0 and val_loss < 0.20 and val_loss < best_val_loss - 0.01) or 
             epoch == config.epochs - 1 or 
             (config.use_early_stopping and early_stopped and epoch == early_stopped_epoch)):
-
-            last_reconstruction_loss = val_loss
             
             # # Log detailed vode statistics and get processed data for summary
             # processed_energy_data, processed_grad_data = log_vode_stats(model, h_grad, w_grad, run, epoch)
