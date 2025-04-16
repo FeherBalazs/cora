@@ -30,8 +30,6 @@ from datetime import datetime
 import time
 
 STATUS_FORWARD = "forward"
-STATUS_REFINE = "refine"
-STATUS_PERTURB = "perturb"
 
 import jax.random as jrandom
 key = jrandom.PRNGKey(42)
@@ -116,8 +114,7 @@ class TransformerDecoder(pxc.EnergyModule):
         self.vodes = [pxc.Vode(
             energy_fn=None,
             ruleset={
-                pxc.STATUS.INIT: ("h, u <- u:to_init",),
-                STATUS_PERTURB: ("h, u <- u:to_init",)
+                pxc.STATUS.INIT: ("h, u <- u:to_init",)
                 },
             tforms={
                 "to_init": lambda n, k, v, rkg: jax.random.normal(
@@ -136,7 +133,6 @@ class TransformerDecoder(pxc.EnergyModule):
         for _ in range(config.num_blocks):
             self.vodes.append(pxc.Vode(
                 ruleset={
-                    # pxc.STATUS.INIT: ("h, u <- u:to_zero",), 
                     STATUS_FORWARD: ("h -> u",)}
             ))
 
@@ -467,7 +463,7 @@ def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, target_T_values:
         x_c = x_c.reshape((-1, 3, 32, 32))
         
         # Initialize the model with the masked input
-        with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
+        with pxu.step(model, clear_params=pxc.VodeParam.Cache):
             forward(x_c, model=model)
     else:
         # Initialize the model with the input
@@ -481,6 +477,7 @@ def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, target_T_values:
                 # intermediate_recons[t + 1] = model.vodes[-1].get("h")
                 with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
                     intermediate_recons[t + 1] = forward(None, model=model)
+                    print(f"Saved intermediate reconstruction at T={t+1}")
 
             # Unfreeze sensory layer for inference
             model.vodes[-1].h.frozen = False
@@ -527,7 +524,7 @@ def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, target_T_values:
     model.vodes[-1].h.frozen = True
 
     # Reset model as the inference could mess up the model state if diverged
-    with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
+    with pxu.step(model, clear_params=pxc.VodeParam.Cache):
         forward(None, model=model)
 
     return loss, intermediate_recons
@@ -599,6 +596,12 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
     # Inference iterations
     for t in range(max_T):
         if use_corruption:
+            if t in save_steps:
+                # intermediate_recons[t + 1] = model.vodes[-1].get("h")
+                with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
+                    intermediate_recons[t + 1] = forward(None, model=model)
+                print(f"Saved intermediate reconstruction at T={t+1}")
+
             # Unfreeze sensory layer for inference
             model.vodes[-1].h.frozen = False
 
@@ -633,12 +636,6 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
             # mask_expanded = jnp.repeat(mask, reset_output.shape[1], axis=1)
             # mean_masked_value = jnp.mean(masked_region_values[mask_expanded > 0]) if jnp.any(mask_expanded > 0) else 0.0
             # print(f"Inference step {t+1}/{max_T}, Mean value in masked regions: {mean_masked_value}")
-
-            if t in save_steps:
-                # intermediate_recons[t + 1] = model.vodes[-1].get("h")
-                with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
-                    intermediate_recons[t + 1] = forward(None, model=model)
-                print(f"Saved intermediate reconstruction at T={t+1}")
 
         else:
             # Standard inference step
