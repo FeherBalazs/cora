@@ -59,7 +59,7 @@ class ModelConfig:
     use_lower_half_mask: bool = True
 
     # Visualization settings
-    num_images: int = 5
+    num_images: int = 1
     
     # Model architecture
     hidden_size: int = 48
@@ -72,16 +72,16 @@ class ModelConfig:
     act_fn: Callable = jax.nn.relu
     
     # Training settings
-    use_noise: bool = False
+    use_noise: bool = True
     batch_size: int = 100
     epochs: int = 100
     inference_steps: int = 32
     eval_inference_steps: List[int] = field(default_factory=lambda: [32])
-    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 32, 64, 128])
+    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 32, 64, 128, 256, 512])
+    peak_lr_weights: float = 1e-4
+    peak_lr_hidden: float = 0.01
     # peak_lr_weights: float = 1e-3
-    # peak_lr_hidden: float = 0.01
-    peak_lr_weights: float = 1e-3
-    peak_lr_hidden: float = 0.05
+    # peak_lr_hidden: float = 0.05
     weight_decay: float = 2e-4
     warmup_epochs: int = 5
     use_lr_schedule: bool = True
@@ -90,7 +90,7 @@ class ModelConfig:
     # Early stopping settings
     use_early_stopping: bool = True
     early_stopping_patience: int = 10
-    early_stopping_min_delta: float = 0.00001
+    early_stopping_min_delta: float = 0.0001
 
 # Predefined configurations for easy experimentation
 MODEL_CONFIGS = {
@@ -272,7 +272,7 @@ def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corr
                 labels_list.append(None)
                 
             # Call unmask_on_batch ONCE
-            final_loss, intermediate_recons = unmask_on_batch(
+            final_loss, intermediate_recons = unmask_on_batch_enhanced(
                 use_corruption=use_corruption, 
                 corrupt_ratio=corrupt_ratio, 
                 target_T_values=T_values, # Pass the list of desired T steps
@@ -677,7 +677,7 @@ def main():
         entity="neural-machines",
         project="debug-transformer",
         config=vars(config),
-        mode="offline"  # Change to online for immediate verification
+        mode="online"  # Change to online for immediate verification
     )
     
     # Upload code artifacts to W&B
