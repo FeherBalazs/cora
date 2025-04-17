@@ -25,6 +25,8 @@ from typing import List, Optional, Dict, Any, Tuple
 import re
 import matplotlib.pyplot as plt
 from datetime import datetime
+from typing import Callable
+import imageio
 
 # Add the src directory to the path
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
@@ -36,9 +38,11 @@ from src.decoder_transformer import (
     train, 
     eval, 
     unmask_on_batch,
+    unmask_on_batch_enhanced,
     forward
 )
 
+#TODO: simplify config across scripts
 @dataclass
 class ModelConfig:
     """Configuration for transformer models with all hyperparameters in one place."""
@@ -49,13 +53,14 @@ class ModelConfig:
     train_subset: int = 100
     test_subset: int = 100
     target_class: Optional[int] = None
-    # reconstruction_every_n_epochs: int = 1
+    reconstruction_every_n_epochs: int = 10 # WARNING: changing this to 1 caused training instability. Less frequent reconstruction is better. Tested only with 10 so far which works ok.
     validation_every_n_epochs: int = 1
-    use_corruption: bool = False # TODO: reconstruction is not working with corruption yet (at least not with current hyperparameters)
+    use_corruption: bool = True
     corrupt_ratio: float = 0.5
+    use_lower_half_mask: bool = True
 
     # Visualization settings
-    num_images: int = 20
+    num_images: int = 2
     
     # Model architecture
     hidden_size: int = 48
@@ -64,34 +69,40 @@ class ModelConfig:
     mlp_ratio: float = 4.0
     patch_size: int = 4
     axes_dim: List[int] = field(default_factory=lambda: [16, 16])
-    theta: int = 10_000
+    theta: int = 100
+    act_fn: Callable = jax.nn.relu
     
     # Training settings
     use_noise: bool = True
     batch_size: int = 100
-    epochs: int = 5
-    inference_steps: int = 100
-    eval_inference_steps: int = 50
-    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 50])
-    peak_lr_weights: float = 1e-3
+    epochs: int = 100
+    inference_steps: int = 32
+    eval_inference_steps: List[int] = field(default_factory=lambda: [32])
+    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 32, 64, 128, 256, 512])
+    peak_lr_weights: float = 1e-4
     peak_lr_hidden: float = 0.01
+    # peak_lr_weights: float = 1e-3
+    # peak_lr_hidden: float = 0.05
     weight_decay: float = 2e-4
-    warmup_epochs: int = 1
-    use_lr_schedule: bool = False
+    warmup_epochs: int = 5
+    use_lr_schedule: bool = True
     seed: int = 42
     
     # Early stopping settings
     use_early_stopping: bool = True
     early_stopping_patience: int = 10
-    early_stopping_min_delta: float = 0.00001
+    early_stopping_min_delta: float = 0.0001
+    save_reconstruction_images: bool = True # Option to save static image grid
+    save_reconstruction_video: bool = True # Option to save video
+    video_fps: int = 60 # Frames per second for the reconstruction video
 
 # Predefined configurations for easy experimentation
 MODEL_CONFIGS = {
     "debug_tiny": ModelConfig(
         name="debug_tiny",
-        hidden_size=128,
-        num_heads=4,
-        num_blocks=1,
+        hidden_size=64,
+        num_heads=12,
+        num_blocks=3,
     ),
     "debug_small": ModelConfig(
         name="debug_small",
@@ -110,8 +121,9 @@ MODEL_CONFIGS = {
 # Default configuration to use
 DEFAULT_CONFIG = "debug_small"
 
+
 def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
-                 mlp_ratio=4.0, patch_size=4, axes_dim=None, theta=10_000, use_noise=True):
+                 mlp_ratio=4.0, patch_size=4, axes_dim=None, theta=10_000, use_noise=True, use_lower_half_mask=False):
     """Create a TransformerConfig based on the dataset name and parameters."""
     axes_dim = axes_dim or [16, 16]
     
@@ -127,10 +139,12 @@ def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
             patch_size=patch_size,
             axes_dim=axes_dim,
             theta=theta,
-            use_noise=use_noise
+            use_noise=use_noise,
+            use_lower_half_mask=use_lower_half_mask
         )
     else:
         raise ValueError(f"Unsupported dataset: {dataset}")
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Debug a transformer model with W&B logging')
@@ -139,6 +153,7 @@ def parse_args():
     parser.add_argument('--batch-size', type=int, default=None,
                         help='Batch size for training')
     return parser.parse_args()
+
 
 def create_learning_rate_schedule(base_lr, warmup_epochs, total_epochs, steps_per_epoch):
     """Create a learning rate schedule with warmup and cosine decay to half of the peak rate."""
@@ -163,6 +178,7 @@ def create_learning_rate_schedule(base_lr, warmup_epochs, total_epochs, steps_pe
         return jnp.where(epoch < warmup_epochs, warmup_lr, decay_lr)
     
     return lr_schedule
+
 
 def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=None, test_subset_n=None, target_class=None):
     """Get data loaders with simple augmentation for debugging."""
@@ -207,13 +223,13 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
         train_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=4,
+        num_workers=0,
     )
     test_dataloader = DataLoader(
         test_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=4,
+        num_workers=0,
     )
     
     class TorchDataloader:
@@ -229,102 +245,255 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
     
     return TorchDataloader(train_dataloader), TorchDataloader(test_dataloader)
 
-def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corruption=False, corrupt_ratio=0.5, target_class=None, num_images=2, wandb_run=None, epoch=None, step=None):
+
+def create_reconstruction_images(intermediate_recons, T_values, orig_images, labels_list, num_images, image_shape, wandb_run, epoch):
+    """
+    Creates a grid of images comparing originals and reconstructions at specific T_values.
+    """
+    num_channels, H, W = image_shape
+    fig, axes = plt.subplots(num_images, 1 + len(T_values), figsize=(4 * (1 + len(T_values)), 2 * num_images))
     
-    # Import or define STATUS_FORWARD constant
-    STATUS_FORWARD = "forward"
+    if num_images == 1:
+        axes = axes[None, :]
+
+    for i in range(num_images):
+        # Plot original
+        orig_np = np.array(orig_images[i])
+        if num_channels == 1:
+            axes[i, 0].imshow(np.clip(np.squeeze(orig_np), 0.0, 1.0), cmap='gray')
+        else:
+            axes[i, 0].imshow(np.clip(np.transpose(orig_np, (1, 2, 0)), 0.0, 1.0))
+        axes[i, 0].set_title(f'Original {labels_list[i] if labels_list[i] is not None else ""}')
+        axes[i, 0].axis('off')
+        
+        # Plot reconstructions for specific T values
+        for j, T in enumerate(T_values):
+            if T in intermediate_recons and i < len(intermediate_recons[T]):
+                recon_T = intermediate_recons[T][i] # Get the i-th image for this T
+                recon_np = np.array(recon_T) # Assuming it's already (C, H, W) or similar after processing
+                
+                if num_channels == 1:
+                    axes[i, j+1].imshow(np.clip(np.squeeze(recon_np), 0.0, 1.0), cmap='gray')
+                else:
+                     # Ensure correct shape and transpose if needed
+                    recon_np_reshaped = np.reshape(recon_np, image_shape)
+                    axes[i, j+1].imshow(np.clip(np.transpose(recon_np_reshaped, (1, 2, 0)), 0.0, 1.0))
+                axes[i, j+1].set_title(f'T={T}')
+            else:
+                 # Handle missing reconstruction for this T/image index
+                axes[i, j+1].set_title(f'T={T} (N/A)')
+                axes[i, j+1].imshow(np.zeros((H, W) if num_channels == 1 else (H, W, 3))) # Placeholder
+            axes[i, j+1].axis('off')
+
+    plt.tight_layout()
     
-    # Extract image shape statically
+    epoch_str = f"_epoch{epoch}" if epoch is not None else ""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    os.makedirs("../results", exist_ok=True)
+    reconstruction_path = f"../results/reconstruction_images{epoch_str}_{timestamp}.png"
+    plt.savefig(reconstruction_path)
+    plt.close(fig)
+    print(f"Saved reconstruction image grid to {reconstruction_path}")
+
+    log_dict = {}
+    if wandb_run is not None:
+        log_key = f"reconstructions_images{epoch_str}" if epoch is not None else "reconstructions_images"
+        try:
+            log_dict[log_key] = wandb.Image(reconstruction_path)
+        except Exception as e:
+            print(f"Error creating wandb.Image: {e}")
+
+    return reconstruction_path, log_dict
+
+
+def visualize_reconstruction(model, optim_h, dataloader, config, wandb_run=None, epoch=None, step=None):
+    
+    # Extract static info from config
     image_shape = model.config.image_shape
     num_channels = image_shape[0]
-    
+    num_images = config.num_images
+    use_corruption = config.use_corruption
+    corrupt_ratio = config.corrupt_ratio
+    T_values = config.reconstruction_steps # Use T_values from config
+
     orig_images = []
-    recon_images = {T: [] for T in T_values}
+    recon_images_at_T = {T: [] for T in T_values} # For static images
+    all_reconstruction_frames = [] # To store frames for video
     labels_list = []
     dataloader_iter = iter(dataloader)
-    
+
     # Get the single batch
     try:
         x, label = next(dataloader_iter)
-        
         x = jnp.array(x)
-        
+
         # Process each image in the batch separately
         for i in range(num_images):
-            # Get single image and reshape
-            single_x = x[i:i+1]  # Keep batch dimension but with size 1
+            single_x = x[i:i+1]
             orig_images.append(jnp.reshape(single_x[0], image_shape))
             
-            # Handle label
             if hasattr(label, 'item'):
                 labels_list.append(label[i].item() if len(label.shape) > 0 else label.item())
             else:
                 labels_list.append(None)
                 
-            for T in T_values:
-                # Process single image
-                loss, x_hat = unmask_on_batch(
-                    use_corruption=use_corruption, 
-                    corrupt_ratio=corrupt_ratio, 
-                    T=T, 
-                    x=single_x,  # Pass single image
-                    model=model, 
-                    optim_h=optim_h
-                )
-                
-                x_hat_single = jnp.reshape(x_hat[0], image_shape)
-                recon_images[T].append(x_hat_single)
-                
+            # Call unmask_on_batch_enhanced - it now returns all frames regardless
+            final_loss, all_recons_list = unmask_on_batch_enhanced(
+                use_corruption=use_corruption, 
+                corrupt_ratio=corrupt_ratio, 
+                target_T_values=T_values, # Determines max_T internally
+                x=single_x,               
+                model=model, 
+                optim_h=optim_h
+            )
+
+            # Always store all frames, as we might need them for video
+            all_reconstruction_frames.append(all_recons_list)
+
+            # Extract frames needed for static images only if required
+            if config.save_reconstruction_images:
+                for T_idx, recon in enumerate(all_recons_list):
+                    T_step = T_idx + 1 # T steps are 1-indexed
+                    if T_step in T_values:
+                        # Extract the first image from the batch dimension
+                        x_hat_for_T = recon[0] 
+                        x_hat_single = jnp.reshape(x_hat_for_T, image_shape) 
+                        recon_images_at_T[T_step].append(x_hat_single)
+
     except StopIteration:
         print("Warning: No data available in dataloader")
-        return [], {}
+        return None, {} # Return None for path, empty dict for logs
     
-    # Create subplots
-    fig, axes = plt.subplots(num_images, 1 + len(T_values), figsize=(4 * (1 + len(T_values)), 2 * num_images))
-    
-    # If num_images = 1, make axes 2D by adding a row dimension
-    if num_images == 1:
-        axes = axes[None, :]  # Shape becomes (1, 1 + len(T_values))
-    
-    # Plot images
+    # --- Create Visualizations based on config ---
+    final_path = None
+    combined_log_dict = {}
+
+    # Create static image grid if requested
+    if config.save_reconstruction_images:
+        image_path, image_log_dict = create_reconstruction_images(
+            intermediate_recons=recon_images_at_T,
+            T_values=T_values,
+            orig_images=orig_images,
+            labels_list=labels_list,
+            num_images=num_images,
+            image_shape=image_shape,
+            wandb_run=wandb_run,
+            epoch=epoch
+        )
+        final_path = image_path # Prioritize image path if both are created
+        combined_log_dict.update(image_log_dict)
+
+    # Create video if requested
+    if config.save_reconstruction_video:
+        if not all_reconstruction_frames:
+            print("Warning: No reconstruction frames generated for video.")
+        else:
+            video_path, video_log_dict = create_reconstruction_video(
+                all_reconstruction_frames=all_reconstruction_frames,
+                orig_images=orig_images,
+                labels_list=labels_list,
+                num_images=num_images,
+                image_shape=image_shape,
+                wandb_run=wandb_run,
+                epoch=epoch,
+                fps=config.video_fps # Use fps from config
+            )
+            if final_path is None:
+                final_path = video_path # Set video path if images weren't created
+            combined_log_dict.update(video_log_dict)
+
+    return final_path, combined_log_dict
+
+
+def create_reconstruction_video(all_reconstruction_frames, orig_images, labels_list, num_images, image_shape, wandb_run, epoch, fps=10):
+    """
+    Creates a video comparing original images and their reconstructions over time.
+
+    Args:
+        all_reconstruction_frames: List (num_images) of lists (T_steps) of reconstruction tensors.
+        orig_images: List of original image tensors.
+        labels_list: List of labels for the original images.
+        num_images: Number of images to include in the video.
+        image_shape: Shape of a single image (C, H, W).
+        wandb_run: Wandb run object.
+        epoch: Current epoch number.
+        fps: Frames per second for the video.
+
+    Returns:
+        Tuple: (video_path, log_dict)
+    """
+    num_channels, H, W = image_shape
+    num_steps = len(all_reconstruction_frames[0]) # Assuming all images have same number of steps
+
+    video_frames = []
+
+    # Prepare original images once
+    processed_orig_images = []
     for i in range(num_images):
-        # Check number of channels
-        if num_channels == 1:  # Grayscale
-            axes[i, 0].imshow(jnp.clip(jnp.squeeze(orig_images[i]), 0.0, 1.0), cmap='gray')
-        else:  # RGB
-            axes[i, 0].imshow(jnp.clip(jnp.transpose(orig_images[i], (1, 2, 0)), 0.0, 1.0))
-        axes[i, 0].set_title(f'Original {labels_list[i] if labels_list[i] is not None else ""}')
-        axes[i, 0].axis('off')
+        orig_np = np.array(orig_images[i])
+        if num_channels == 1: # Grayscale
+            orig_plot = np.clip(np.squeeze(orig_np), 0.0, 1.0)
+            orig_plot = (plt.cm.gray(orig_plot)[:, :, :3] * 255).astype(np.uint8) # Convert grayscale to RGB for video
+        else: # RGB
+            orig_plot = np.clip(np.transpose(orig_np, (1, 2, 0)), 0.0, 1.0)
+            orig_plot = (orig_plot * 255).astype(np.uint8)
+        processed_orig_images.append(orig_plot)
+
+    # Generate frames for the video
+    for t in range(num_steps):
+        fig, axes = plt.subplots(num_images, 2, figsize=(4 * 2, 2 * num_images))
+        if num_images == 1:
+            axes = axes[None, :] # Make it 2D
+
+        for i in range(num_images):
+            # Plot original image
+            axes[i, 0].imshow(processed_orig_images[i])
+            axes[i, 0].set_title(f'Original {labels_list[i] if labels_list[i] is not None else ""}')
+            axes[i, 0].axis('off')
+
+            # Plot reconstruction at step t
+            recon_t = all_reconstruction_frames[i][t]
+            recon_np = np.array(recon_t[0]) # Get the first element from batch dim
+            recon_np = np.reshape(recon_np, image_shape)
+
+            if num_channels == 1: # Grayscale
+                recon_plot = np.clip(np.squeeze(recon_np), 0.0, 1.0)
+                recon_plot = (plt.cm.gray(recon_plot)[:, :, :3] * 255).astype(np.uint8)
+            else: # RGB
+                recon_plot = np.clip(np.transpose(recon_np, (1, 2, 0)), 0.0, 1.0)
+                recon_plot = (recon_plot * 255).astype(np.uint8)
+            
+            axes[i, 1].imshow(recon_plot)
+            axes[i, 1].set_title(f'Recon T={t+1}')
+            axes[i, 1].axis('off')
         
-        for j, T in enumerate(T_values):
-            if num_channels == 1:  # Grayscale
-                axes[i, j+1].imshow(jnp.clip(jnp.squeeze(recon_images[T][i]), 0.0, 1.0), cmap='gray')
-            else:  # RGB
-                axes[i, j+1].imshow(jnp.clip(jnp.transpose(recon_images[T][i], (1, 2, 0)), 0.0, 1.0))
-            axes[i, j+1].set_title(f'T={T}')
-            axes[i, j+1].axis('off')
-    
-    plt.tight_layout()
-    
-    # Create epoch string for filename
+        plt.tight_layout()
+        fig.canvas.draw() # Draw the canvas, cache the renderer
+        frame = np.frombuffer(fig.canvas.tostring_rgb(), dtype='uint8')
+        frame = frame.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        video_frames.append(frame)
+        plt.close(fig)
+
+    # Save video
     epoch_str = f"_epoch{epoch}" if epoch is not None else ""
-    
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     os.makedirs("../results", exist_ok=True)
-    reconstruction_path = f"../results/reconstruction{epoch_str}_{timestamp}.png"
-    plt.savefig(reconstruction_path)
-    
-    # Create a dictionary for the caller to log instead of logging directly
+    video_path = f"../results/reconstruction_video{epoch_str}_{timestamp}.mp4" # Save as MP4
+    imageio.mimsave(video_path, video_frames, fps=fps)
+    print(f"Saved reconstruction video to {video_path}")
+
+    # Prepare log dictionary for W&B
     log_dict = {}
-    
-    # Only prepare image for W&B if a run is provided
     if wandb_run is not None:
-        # Create log key with epoch info
-        log_key = f"reconstructions{epoch_str}" if epoch is not None else "reconstructions"
-        log_dict[log_key] = wandb.Image(reconstruction_path)
-        
-    plt.close(fig)
-    return orig_images, recon_images, reconstruction_path, log_dict
+        log_key = f"reconstructions_video{epoch_str}" if epoch is not None else "reconstructions_video"
+        try:
+            log_dict[log_key] = wandb.Video(video_path, fps=fps, format="mp4")
+        except Exception as e:
+            print(f"Error creating wandb.Video: {e}")
+            print("Ensure ffmpeg is installed and accessible.")
+
+    return video_path, log_dict
+
 
 def log_vode_stats(model, h_grad, w_grad, run, epoch):
     """
@@ -656,7 +825,7 @@ def main():
         entity="neural-machines",
         project="debug-transformer",
         config=vars(config),
-        mode="offline"  # Change to online for immediate verification
+        mode="online"  # Change to online for immediate verification
     )
     
     # Upload code artifacts to W&B
@@ -690,7 +859,8 @@ def main():
         patch_size=config.patch_size,
         axes_dim=config.axes_dim,
         theta=config.theta,
-        use_noise=config.use_noise
+        use_noise=config.use_noise,
+        use_lower_half_mask=config.use_lower_half_mask
     )
     
     print(f"Creating debug dataloaders for CIFAR-10...")
@@ -736,7 +906,7 @@ def main():
         print(f"Using constant learning rates - Weights: {weights_lr_fn}, Hidden: {hidden_lr_fn}")
     
     # Create optimizers with the appropriate learning rate function
-    optim_h = pxu.Optim(lambda: optax.sgd(hidden_lr_fn, momentum=0.9))
+    optim_h = pxu.Optim(lambda: optax.sgd(hidden_lr_fn, momentum=0.1))
     optim_w = pxu.Optim(
         lambda: optax.adamw(weights_lr_fn, weight_decay=config.weight_decay), 
         pxu.M(pxnn.LayerParam)(model)
@@ -773,7 +943,7 @@ def main():
             current_w_lr = weights_lr_fn
             current_h_lr = hidden_lr_fn
             
-        print(f"Current learning rates - Weights: {current_w_lr:.6f}, Hidden: {current_h_lr:.6f}")
+        # print(f"Current learning rates - Weights: {current_w_lr:.6f}, Hidden: {current_h_lr:.6f}")
         
         # Train for one epoch
         h_energy, w_energy, h_grad, w_grad = train(train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch)
@@ -792,8 +962,11 @@ def main():
                 'LearningRate/hidden': current_h_lr
             }
         
-        # # Generate reconstructions every N epochs (and for the final epoch)
-        # if (epoch + 1) % config.reconstruction_every_n_epochs == 0 or epoch == config.epochs - 1 or (config.use_early_stopping and early_stopped and epoch == early_stopped_epoch):
+        # Generate reconstructions every N epochs (and for the final epoch)
+        if (((epoch + 1) % config.reconstruction_every_n_epochs == 0 and val_loss < 0.20) or 
+            (epoch > 0 and val_loss < 0.20 and val_loss < best_val_loss - 0.01) or 
+            epoch == config.epochs - 1 or 
+            (config.use_early_stopping and early_stopped and epoch == early_stopped_epoch)):
             
             # # Log detailed vode statistics and get processed data for summary
             # processed_energy_data, processed_grad_data = log_vode_stats(model, h_grad, w_grad, run, epoch)
@@ -803,19 +976,17 @@ def main():
             # all_epochs_grad_data.extend(processed_grad_data)
             
             print(f"Generating reconstructions for epoch {epoch+1}...")
-            _, _, recon_path, recon_logs = visualize_reconstruction(
+            # Pass the config object here
+            vis_path, vis_logs = visualize_reconstruction(
                 model, 
                 optim_h, 
                 train_loader, 
-                T_values=config.reconstruction_steps, 
-                use_corruption=config.use_corruption,
-                corrupt_ratio=config.corrupt_ratio,
-                num_images=config.num_images,
+                config=config, # Pass config object
                 wandb_run=run,
                 epoch=epoch+1
             )
-            # Add reconstruction logs to the epoch metrics
-            epoch_metrics.update(recon_logs)
+            # Add visualization logs (either image or video) to the epoch metrics
+            epoch_metrics.update(vis_logs)
         
             # # Add system metrics
             # epoch_metrics.update({
