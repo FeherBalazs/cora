@@ -1,14 +1,6 @@
 # Cora: Predictive Coding with Transformers for Video Prediction
 
-<!-- Add Video Demonstration -->
-<p align="center">
-  <video src="https://github.com/FeherBalazs/cora/blob/feature_image_reconstruction/assets/videos/cifar10_reconstruction_demo_v0.3.0.mp4" width="80%" controls>
-            Your browser does not support the video tag.
-      </video>
-  <br/>
-  <em>Masked image reconstruction (CIFAR-10) using PC-ViT inference (v0.3.0).</em>
-</p>
-<!-- End Video Demonstration -->
+![Masked image reconstruction (CIFAR-10) using PC-ViT inference (v0.3.0). Lower 50% of the original images were masked (pixels set to black).](assets/videos/cifar10_reconstruction_demo_v0.3.0.gif)
 
 ## Introduction
 
