@@ -2,7 +2,7 @@
 
 <!-- Add Video Demonstration -->
 <p align="center">
-  <video src="assets/videos/cifar10_reconstruction_demo_v0.3.0.mp4" width="80%" autoplay loop muted playsinline>
+  <video src="https://github.com/FeherBalazs/cora/blob/feature_image_reconstruction/assets/videos/cifar10_reconstruction_demo_v0.3.0.mp4" width="80%" autoplay loop muted playsinline>
     Your browser does not support the video tag.
   </video>
   <br/>
