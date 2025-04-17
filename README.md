@@ -2,9 +2,9 @@
 
 <!-- Add Video Demonstration -->
 <p align="center">
-  <video src="https://github.com/FeherBalazs/cora/blob/feature_image_reconstruction/assets/videos/cifar10_reconstruction_demo_v0.3.0.mp4" width="80%" autoplay loop muted playsinline>
-    Your browser does not support the video tag.
-  </video>
+  <video src="https://github.com/FeherBalazs/cora/blob/feature_image_reconstruction/assets/videos/cifar10_reconstruction_demo_v0.3.0.mp4" width="80%" controls>
+            Your browser does not support the video tag.
+      </video>
   <br/>
   <em>Masked image reconstruction (CIFAR-10) using PC-ViT inference (v0.3.0).</em>
 </p>
