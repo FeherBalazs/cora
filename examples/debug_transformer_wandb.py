@@ -965,7 +965,7 @@ def main():
         
         # Generate reconstructions every N epochs (and for the final epoch)
         if (((epoch + 1) % config.reconstruction_every_n_epochs == 0 and val_loss < 0.30) or 
-            (epoch > 0 and val_loss < 0.30 and val_loss < best_val_loss - 0.01) or 
+            # (epoch > 0 and val_loss < 0.30 and val_loss < best_val_loss - 0.01) or 
             epoch == config.epochs - 1 or 
             (config.use_early_stopping and early_stopped and epoch == early_stopped_epoch)):
             
