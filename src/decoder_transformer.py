@@ -372,7 +372,7 @@ def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.
     step = 0
     for x, y in dl:
         h_energy, w_energy, h_grad, w_grad = train_on_batch(T, jnp.array(x), model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch, step=step)
-        print("w_energy:", w_energy, "at step t:", step)
+        print("w_energy:", w_energy, "at batch t:", step)
         step += 1
 
     return h_energy, w_energy, h_grad, w_grad
