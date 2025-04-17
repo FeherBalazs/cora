@@ -921,6 +921,7 @@ def main():
     
     # Early stopping variables
     best_val_loss = float('inf')
+    val_loss = float('inf')
     epochs_without_improvement = 0
     early_stopped = False
     
@@ -943,7 +944,7 @@ def main():
             current_w_lr = weights_lr_fn
             current_h_lr = hidden_lr_fn
             
-        # print(f"Current learning rates - Weights: {current_w_lr:.6f}, Hidden: {current_h_lr:.6f}")
+        print(f"Current learning rates - Weights: {current_w_lr:.6f}, Hidden: {current_h_lr:.6f}")
         
         # Train for one epoch
         h_energy, w_energy, h_grad, w_grad = train(train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch)
@@ -963,8 +964,8 @@ def main():
             }
         
         # Generate reconstructions every N epochs (and for the final epoch)
-        if (((epoch + 1) % config.reconstruction_every_n_epochs == 0 and val_loss < 0.20) or 
-            (epoch > 0 and val_loss < 0.20 and val_loss < best_val_loss - 0.01) or 
+        if (((epoch + 1) % config.reconstruction_every_n_epochs == 0 and val_loss < 0.30) or 
+            (epoch > 0 and val_loss < 0.30 and val_loss < best_val_loss - 0.01) or 
             epoch == config.epochs - 1 or 
             (config.use_early_stopping and early_stopped and epoch == early_stopped_epoch)):
             
