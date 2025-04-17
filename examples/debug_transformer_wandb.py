@@ -26,6 +26,7 @@ import re
 import matplotlib.pyplot as plt
 from datetime import datetime
 from typing import Callable
+import imageio
 
 # Add the src directory to the path
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
@@ -52,14 +53,14 @@ class ModelConfig:
     train_subset: int = 100
     test_subset: int = 100
     target_class: Optional[int] = None
-    reconstruction_every_n_epochs: int = 10
+    reconstruction_every_n_epochs: int = 10 # WARNING: changing this to 1 caused training instability. Less frequent reconstruction is better. Tested only with 10 so far which works ok.
     validation_every_n_epochs: int = 1
-    use_corruption: bool = True # TODO: reconstruction is not working with corruption yet (at least not with current hyperparameters)
+    use_corruption: bool = True
     corrupt_ratio: float = 0.5
     use_lower_half_mask: bool = True
 
     # Visualization settings
-    num_images: int = 1
+    num_images: int = 2
     
     # Model architecture
     hidden_size: int = 48
@@ -91,6 +92,9 @@ class ModelConfig:
     use_early_stopping: bool = True
     early_stopping_patience: int = 10
     early_stopping_min_delta: float = 0.0001
+    save_reconstruction_images: bool = True # Option to save static image grid
+    save_reconstruction_video: bool = True # Option to save video
+    video_fps: int = 60 # Frames per second for the reconstruction video
 
 # Predefined configurations for easy experimentation
 MODEL_CONFIGS = {
@@ -242,109 +246,253 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
     return TorchDataloader(train_dataloader), TorchDataloader(test_dataloader)
 
 
-def visualize_reconstruction(model, optim_h, dataloader, T_values=[24], use_corruption=False, corrupt_ratio=0.5, target_class=None, num_images=2, wandb_run=None, epoch=None, step=None):
+def create_reconstruction_images(intermediate_recons, T_values, orig_images, labels_list, num_images, image_shape, wandb_run, epoch):
+    """
+    Creates a grid of images comparing originals and reconstructions at specific T_values.
+    """
+    num_channels, H, W = image_shape
+    fig, axes = plt.subplots(num_images, 1 + len(T_values), figsize=(4 * (1 + len(T_values)), 2 * num_images))
     
-    # Extract image shape statically
+    if num_images == 1:
+        axes = axes[None, :]
+
+    for i in range(num_images):
+        # Plot original
+        orig_np = np.array(orig_images[i])
+        if num_channels == 1:
+            axes[i, 0].imshow(np.clip(np.squeeze(orig_np), 0.0, 1.0), cmap='gray')
+        else:
+            axes[i, 0].imshow(np.clip(np.transpose(orig_np, (1, 2, 0)), 0.0, 1.0))
+        axes[i, 0].set_title(f'Original {labels_list[i] if labels_list[i] is not None else ""}')
+        axes[i, 0].axis('off')
+        
+        # Plot reconstructions for specific T values
+        for j, T in enumerate(T_values):
+            if T in intermediate_recons and i < len(intermediate_recons[T]):
+                recon_T = intermediate_recons[T][i] # Get the i-th image for this T
+                recon_np = np.array(recon_T) # Assuming it's already (C, H, W) or similar after processing
+                
+                if num_channels == 1:
+                    axes[i, j+1].imshow(np.clip(np.squeeze(recon_np), 0.0, 1.0), cmap='gray')
+                else:
+                     # Ensure correct shape and transpose if needed
+                    recon_np_reshaped = np.reshape(recon_np, image_shape)
+                    axes[i, j+1].imshow(np.clip(np.transpose(recon_np_reshaped, (1, 2, 0)), 0.0, 1.0))
+                axes[i, j+1].set_title(f'T={T}')
+            else:
+                 # Handle missing reconstruction for this T/image index
+                axes[i, j+1].set_title(f'T={T} (N/A)')
+                axes[i, j+1].imshow(np.zeros((H, W) if num_channels == 1 else (H, W, 3))) # Placeholder
+            axes[i, j+1].axis('off')
+
+    plt.tight_layout()
+    
+    epoch_str = f"_epoch{epoch}" if epoch is not None else ""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    os.makedirs("../results", exist_ok=True)
+    reconstruction_path = f"../results/reconstruction_images{epoch_str}_{timestamp}.png"
+    plt.savefig(reconstruction_path)
+    plt.close(fig)
+    print(f"Saved reconstruction image grid to {reconstruction_path}")
+
+    log_dict = {}
+    if wandb_run is not None:
+        log_key = f"reconstructions_images{epoch_str}" if epoch is not None else "reconstructions_images"
+        try:
+            log_dict[log_key] = wandb.Image(reconstruction_path)
+        except Exception as e:
+            print(f"Error creating wandb.Image: {e}")
+
+    return reconstruction_path, log_dict
+
+
+def visualize_reconstruction(model, optim_h, dataloader, config, wandb_run=None, epoch=None, step=None):
+    
+    # Extract static info from config
     image_shape = model.config.image_shape
     num_channels = image_shape[0]
-    
+    num_images = config.num_images
+    use_corruption = config.use_corruption
+    corrupt_ratio = config.corrupt_ratio
+    T_values = config.reconstruction_steps # Use T_values from config
+
     orig_images = []
-    recon_images = {T: [] for T in T_values}
+    recon_images_at_T = {T: [] for T in T_values} # For static images
+    all_reconstruction_frames = [] # To store frames for video
     labels_list = []
     dataloader_iter = iter(dataloader)
-    
+
     # Get the single batch
     try:
         x, label = next(dataloader_iter)
-        
         x = jnp.array(x)
-        
+
         # Process each image in the batch separately
         for i in range(num_images):
-            # Get single image and reshape
-            single_x = x[i:i+1]  # Keep batch dimension but with size 1
+            single_x = x[i:i+1]
             orig_images.append(jnp.reshape(single_x[0], image_shape))
             
-            # Handle label
             if hasattr(label, 'item'):
                 labels_list.append(label[i].item() if len(label.shape) > 0 else label.item())
             else:
                 labels_list.append(None)
                 
-            # Call unmask_on_batch ONCE
-            final_loss, intermediate_recons = unmask_on_batch_enhanced(
+            # Call unmask_on_batch_enhanced - it now returns all frames regardless
+            final_loss, all_recons_list = unmask_on_batch_enhanced(
                 use_corruption=use_corruption, 
                 corrupt_ratio=corrupt_ratio, 
-                target_T_values=T_values, # Pass the list of desired T steps
+                target_T_values=T_values, # Determines max_T internally
                 x=single_x,               
                 model=model, 
                 optim_h=optim_h
             )
 
-            # Populate recon_images from result
-            for T in T_values:
-                if T in intermediate_recons:
-                    # intermediate_recons[T] might have shape (B, C, H, W) where B is expected_bs
-                    # Extract the first image [0] as we process one input image `i` at a time
-                    x_hat_for_T = intermediate_recons[T][0] # Take first element from potential batch
-                    x_hat_single = jnp.reshape(x_hat_for_T, image_shape) 
-                    recon_images[T].append(x_hat_single)
-                else:
-                    # Handle case where T might be 0 or step wasn't generated
-                    print(f"Warning: Reconstruction for T={T} not found in results for image {i}.")
-                    # Append a placeholder or handle as needed - for minimal change, we can just skip
-                    # recon_images[T].append(jnp.zeros(image_shape)) # Example placeholder
-                
+            # Always store all frames, as we might need them for video
+            all_reconstruction_frames.append(all_recons_list)
+
+            # Extract frames needed for static images only if required
+            if config.save_reconstruction_images:
+                for T_idx, recon in enumerate(all_recons_list):
+                    T_step = T_idx + 1 # T steps are 1-indexed
+                    if T_step in T_values:
+                        # Extract the first image from the batch dimension
+                        x_hat_for_T = recon[0] 
+                        x_hat_single = jnp.reshape(x_hat_for_T, image_shape) 
+                        recon_images_at_T[T_step].append(x_hat_single)
+
     except StopIteration:
         print("Warning: No data available in dataloader")
-        return [], {}
+        return None, {} # Return None for path, empty dict for logs
     
-    # Create subplots
-    fig, axes = plt.subplots(num_images, 1 + len(T_values), figsize=(4 * (1 + len(T_values)), 2 * num_images))
-    
-    # If num_images = 1, make axes 2D by adding a row dimension
-    if num_images == 1:
-        axes = axes[None, :]  # Shape becomes (1, 1 + len(T_values))
-    
-    # Plot images
+    # --- Create Visualizations based on config ---
+    final_path = None
+    combined_log_dict = {}
+
+    # Create static image grid if requested
+    if config.save_reconstruction_images:
+        image_path, image_log_dict = create_reconstruction_images(
+            intermediate_recons=recon_images_at_T,
+            T_values=T_values,
+            orig_images=orig_images,
+            labels_list=labels_list,
+            num_images=num_images,
+            image_shape=image_shape,
+            wandb_run=wandb_run,
+            epoch=epoch
+        )
+        final_path = image_path # Prioritize image path if both are created
+        combined_log_dict.update(image_log_dict)
+
+    # Create video if requested
+    if config.save_reconstruction_video:
+        if not all_reconstruction_frames:
+            print("Warning: No reconstruction frames generated for video.")
+        else:
+            video_path, video_log_dict = create_reconstruction_video(
+                all_reconstruction_frames=all_reconstruction_frames,
+                orig_images=orig_images,
+                labels_list=labels_list,
+                num_images=num_images,
+                image_shape=image_shape,
+                wandb_run=wandb_run,
+                epoch=epoch,
+                fps=config.video_fps # Use fps from config
+            )
+            if final_path is None:
+                final_path = video_path # Set video path if images weren't created
+            combined_log_dict.update(video_log_dict)
+
+    return final_path, combined_log_dict
+
+
+def create_reconstruction_video(all_reconstruction_frames, orig_images, labels_list, num_images, image_shape, wandb_run, epoch, fps=10):
+    """
+    Creates a video comparing original images and their reconstructions over time.
+
+    Args:
+        all_reconstruction_frames: List (num_images) of lists (T_steps) of reconstruction tensors.
+        orig_images: List of original image tensors.
+        labels_list: List of labels for the original images.
+        num_images: Number of images to include in the video.
+        image_shape: Shape of a single image (C, H, W).
+        wandb_run: Wandb run object.
+        epoch: Current epoch number.
+        fps: Frames per second for the video.
+
+    Returns:
+        Tuple: (video_path, log_dict)
+    """
+    num_channels, H, W = image_shape
+    num_steps = len(all_reconstruction_frames[0]) # Assuming all images have same number of steps
+
+    video_frames = []
+
+    # Prepare original images once
+    processed_orig_images = []
     for i in range(num_images):
-        # Check number of channels
-        if num_channels == 1:  # Grayscale
-            axes[i, 0].imshow(jnp.clip(jnp.squeeze(orig_images[i]), 0.0, 1.0), cmap='gray')
-        else:  # RGB
-            axes[i, 0].imshow(jnp.clip(jnp.transpose(orig_images[i], (1, 2, 0)), 0.0, 1.0))
-        axes[i, 0].set_title(f'Original {labels_list[i] if labels_list[i] is not None else ""}')
-        axes[i, 0].axis('off')
+        orig_np = np.array(orig_images[i])
+        if num_channels == 1: # Grayscale
+            orig_plot = np.clip(np.squeeze(orig_np), 0.0, 1.0)
+            orig_plot = (plt.cm.gray(orig_plot)[:, :, :3] * 255).astype(np.uint8) # Convert grayscale to RGB for video
+        else: # RGB
+            orig_plot = np.clip(np.transpose(orig_np, (1, 2, 0)), 0.0, 1.0)
+            orig_plot = (orig_plot * 255).astype(np.uint8)
+        processed_orig_images.append(orig_plot)
+
+    # Generate frames for the video
+    for t in range(num_steps):
+        fig, axes = plt.subplots(num_images, 2, figsize=(4 * 2, 2 * num_images))
+        if num_images == 1:
+            axes = axes[None, :] # Make it 2D
+
+        for i in range(num_images):
+            # Plot original image
+            axes[i, 0].imshow(processed_orig_images[i])
+            axes[i, 0].set_title(f'Original {labels_list[i] if labels_list[i] is not None else ""}')
+            axes[i, 0].axis('off')
+
+            # Plot reconstruction at step t
+            recon_t = all_reconstruction_frames[i][t]
+            recon_np = np.array(recon_t[0]) # Get the first element from batch dim
+            recon_np = np.reshape(recon_np, image_shape)
+
+            if num_channels == 1: # Grayscale
+                recon_plot = np.clip(np.squeeze(recon_np), 0.0, 1.0)
+                recon_plot = (plt.cm.gray(recon_plot)[:, :, :3] * 255).astype(np.uint8)
+            else: # RGB
+                recon_plot = np.clip(np.transpose(recon_np, (1, 2, 0)), 0.0, 1.0)
+                recon_plot = (recon_plot * 255).astype(np.uint8)
+            
+            axes[i, 1].imshow(recon_plot)
+            axes[i, 1].set_title(f'Recon T={t+1}')
+            axes[i, 1].axis('off')
         
-        for j, T in enumerate(T_values):
-            if num_channels == 1:  # Grayscale
-                axes[i, j+1].imshow(jnp.clip(jnp.squeeze(recon_images[T][i]), 0.0, 1.0), cmap='gray')
-            else:  # RGB
-                axes[i, j+1].imshow(jnp.clip(jnp.transpose(recon_images[T][i], (1, 2, 0)), 0.0, 1.0))
-            axes[i, j+1].set_title(f'T={T}')
-            axes[i, j+1].axis('off')
-    
-    plt.tight_layout()
-    
-    # Create epoch string for filename
+        plt.tight_layout()
+        fig.canvas.draw() # Draw the canvas, cache the renderer
+        frame = np.frombuffer(fig.canvas.tostring_rgb(), dtype='uint8')
+        frame = frame.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        video_frames.append(frame)
+        plt.close(fig)
+
+    # Save video
     epoch_str = f"_epoch{epoch}" if epoch is not None else ""
-    
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     os.makedirs("../results", exist_ok=True)
-    reconstruction_path = f"../results/reconstruction{epoch_str}_{timestamp}.png"
-    plt.savefig(reconstruction_path)
-    
-    # Create a dictionary for the caller to log instead of logging directly
+    video_path = f"../results/reconstruction_video{epoch_str}_{timestamp}.mp4" # Save as MP4
+    imageio.mimsave(video_path, video_frames, fps=fps)
+    print(f"Saved reconstruction video to {video_path}")
+
+    # Prepare log dictionary for W&B
     log_dict = {}
-    
-    # Only prepare image for W&B if a run is provided
     if wandb_run is not None:
-        # Create log key with epoch info
-        log_key = f"reconstructions{epoch_str}" if epoch is not None else "reconstructions"
-        log_dict[log_key] = wandb.Image(reconstruction_path)
-        
-    plt.close(fig)
-    return orig_images, recon_images, reconstruction_path, log_dict
+        log_key = f"reconstructions_video{epoch_str}" if epoch is not None else "reconstructions_video"
+        try:
+            log_dict[log_key] = wandb.Video(video_path, fps=fps, format="mp4")
+        except Exception as e:
+            print(f"Error creating wandb.Video: {e}")
+            print("Ensure ffmpeg is installed and accessible.")
+
+    return video_path, log_dict
 
 
 def log_vode_stats(model, h_grad, w_grad, run, epoch):
@@ -828,19 +976,17 @@ def main():
             # all_epochs_grad_data.extend(processed_grad_data)
             
             print(f"Generating reconstructions for epoch {epoch+1}...")
-            _, _, recon_path, recon_logs = visualize_reconstruction(
+            # Pass the config object here
+            vis_path, vis_logs = visualize_reconstruction(
                 model, 
                 optim_h, 
                 train_loader, 
-                T_values=config.reconstruction_steps, 
-                use_corruption=config.use_corruption,
-                corrupt_ratio=config.corrupt_ratio,
-                num_images=config.num_images,
+                config=config, # Pass config object
                 wandb_run=run,
                 epoch=epoch+1
             )
-            # Add reconstruction logs to the epoch metrics
-            epoch_metrics.update(recon_logs)
+            # Add visualization logs (either image or video) to the epoch metrics
+            epoch_metrics.update(vis_logs)
         
             # # Add system metrics
             # epoch_metrics.update({

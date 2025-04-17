@@ -477,7 +477,7 @@ def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, target_T_values:
                 # intermediate_recons[t + 1] = model.vodes[-1].get("h")
                 with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
                     intermediate_recons[t + 1] = forward(None, model=model)
-                    print(f"Saved intermediate reconstruction at T={t+1}")
+                print(f"Saved intermediate reconstruction at T={t+1}")
 
             # Unfreeze sensory layer for inference
             model.vodes[-1].h.frozen = False
@@ -545,8 +545,9 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
 
     max_T = max(target_T_values) if target_T_values else 0
     # Store reconstructions at target T values (step t corresponds to T=t+1)
-    save_steps = {t - 1 for t in target_T_values if t > 0} 
-    intermediate_recons = {}
+    # save_steps = {t - 1 for t in target_T_values if t > 0} 
+    # intermediate_recons = {}
+    all_reconstructions = [] # Store all reconstructions
 
     expected_bs = 1
     for vode in model.vodes:
@@ -596,11 +597,11 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
     # Inference iterations
     for t in range(max_T):
         if use_corruption:
-            if t in save_steps:
-                # intermediate_recons[t + 1] = model.vodes[-1].get("h")
-                with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
-                    intermediate_recons[t + 1] = forward(None, model=model)
-                print(f"Saved intermediate reconstruction at T={t+1}")
+            # Always save reconstruction at each step
+            with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
+                current_recon = forward(None, model=model)
+                all_reconstructions.append(current_recon)
+            # print(f"Saved intermediate reconstruction at T={t+1}")
 
             # Unfreeze sensory layer for inference
             model.vodes[-1].h.frozen = False
@@ -648,14 +649,14 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
             # Update states
             optim_h.step(model, h_grad["model"])
 
-            if t in save_steps:
-                # intermediate_recons[t + 1] = model.vodes[-1].get("h")
-                with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
-                    intermediate_recons[t + 1] = forward(None, model=model)
-                print(f"Saved intermediate reconstruction at T={t+1}")
+            # Always save reconstruction at each step
+            with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
+                current_recon = forward(None, model=model)
+                all_reconstructions.append(current_recon)
+            # print(f"Saved intermediate reconstruction at T={t+1}")
 
-    # Log energy for debugging
-    print(f"Inference step {t+1}/{max_T}, Energy: {h_energy}")
+    # Log energy for debugging - Note: h_energy is from the last step's inference_step call
+    # print(f"Inference step {t+1}/{max_T}, Energy: {h_energy}")
 
     optim_h.clear()
 
@@ -676,11 +677,12 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
     # Refreeze sensory layer
     model.vodes[-1].h.frozen = True
 
-    # Reset model as the inference could mess up the model state if diverged
+    # Reset model as the inference could mess up the model state if diverged. 
+    # WARNING: too frequently resetting the model state causes training instability.
     with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
         forward(None, model=model)
 
-    return loss, intermediate_recons
+    return loss, all_reconstructions
 
 
 def create_config_by_dataset(dataset_name: str, latent_dim: int = 512, num_blocks: int = 6):
