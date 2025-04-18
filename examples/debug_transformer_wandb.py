@@ -95,6 +95,7 @@ class ModelConfig:
     save_reconstruction_images: bool = True # Option to save static image grid
     save_reconstruction_video: bool = True # Option to save video
     video_fps: int = 60 # Frames per second for the reconstruction video
+    reinitialize_model_for_each_epoch: bool = False # WARNING: setting this to True will get around 0.24 val loss with 100 images vs 0.15 without.
 
 # Predefined configurations for easy experimentation
 MODEL_CONFIGS = {
@@ -531,6 +532,10 @@ def log_vode_stats(model, h_grad, w_grad, run, epoch):
             elif isinstance(energy, (float, int)):
                 # Handle cases where it might already be a Python scalar (less likely from JAX)
                 energy_value = float(energy)
+            elif isinstance(energy, jax.Array) and energy.size > 1:
+                # Handle case where energy is a non-scalar JAX array (e.g., per-batch energies)
+                # print(f"Info: Energy for vode {i} is an array (shape: {energy.shape}). Logging mean energy.")
+                energy_value = jnp.mean(energy).item() # Calculate and log the mean
             else:
                 # Handle unexpected non-scalar or non-array case
                 print(f"Warning: Energy for vode {i} is not a scalar JAX array or Python number (type: {type(energy)}, value: {energy}). Logging NaN.")
@@ -576,21 +581,21 @@ def extract_vode_gradient_norms(h_grad):
     """Extract actual gradient L2 norms from the vode gradients"""
     vode_grad_norms = []
     
-    # Add debug information about the structure
-    print(f"h_grad type: {type(h_grad)}")
-    if isinstance(h_grad, dict) and 'model' in h_grad:
-        print(f"model_grads type: {type(h_grad['model'])}")
-        if hasattr(h_grad['model'], 'vodes'):
-            print(f"vodes type: {type(h_grad['model'].vodes)}")
-            print(f"Number of vodes: {len(h_grad['model'].vodes)}")
-            if len(h_grad['model'].vodes) > 0:
-                first_vode = h_grad['model'].vodes[0]
-                print(f"First vode type: {type(first_vode)}")
-                if hasattr(first_vode, 'h'):
-                    print(f"First vode.h type: {type(first_vode.h)}")
-                    if hasattr(first_vode.h, 'value'):
-                        print(f"First vode.h.value type: {type(first_vode.h.value)}")
-                        print(f"First vode.h.value shape: {first_vode.h.value.shape}")
+    # # Add debug information about the structure
+    # print(f"h_grad type: {type(h_grad)}")
+    # if isinstance(h_grad, dict) and 'model' in h_grad:
+    #     print(f"model_grads type: {type(h_grad['model'])}")
+    #     if hasattr(h_grad['model'], 'vodes'):
+    #         print(f"vodes type: {type(h_grad['model'].vodes)}")
+    #         print(f"Number of vodes: {len(h_grad['model'].vodes)}")
+    #         if len(h_grad['model'].vodes) > 0:
+    #             first_vode = h_grad['model'].vodes[0]
+    #             print(f"First vode type: {type(first_vode)}")
+    #             if hasattr(first_vode, 'h'):
+    #                 print(f"First vode.h type: {type(first_vode.h)}")
+    #                 if hasattr(first_vode.h, 'value'):
+    #                     print(f"First vode.h.value type: {type(first_vode.h.value)}")
+    #                     print(f"First vode.h.value shape: {first_vode.h.value.shape}")
     
     try:
         # Access the model gradients
@@ -603,7 +608,7 @@ def extract_vode_gradient_norms(h_grad):
         for i in range(len(vodes)):
             vode = vodes[i]
             h_grad_tensor = vode.h
-            print("h_grad_tensor", h_grad_tensor)
+            # print("h_grad_tensor", h_grad_tensor)
             
             # VodeParams might store their values in different ways
             # Try different common patterns to access the values
@@ -624,7 +629,7 @@ def extract_vode_gradient_norms(h_grad):
                 # Calculate L2 norm as sqrt(sum(x_i^2))
                 l2_norm = float(jnp.sqrt(jnp.sum(flattened * flattened)))
                 vode_grad_norms.append(l2_norm)
-                print(f"Vode {i} L2 norm: {l2_norm}")
+                # print(f"Vode {i} L2 norm: {l2_norm}")
             else:
                 # If we can't flatten, just log that we couldn't calculate the norm
                 print(f"Couldn't calculate norm for vode {i}: grad_values not flattenable")
@@ -906,6 +911,7 @@ def main():
         print(f"Using constant learning rates - Weights: {weights_lr_fn}, Hidden: {hidden_lr_fn}")
     
     # Create optimizers with the appropriate learning rate function
+    # TODO: add gradient clipping
     optim_h = pxu.Optim(lambda: optax.sgd(hidden_lr_fn, momentum=0.1))
     optim_w = pxu.Optim(
         lambda: optax.adamw(weights_lr_fn, weight_decay=config.weight_decay), 
@@ -945,6 +951,11 @@ def main():
             current_h_lr = hidden_lr_fn
             
         print(f"Current learning rates - Weights: {current_w_lr:.6f}, Hidden: {current_h_lr:.6f}")
+
+        if config.reinitialize_model_for_each_epoch:
+            print(f"Reinitializing model for epoch {epoch+1}...")
+            with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
+                forward(x.numpy(), model=model)
         
         # Train for one epoch
         h_energy, w_energy, h_grad, w_grad = train(train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch)
@@ -962,19 +973,22 @@ def main():
                 'LearningRate/weights': current_w_lr,
                 'LearningRate/hidden': current_h_lr
             }
+
+            # Log detailed vode statistics and get processed data for summary
+            processed_energy_data, processed_grad_data = log_vode_stats(model, h_grad, w_grad, run, epoch)
+            
+            # Add the processed data to our summary collections
+            all_epochs_energy_data.extend(processed_energy_data)
+            all_epochs_grad_data.extend(processed_grad_data)
+
+            # Log all metrics for this epoch with a consistent step number
+            run.log(epoch_metrics, step=epoch+1)  # Use epoch+1 to start from step 1
         
         # Generate reconstructions every N epochs (and for the final epoch)
-        if (((epoch + 1) % config.reconstruction_every_n_epochs == 0 and val_loss < 0.30) or 
+        if (((epoch + 1) % config.reconstruction_every_n_epochs == 0 and val_loss < 0.50) or 
             # (epoch > 0 and val_loss < 0.30 and val_loss < best_val_loss - 0.01) or 
             epoch == config.epochs - 1 or 
             (config.use_early_stopping and early_stopped and epoch == early_stopped_epoch)):
-            
-            # # Log detailed vode statistics and get processed data for summary
-            # processed_energy_data, processed_grad_data = log_vode_stats(model, h_grad, w_grad, run, epoch)
-            
-            # # Add the processed data to our summary collections
-            # all_epochs_energy_data.extend(processed_energy_data)
-            # all_epochs_grad_data.extend(processed_grad_data)
             
             print(f"Generating reconstructions for epoch {epoch+1}...")
             # Pass the config object here
