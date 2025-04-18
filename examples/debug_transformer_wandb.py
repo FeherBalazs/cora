@@ -50,17 +50,17 @@ class ModelConfig:
     # Dataset settings
     dataset: str = "cifar10"
     data_dir: str = "../datasets/"
-    train_subset: int = 100
+    train_subset: int = 200
     test_subset: int = 100
     target_class: Optional[int] = None
-    reconstruction_every_n_epochs: int = 10 # WARNING: changing this to 1 caused training instability. Less frequent reconstruction is better. Tested only with 10 so far which works ok.
+    reconstruction_every_n_epochs: int = 50 # WARNING: changing this to 1 caused training instability. Less frequent reconstruction is better. Tested only with 10 so far which works ok.
     validation_every_n_epochs: int = 1
     use_corruption: bool = True
     corrupt_ratio: float = 0.5
     use_lower_half_mask: bool = True
 
     # Visualization settings
-    num_images: int = 2
+    num_images: int = 1
     
     # Model architecture
     hidden_size: int = 48
@@ -75,16 +75,16 @@ class ModelConfig:
     # Training settings
     use_noise: bool = True
     batch_size: int = 100
-    epochs: int = 100
+    epochs: int = 50
     inference_steps: int = 32
     eval_inference_steps: List[int] = field(default_factory=lambda: [32])
-    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 32, 64, 128, 256, 512])
-    peak_lr_weights: float = 1e-4
-    peak_lr_hidden: float = 0.01
-    # peak_lr_weights: float = 1e-3
-    # peak_lr_hidden: float = 0.05
+    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 32, 64, 128, 256, 400])
+    # peak_lr_weights: float = 1e-4
+    # peak_lr_hidden: float = 0.01
+    peak_lr_weights: float = 1e-3
+    peak_lr_hidden: float = 0.05
     weight_decay: float = 2e-4
-    warmup_epochs: int = 5
+    warmup_epochs: int = 15
     use_lr_schedule: bool = True
     seed: int = 42
     
@@ -103,7 +103,7 @@ MODEL_CONFIGS = {
         name="debug_tiny",
         hidden_size=64,
         num_heads=12,
-        num_blocks=3,
+        num_blocks=6,
     ),
     "debug_small": ModelConfig(
         name="debug_small",
