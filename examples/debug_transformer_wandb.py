@@ -74,7 +74,7 @@ class ModelConfig:
     
     # Training settings
     use_noise: bool = True
-    batch_size: int = 100
+    batch_size: int = 200
     epochs: int = 50
     inference_steps: int = 32
     eval_inference_steps: List[int] = field(default_factory=lambda: [32])
@@ -932,11 +932,18 @@ def main():
     early_stopped = False
     
     print(f"Training for {config.epochs} epochs with W&B logging...")
-
-    # Initialize the model (set h values of the Vodes)
-    for x, _ in train_loader:
-        with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
-            forward(x.numpy(), model=model)
+    
+    # # Initialize the model (set h values of the Vodes)
+    # for x, _ in train_loader:
+    #     with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
+    #         forward(x.numpy(), model=model)
+    # Initialize the model (set h values of the Vodes) using a dummy batch shape
+    # Determine expected input shape: (batch_size, channels, height, width)
+    init_shape = (config.batch_size, *model_config.image_shape)
+    x_init = jnp.zeros(init_shape, dtype=jnp.float32) # Use float32 or model's dtype
+    print(f"Initializing Vode states using dummy tensor with shape: {init_shape}")
+    with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
+        forward(x_init, model=model) # Use dummy tensor for shape initialization
     
     for epoch in range(config.epochs):
         epoch_start = time.time()
@@ -955,7 +962,7 @@ def main():
         if config.reinitialize_model_for_each_epoch:
             print(f"Reinitializing model for epoch {epoch+1}...")
             with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
-                forward(x.numpy(), model=model)
+                forward(x_init, model=model)
         
         # Train for one epoch
         h_energy, w_energy, h_grad, w_grad = train(train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch)
