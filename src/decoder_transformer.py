@@ -416,6 +416,7 @@ def eval_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_h: p
 def eval(dl, T, *, model: TransformerDecoder, optim_h: pxu.Optim):
     losses = []
 
+    # TODO: think how having multiple batches modifies training dynamics. The lack of clear params for logging potentialy leads to issues.
     for x, y in dl:
         e, y_hat = unmask_on_batch(use_corruption=False, corrupt_ratio=0.0, target_T_values=T, x=jnp.array(x), model=model, optim_h=optim_h)
         losses.append(e)
@@ -474,8 +475,8 @@ def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, target_T_values:
     for t in range(max_T):
         if use_corruption:
             if t in save_steps:
-                # intermediate_recons[t + 1] = model.vodes[-1].get("h")
-                with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
+                # with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
+                with pxu.step(model, STATUS_FORWARD):
                     intermediate_recons[t + 1] = forward(None, model=model)
                 print(f"Saved intermediate reconstruction at T={t+1}")
 
@@ -483,7 +484,8 @@ def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, target_T_values:
             model.vodes[-1].h.frozen = False
 
             # Run inference step
-            with pxu.step(model, clear_params=pxc.VodeParam.Cache):
+            # with pxu.step(model, clear_params=pxc.VodeParam.Cache):
+            with pxu.step(model):
                 h_energy, h_grad = inference_step(model=model)
             
             # Update states
@@ -499,33 +501,35 @@ def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, target_T_values:
 
         else:
             # Standard inference step
-            with pxu.step(model, clear_params=pxc.VodeParam.Cache):
+            # with pxu.step(model, clear_params=pxc.VodeParam.Cache):
+            with pxu.step(model):
                 h_energy, h_grad = inference_step(model=model)
 
             # Update states
             optim_h.step(model, h_grad["model"])
 
             if t in save_steps:
-                # intermediate_recons[t + 1] = model.vodes[-1].get("h")
-                with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
+                #   with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
+                with pxu.step(model, STATUS_FORWARD):
                     intermediate_recons[t + 1] = forward(None, model=model)
 
     optim_h.clear()
 
     # Final forward pass to get reconstruction
-    with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
+    # with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
+    # WARNING: Switched to this for vode grad and energy logging
+    with pxu.step(model, STATUS_FORWARD):
         x_hat_batch = forward(None, model=model)
-        # TODO: this is how it is fetched in associative memory script - test if it works
-        # x_hat_batch = model.vodes[-1].get("h") 
 
     loss = jnp.square(jnp.clip(x_hat_batch.reshape(-1), 0.0, 1.0) - x_batch.reshape(-1)).mean()
 
     # Refreeze sensory layer
     model.vodes[-1].h.frozen = True
 
-    # Reset model as the inference could mess up the model state if diverged
-    with pxu.step(model, clear_params=pxc.VodeParam.Cache):
-        forward(None, model=model)
+    # WARNING: Commented out for vode grad and energy logging
+    # # Reset model as the inference could mess up the model state if diverged
+    # with pxu.step(model, clear_params=pxc.VodeParam.Cache):
+    #     forward(None, model=model)
 
     return loss, intermediate_recons
 
