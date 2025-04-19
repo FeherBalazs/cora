@@ -35,11 +35,13 @@ sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__f
 from src.decoder_transformer import (
     TransformerDecoder, 
     TransformerConfig,
-    train, 
-    eval, 
+    train, # Returns avg_loss, h_grad, w_grad
+    # eval, # Replaced by eval_pretext_metrics
     unmask_on_batch,
-    unmask_on_batch_enhanced,
-    forward
+    unmask_on_batch_enhanced, # Returns loss, recons, mask
+    forward,
+    eval_pretext_metrics, # New evaluation function
+    calculate_psnr # Import if needed elsewhere, though eval_pretext_metrics uses it internally
 )
 
 #TODO: simplify config across scripts
@@ -339,7 +341,7 @@ def visualize_reconstruction(model, optim_h, dataloader, config, wandb_run=None,
                 labels_list.append(None)
                 
             # Call unmask_on_batch_enhanced - it now returns all frames regardless
-            final_loss, all_recons_list = unmask_on_batch_enhanced(
+            _, all_recons_list, _ = unmask_on_batch_enhanced(
                 use_corruption=use_corruption, 
                 corrupt_ratio=corrupt_ratio, 
                 target_T_values=T_values, # Determines max_T internally
@@ -919,24 +921,22 @@ def main():
     )
     
     # Store validation losses
-    val_losses = []
+    # val_losses = [] # Replaced by metrics dict
     
     # Store energy and gradient data for all epochs
     all_epochs_energy_data = []
     all_epochs_grad_data = []
     
     # Early stopping variables
-    best_val_loss = float('inf')
-    val_loss = float('inf')
+    best_val_loss = float('inf') # Will track the primary metric (e.g., masked_mse)
+    # val_loss = float('inf') # Replaced by pretext_metrics dictionary
     epochs_without_improvement = 0
     early_stopped = False
+    early_stopped_epoch = -1 # Store epoch when stopped
+    pretext_metrics = {} # Initialize metrics dict
     
     print(f"Training for {config.epochs} epochs with W&B logging...")
     
-    # # Initialize the model (set h values of the Vodes)
-    # for x, _ in train_loader:
-    #     with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
-    #         forward(x.numpy(), model=model)
     # Initialize the model (set h values of the Vodes) using a dummy batch shape
     # Determine expected input shape: (batch_size, channels, height, width)
     init_shape = (config.batch_size, *model_config.image_shape)
@@ -965,81 +965,110 @@ def main():
                 forward(x_init, model=model)
         
         # Train for one epoch
-        h_energy, w_energy, h_grad, w_grad = train(train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch)
+        # train now returns avg_train_loss instead of h_energy, w_energy directly
+        avg_train_loss, h_grad, w_grad = train(train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch)
         
         # Create logs and evaluate on validation set every N epochs (and for the final epoch)
+        # Initialize epoch_metrics here to store training loss even if validation doesn't run
+        epoch_metrics = {
+            'Losses/training_loss_avg': avg_train_loss, # Log average train loss
+            'LearningRate/weights': current_w_lr,
+            'LearningRate/hidden': current_h_lr
+        }
+
         if (epoch + 1) % config.validation_every_n_epochs == 0 or epoch == config.epochs - 1 or (config.use_early_stopping and early_stopped and epoch == early_stopped_epoch):
-            # Evaluate on validation set
-            val_loss = eval(train_loader, config.eval_inference_steps, model=model, optim_h=optim_h)
-            val_losses.append(val_loss)
-            print(f"Validation loss: {val_loss:.6f}")
+            # <<< Evaluate using the new function >>>
+            print(f"Evaluating pretext task metrics on validation set...")
+            # Use config settings for evaluation masking
+            # NOTE: T_values for eval might differ from training T
+            # Use val_loader here
+            pretext_metrics = eval_pretext_metrics(
+                val_loader, # Use validation loader
+                T_values=config.eval_inference_steps, # Use eval_inference_steps
+                use_corruption=config.use_corruption, 
+                corrupt_ratio=config.corrupt_ratio,
+                model=model, 
+                optim_h=optim_h
+            )
+            print(f"Validation Pretext Metrics: {pretext_metrics}")
             
-            # Collect all metrics for this epoch in a single dictionary
-            epoch_metrics = {
-                'Losses/validation_loss': val_loss,
-                'LearningRate/weights': current_w_lr,
-                'LearningRate/hidden': current_h_lr
-            }
+            # Add validation metrics with clear names
+            for key, value in pretext_metrics.items():
+                epoch_metrics[f'ValMetrics/Pretext/{key}'] = value
 
             # Log detailed vode statistics and get processed data for summary
-            processed_energy_data, processed_grad_data = log_vode_stats(model, h_grad, w_grad, run, epoch)
+            # Pass h_grad, w_grad from the end of the training epoch
+            if h_grad is not None and w_grad is not None:
+                processed_energy_data, processed_grad_data = log_vode_stats(model, h_grad, w_grad, run, epoch)
+                # Add the processed data to our summary collections
+                all_epochs_energy_data.extend(processed_energy_data)
+                all_epochs_grad_data.extend(processed_grad_data)
+            else:
+                print("Warning: Gradients not available for Vode stats logging.")
+
+            # Initialize best_val_loss on the first validation run
+            current_val_metric = pretext_metrics.get('masked_mse', float('inf')) # Use masked_mse for early stopping
+            if best_val_loss == float('inf') and current_val_metric != float('inf'):
+                 best_val_loss = current_val_metric
+                 print(f"Initialized best_val_loss for early stopping with masked_mse: {best_val_loss:.6f}")
             
-            # Add the processed data to our summary collections
-            all_epochs_energy_data.extend(processed_energy_data)
-            all_epochs_grad_data.extend(processed_grad_data)
-
-            # Log all metrics for this epoch with a consistent step number
-            run.log(epoch_metrics, step=epoch+1)  # Use epoch+1 to start from step 1
-        
-        # Generate reconstructions every N epochs (and for the final epoch)
-        if (((epoch + 1) % config.reconstruction_every_n_epochs == 0 and val_loss < 0.50) or 
-            # (epoch > 0 and val_loss < 0.30 and val_loss < best_val_loss - 0.01) or 
-            epoch == config.epochs - 1 or 
-            (config.use_early_stopping and early_stopped and epoch == early_stopped_epoch)):
-            
-            print(f"Generating reconstructions for epoch {epoch+1}...")
-            # Pass the config object here
-            vis_path, vis_logs = visualize_reconstruction(
-                model, 
-                optim_h, 
-                train_loader, 
-                config=config, # Pass config object
-                wandb_run=run,
-                epoch=epoch+1
-            )
-            # Add visualization logs (either image or video) to the epoch metrics
-            epoch_metrics.update(vis_logs)
-        
-            # # Add system metrics
-            # epoch_metrics.update({
-            #     'System/GPU_Memory_Allocated': torch.cuda.memory_allocated() / 1024**2 if torch.cuda.is_available() else 0,
-            #     'System/GPU_Memory_Cached': torch.cuda.memory_reserved() / 1024**2 if torch.cuda.is_available() else 0,
-            #     'System/CPU_Memory_Usage': psutil.Process().memory_info().rss / 1024**2
-            # })
-
-            # Log all metrics for this epoch with a consistent step number
-            run.log(epoch_metrics, step=epoch+1)  # Use epoch+1 to start from step 1
-
-            # Early stopping check
-            if config.use_early_stopping:
-                if val_loss < (best_val_loss - config.early_stopping_min_delta):
-                    # Found a better model
-                    best_val_loss = val_loss
+             # Early stopping check based on the chosen metric (e.g., masked_mse)
+            if config.use_early_stopping and best_val_loss != float('inf'): # Ensure best_val_loss is initialized
+                if current_val_metric < (best_val_loss - config.early_stopping_min_delta):
+                    print(f"Validation metric improved! {best_val_loss:.6f} -> {current_val_metric:.6f}")
+                    best_val_loss = current_val_metric
                     epochs_without_improvement = 0
                     # Save the best model here if desired
-                    # Could implement model state saving logic here
                 else:
                     epochs_without_improvement += 1
-                    print(f"No improvement for {epochs_without_improvement} epochs (best: {best_val_loss:.6f})")
-                    
+                    print(f"No improvement in validation metric for {epochs_without_improvement} epochs (best: {best_val_loss:.6f})")
                     if epochs_without_improvement >= config.early_stopping_patience:
                         print(f"Early stopping triggered after {epoch+1} epochs!")
                         early_stopped = True
                         early_stopped_epoch = epoch
-                        break
+                        # Log final metrics before breaking
+                        run.log(epoch_metrics, step=epoch+1)
+                        break # Exit training loop
+        
+        # Log metrics collected so far for this epoch (includes train loss, potentially val metrics)
+        run.log(epoch_metrics, step=epoch+1)  # Use epoch+1 to start from step 1
+
+        # Generate reconstructions every N epochs (and for the final epoch)
+        # Base the condition on one of the new validation metrics if available and valid
+        # Use the most recently calculated validation metric if available
+        current_val_metric_for_recon = pretext_metrics.get('masked_mse', float('inf')) 
+
+        # Trigger reconstruction based on interval OR significant improvement OR final epoch/stop
+        trigger_reconstruction = False
+        if (epoch + 1) % config.reconstruction_every_n_epochs == 0 and current_val_metric_for_recon < float('inf'):
+            trigger_reconstruction = True
+        elif best_val_loss != float('inf') and current_val_metric_for_recon < best_val_loss - 0.01: # Use same threshold as early stopping improvement check
+            trigger_reconstruction = True
+        elif epoch == config.epochs - 1: # Final epoch
+            trigger_reconstruction = True
+        elif early_stopped and epoch == early_stopped_epoch: # After early stopping
+             trigger_reconstruction = True
+             
+        if trigger_reconstruction:
+            print(f"Generating reconstructions for epoch {epoch+1} (Val Metric: {current_val_metric_for_recon:.6f})...")
+            # Pass the config object here
+            # Use train_loader for visualizing training samples
+            vis_path, vis_logs = visualize_reconstruction(
+                model, 
+                optim_h, 
+                train_loader, # Use train_loader for visualization 
+                config=config, # Pass config object
+                wandb_run=run,
+                epoch=epoch+1
+            )
+            # Add visualization logs (either image or video) to wandb logging for this step
+            run.log(vis_logs, step=epoch+1) 
         
         epoch_time = time.time() - epoch_start
         print(f"Epoch completed in {epoch_time:.2f} seconds")
+        # Break loop if early stopping occurred in the validation check
+        if early_stopped and epoch == early_stopped_epoch:
+            break
     
     # Create summary tables after training is complete
     if all_epochs_energy_data:

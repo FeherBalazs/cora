@@ -28,6 +28,7 @@ from pcx.core._parameter import get as param_get  # Import get function for para
 import matplotlib.pyplot as plt
 from datetime import datetime
 import time
+import math  # Import math for log10
 
 STATUS_FORWARD = "forward"
 
@@ -266,6 +267,7 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
     with pxu.step(model, clear_params=pxc.VodeParam.Cache):
         forward(x, model=model)
 
+    
     optim_h.init(pxu.M_hasnot(pxc.VodeParam, frozen=True)(model))
 
     # Inference and learning steps
@@ -291,14 +293,124 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
     return h_energy, w_energy, h_grad, w_grad
 
 
+def eval_pretext_metrics(dataloader, T_values, use_corruption, corrupt_ratio, *, model: TransformerDecoder, optim_h: pxu.Optim, data_range=1.0):
+    """Evaluates pretext task performance (reconstruction/inpainting) on a dataloader."""
+    model.eval() # Ensure model is in eval mode
+
+    all_metrics = {
+        'full_mse': [], 'masked_mse': [],
+        'full_l1': [], 'masked_l1': [],
+        'full_psnr': [], 'masked_psnr': []
+    }
+
+    total_batches = 0
+    for x, _ in dataloader:
+        total_batches += 1
+        x_batch = jnp.array(x) # Ensure it's a JAX array
+
+        # Use unmask_on_batch_enhanced to get reconstructions and the mask
+        # We need the final reconstruction, which is the last element of the list
+        # Note: This re-runs inference for every batch. Consider efficiency if needed.
+        _, all_recons_list, mask = unmask_on_batch_enhanced(
+            use_corruption=use_corruption,
+            corrupt_ratio=corrupt_ratio,
+            target_T_values=T_values, # Determines max_T
+            x=x_batch,
+            model=model,
+            optim_h=optim_h
+        )
+
+        if not all_recons_list:
+            print("Warning: No reconstructions returned from unmask_on_batch_enhanced.")
+            continue
+
+        # Get the final reconstruction (last step)
+        x_hat_batch = all_recons_list[-1]
+
+        # Ensure shapes match (unmask_on_batch_enhanced might return batched results)
+        if x_hat_batch.shape[0] != x_batch.shape[0]:
+             # If batch sizes don't match (e.g., due to internal repeat), take the first one
+             # This assumes the relevant reconstruction is the first in the batch dimension returned.
+             # Adjust if necessary based on how unmask_on_batch_enhanced handles batches.
+             # It's safer if unmask_on_batch_enhanced consistently returns outputs matching the input batch size.
+             print(f"Warning: Mismatch in batch size between input ({x_batch.shape[0]}) and reconstruction ({x_hat_batch.shape[0]}). Using first element.")
+             # This logic might need refinement based on how your enhanced function handles batches
+             # For now, let's assume we need to handle potential repeats
+             if x_hat_batch.shape[0] % x_batch.shape[0] == 0:
+                 repeats = x_hat_batch.shape[0] // x_batch.shape[0]
+                 x_hat_batch = x_hat_batch[::repeats] # Take every Nth element if repeated
+             else:
+                  print("Cannot reconcile batch sizes, skipping batch metrics.")
+                  continue # Skip if sizes are incompatible
+
+
+        # Clip reconstructions to the expected data range for metrics
+        # Assuming data is normalized to [0, 1] after potential [-1, 1] range
+        x_hat_clipped = jnp.clip(x_hat_batch, 0.0, 1.0)
+        x_clipped = jnp.clip(x_batch, 0.0, 1.0)
+
+        # --- Calculate Full Image Metrics --- 
+        full_mse = jnp.mean((x_hat_clipped - x_clipped)**2)
+        full_l1 = jnp.mean(jnp.abs(x_hat_clipped - x_clipped))
+        full_psnr = calculate_psnr(x_clipped, x_hat_clipped, data_range)
+
+        all_metrics['full_mse'].append(full_mse)
+        all_metrics['full_l1'].append(full_l1)
+        all_metrics['full_psnr'].append(full_psnr)
+
+        # --- Calculate Masked Image Metrics --- 
+        # Ensure mask is broadcastable or has the same shape as x_batch
+        mask = jnp.broadcast_to(mask, x_clipped.shape) # Ensure mask matches image shape
+        num_masked_pixels = jnp.sum(mask)
+
+        # Avoid division by zero if no pixels are masked
+        if num_masked_pixels > 0:
+            masked_diff_abs = jnp.abs(x_hat_clipped - x_clipped) * mask
+            masked_diff_sq = ((x_hat_clipped - x_clipped) * mask)**2
+            
+            mean_masked_abs_diff = jnp.sum(masked_diff_abs) / num_masked_pixels
+            masked_mse = jnp.sum(masked_diff_sq) / num_masked_pixels
+            masked_l1 = mean_masked_abs_diff # Already calculated
+            
+            # For masked PSNR, calculate MSE on masked pixels first
+            masked_psnr = calculate_psnr(x_clipped * mask, x_hat_clipped * mask, data_range)
+        else: # If mask is all zeros
+            masked_mse = 0.0
+            masked_l1 = 0.0
+            masked_psnr = 100.0 # Assign a high value indicating perfect match (or infinity)
+
+        all_metrics['masked_mse'].append(masked_mse)
+        all_metrics['masked_l1'].append(masked_l1)
+        all_metrics['masked_psnr'].append(masked_psnr)
+
+    # Average metrics over all batches
+    avg_metrics = {key: jnp.mean(jnp.array(values)) for key, values in all_metrics.items() if values}
+    
+    print(f"Evaluated pretext metrics over {total_batches} batches.")
+    return avg_metrics
+
+
 def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.Optim, epoch=None):
+    batch_losses = []
     step = 0
     for x, y in dl:
         h_energy, w_energy, h_grad, w_grad = train_on_batch(T, jnp.array(x), model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch, step=step)
-        print("w_energy:", w_energy, "at batch t:", step)
+        if w_energy is not None:
+            batch_losses.append(w_energy) # Collect w_energy as training loss indicator
+            # Optionally use jax.debug.print for batch loss inside loop if needed
+            # jax.debug.print("Batch {s} training loss (w_energy): {l}", s=step, l=w_energy)
+        else:
+            print(f"Warning: w_energy is None for batch {step}")
+            
+        # Keep the per-batch print for now, but consider removing for cleaner logs
+        # print(f"w_energy: {w_energy}, at batch t: {step}") 
         step += 1
 
-    return h_energy, w_energy, h_grad, w_grad
+    avg_train_loss = jnp.mean(jnp.array(batch_losses)) if batch_losses else 0.0
+    print(f"Epoch {epoch+1} Average Training Loss (w_energy): {avg_train_loss}")
+    
+    # Return average loss, last gradients (as before)
+    return avg_train_loss, h_grad, w_grad 
 
 
 # @pxf.jit(static_argnums=0)
@@ -457,11 +569,28 @@ def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, target_T_values:
     return loss, intermediate_recons
 
 
-def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_T_values: List[int], x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim):
+def calculate_psnr(img1, img2, data_range=1.0, epsilon=1e-8):
+    """Calculates Peak Signal-to-Noise Ratio between two images."""
+    mse = jnp.mean((img1 - img2) ** 2)
+    # Handle potential division by zero or very small MSE
+    safe_mse = jnp.maximum(mse, epsilon)
+    psnr = 10 * jnp.log10((data_range ** 2) / safe_mse)
+    # Clamp PSNR for the case where mse is exactly zero (perfect match)
+    # Infinite PSNR isn't practical, often capped at a high value, e.g., 100 dB
+    # JAX doesn't directly support inf, so we'll rely on the epsilon or cap if needed.
+    # For now, epsilon handles the near-zero case. Perfect zero might still cause issues
+    # depending on floating point precision, but epsilon helps.
+    # A simpler alternative might be:
+    # if mse == 0: return 100.0 # Or some large number
+    # return 10 * jnp.log10((data_range ** 2) / mse)
+    # However, JAX prefers numerical stability via epsilon.
+    return psnr
+
+
+def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_T_values: List[int], x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim) -> Tuple[jnp.ndarray, List[jnp.ndarray], jnp.ndarray]:
     """
     Enhanced version of unmask_on_batch with random masking, focused loss on masked regions,
-    and detailed logging for debugging. This function is an alternative to the original
-    unmask_on_batch, allowing experimentation with improved unmasking logic.
+    and detailed logging for debugging. Returns loss, list of reconstructions, and the mask used.
     """
     model.eval()
     optim_h.clear()
@@ -471,9 +600,6 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
     inference_step = pxf.value_and_grad(pxu.M_hasnot(pxc.VodeParam, frozen=True).to([False, True]), has_aux=True)(energy)
 
     max_T = max(target_T_values) if target_T_values else 0
-    # Store reconstructions at target T values (step t corresponds to T=t+1)
-    # save_steps = {t - 1 for t in target_T_values if t > 0} 
-    # intermediate_recons = {}
     all_reconstructions = [] # Store all reconstructions
 
     expected_bs = 1
@@ -491,6 +617,8 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
     batch_size, channels, H, W = x_batch.shape
     assert model.config.image_shape == (channels, H, W), "Image shape mismatch"
 
+    mask = None 
+
     if use_corruption:
         # Determine masking type: random or lower half
         use_lower_half_mask = model.config.use_lower_half_mask  # Access config through model
@@ -498,20 +626,13 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
         if use_lower_half_mask:
             # Create mask for lower half of the image
             mask = jnp.zeros((batch_size, 1, H, W))
-            # Set lower half to 1 (masked)
-            mask = mask.at[:, :, H//2:, :].set(0.0)
-            # Use zeros for lower half mask
-            x_c = jnp.where(mask, 1.0, x_batch)  # Masked regions get zeros, unmasked get original
+            mask = mask.at[:, :, H//2:, :].set(1.0)
+            x_c = jnp.where(mask == 1, 0.0, x_batch) # Set masked (lower half) to 0
         else:
             # Create masked image with random masking based on corrupt_ratio
             mask = jax.random.bernoulli(px.RKG(), p=corrupt_ratio, shape=(batch_size, 1, H, W))
-            # Use noise for random masking to avoid trivial solution
             noise = jax.random.normal(px.RKG(), shape=x_batch.shape) * 0.1
             x_c = jnp.where(mask, noise, x_batch)  # Masked regions get noise, unmasked get original
-        
-        # Log the masking ratio for debugging
-        actual_mask_ratio = jnp.mean(mask)
-        print(f"Applied random mask with target ratio {corrupt_ratio}, actual ratio: {actual_mask_ratio}")
         
         # Initialize the model with the masked input
         with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
@@ -528,11 +649,8 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
             with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
                 current_recon = forward(None, model=model)
                 all_reconstructions.append(current_recon)
-            # print(f"Saved intermediate reconstruction at T={t+1}")
-
             # Unfreeze sensory layer for inference
             model.vodes[-1].h.frozen = False
-
             # Run inference step
             with pxu.step(model, clear_params=pxc.VodeParam.Cache):
                 (h_energy, y_), h_grad = inference_step(model=model)
@@ -552,64 +670,55 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
             
             # Update states
             optim_h.step(model, h_grad["model"])
-
             # # Reset unmasked regions to original input to prevent degradation
-            # reset_output = model.vodes[-1].h.reshape(x_batch.shape)
-            # reset_output = jnp.where(mask == 0, x_batch, reset_output)
+            # current_h = model.vodes[-1].h._value
+            # reset_output = current_h.reshape(x_batch.shape)
+            # if mask is not None:
+            #      reset_output = jnp.where(mask == 0, x_batch, reset_output)
             # model.vodes[-1].h.set(reset_output)
-
-            # # Log mean value of masked regions for debugging
-            # masked_region_values = reset_output * mask
-            # # Repeat mask across channels to match reset_output shape
-            # mask_expanded = jnp.repeat(mask, reset_output.shape[1], axis=1)
-            # mean_masked_value = jnp.mean(masked_region_values[mask_expanded > 0]) if jnp.any(mask_expanded > 0) else 0.0
-            # print(f"Inference step {t+1}/{max_T}, Mean value in masked regions: {mean_masked_value}")
-
         else:
             # Standard inference step
             with pxu.step(model, clear_params=pxc.VodeParam.Cache):
                 (h_energy, y_), h_grad = inference_step(model=model)
-
-            # Log energy for debugging
-            print(f"Inference step {t+1}/{max_T}, Energy: {h_energy}")
-            
             # Update states
             optim_h.step(model, h_grad["model"])
-
             # Always save reconstruction at each step
             with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
                 current_recon = forward(None, model=model)
                 all_reconstructions.append(current_recon)
-            # print(f"Saved intermediate reconstruction at T={t+1}")
-
-    # Log energy for debugging - Note: h_energy is from the last step's inference_step call
-    # print(f"Inference step {t+1}/{max_T}, Energy: {h_energy}")
 
     optim_h.clear()
 
     # Final forward pass to get reconstruction
     with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
-        x_hat_batch = forward(None, model=model)
+         x_hat_batch = forward(None, model=model)
 
     # Compute loss, focusing on masked regions if corruption is used
     if use_corruption:
-        masked_loss = jnp.square(jnp.clip(x_hat_batch * mask, 0.0, 1.0) - x_batch * mask).mean()
-        unmasked_loss = jnp.square(jnp.clip(x_hat_batch * (1 - mask), 0.0, 1.0) - x_batch * (1 - mask)).mean()
-        loss = masked_loss + unmasked_loss
-        print(f"Final loss: {loss}, Masked loss: {masked_loss}, Unmasked loss: {unmasked_loss}")
+        if mask is None:
+            # Handle error case, maybe assign a default loss or raise exception
+            loss = -1.0 # Placeholder error value
+        else:
+            masked_loss = jnp.mean(jnp.square(jnp.clip(x_hat_batch * mask, 0.0, 1.0) - x_batch * mask) / jnp.maximum(jnp.mean(mask), 1e-8)) # Normalize by mask ratio
+            unmasked_loss = jnp.mean(jnp.square(jnp.clip(x_hat_batch * (1 - mask), 0.0, 1.0) - x_batch * (1 - mask)) / jnp.maximum(1.0 - jnp.mean(mask), 1e-8)) # Normalize by inverse mask ratio
+            loss = (masked_loss + unmasked_loss) / 2 # Average normalized losses
     else:
         loss = jnp.square(jnp.clip(x_hat_batch.reshape(-1), 0.0, 1.0) - x_batch.reshape(-1)).mean()
-        print(f"Final loss: {loss}")
+        if mask is None: # Ensure mask is assigned even if use_corruption was False
+            mask = jnp.zeros_like(x_batch) 
 
     # Refreeze sensory layer
     model.vodes[-1].h.frozen = True
 
     # Reset model as the inference could mess up the model state if diverged. 
     # WARNING: too frequently resetting the model state causes training instability.
-    with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
+    # with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
+    # One final normal pass to get vode energies and gradients for logging
+    with pxu.step(model):
         forward(None, model=model)
-
-    return loss, all_reconstructions
+        
+    # Return loss, reconstructions, and the mask
+    return loss, all_reconstructions, mask
 
 
 def create_config_by_dataset(dataset_name: str, latent_dim: int = 512, num_blocks: int = 6):
