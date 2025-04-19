@@ -52,10 +52,10 @@ class ModelConfig:
     # Dataset settings
     dataset: str = "cifar10"
     data_dir: str = "../datasets/"
-    train_subset: int = 500
+    train_subset: int = 100
     test_subset: int = 100
     target_class: Optional[int] = None
-    reconstruction_every_n_epochs: int = 50 # WARNING: changing this to 1 caused training instability. Less frequent reconstruction is better. Tested only with 10 so far which works ok.
+    reconstruction_every_n_epochs: int = 5 # WARNING: changing this to 1 caused training instability. Less frequent reconstruction is better. Tested only with 10 so far which works ok.
     validation_every_n_epochs: int = 1
     use_corruption: bool = True
     corrupt_ratio: float = 0.5
@@ -76,18 +76,18 @@ class ModelConfig:
     
     # Training settings
     use_noise: bool = True
-    batch_size: int = 500
-    epochs: int = 50
+    batch_size: int = 100
+    epochs: int = 5
     inference_steps: int = 32
     eval_inference_steps: List[int] = field(default_factory=lambda: [32])
-    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 32, 64, 128, 256, 512])
+    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 32, 512])
     # peak_lr_weights: float = 1e-4
     # peak_lr_hidden: float = 0.01
     peak_lr_weights: float = 1e-3
     peak_lr_hidden: float = 0.05
     weight_decay: float = 2e-4
     warmup_epochs: int = 15
-    use_lr_schedule: bool = True
+    use_lr_schedule: bool = False
     seed: int = 42
     
     # Early stopping settings
@@ -105,7 +105,7 @@ MODEL_CONFIGS = {
         name="debug_tiny",
         hidden_size=64,
         num_heads=12,
-        num_blocks=6,
+        num_blocks=0,
     ),
     "debug_small": ModelConfig(
         name="debug_small",
@@ -965,19 +965,19 @@ def main():
                 forward(x_init, model=model)
         
         # Train for one epoch
-        # train now returns avg_train_loss instead of h_energy, w_energy directly
-        avg_train_loss, h_grad, w_grad = train(train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch)
+        avg_train_w_energy, avg_train_mse, h_grad, w_grad = train(
+            train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch
+        )
         
-        # Create logs and evaluate on validation set every N epochs (and for the final epoch)
-        # Initialize epoch_metrics here to store training loss even if validation doesn't run
+        # Initialize epoch_metrics here to store training metrics
         epoch_metrics = {
-            'Losses/training_loss_avg': avg_train_loss, # Log average train loss
+            'Losses/train_w_energy_avg': avg_train_w_energy,
+            'Losses/train_mse_avg': avg_train_mse,
             'LearningRate/weights': current_w_lr,
             'LearningRate/hidden': current_h_lr
         }
 
         if (epoch + 1) % config.validation_every_n_epochs == 0 or epoch == config.epochs - 1 or (config.use_early_stopping and early_stopped and epoch == early_stopped_epoch):
-            # <<< Evaluate using the new function >>>
             print(f"Evaluating pretext task metrics on validation set...")
             # Use config settings for evaluation masking
             # NOTE: T_values for eval might differ from training T

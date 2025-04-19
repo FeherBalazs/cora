@@ -275,22 +275,26 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
     for t in range(T):
         with pxu.step(model, clear_params=pxc.VodeParam.Cache):
             (h_energy, y_), h_grad = inference_step(model=model)
-            # print("h_energy:", h_energy, "at step t:", t)
         optim_h.step(model, h_grad["model"])
 
         with pxu.step(model, clear_params=pxc.VodeParam.Cache):
             (w_energy, y_), w_grad = learning_step(model=model)
-            # print("w_energy:", w_energy, "at step t:", t)
         optim_w.step(model, w_grad["model"], scale_by=1.0/x.shape[0])
 
     # After training, forward once more to get final activations
     # with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
     with pxu.step(model):
-        forward(None, model=model)
+        x_hat_batch = forward(None, model=model) # Get final reconstruction
+
+    # Calculate MSE loss between final reconstruction and original input
+    x_hat_clipped = jnp.clip(x_hat_batch, 0.0, 1.0)
+    x_clipped = jnp.clip(x, 0.0, 1.0)
+    train_mse = jnp.mean((x_hat_clipped - x_clipped)**2)
 
     optim_h.clear()
 
-    return h_energy, w_energy, h_grad, w_grad
+    # Return energies, gradients, and the calculated training MSE
+    return h_energy, w_energy, h_grad, w_grad, train_mse
 
 
 def eval_pretext_metrics(dataloader, T_values, use_corruption, corrupt_ratio, *, model: TransformerDecoder, optim_h: pxu.Optim, data_range=1.0):
@@ -391,26 +395,35 @@ def eval_pretext_metrics(dataloader, T_values, use_corruption, corrupt_ratio, *,
 
 
 def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.Optim, epoch=None):
-    batch_losses = []
+    batch_w_energies = []
+    batch_train_mses = []
     step = 0
     for x, y in dl:
-        h_energy, w_energy, h_grad, w_grad = train_on_batch(T, jnp.array(x), model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch, step=step)
+        # Now returns train_mse as the 5th element
+        h_energy, w_energy, h_grad, w_grad, train_mse = train_on_batch(
+            T, jnp.array(x), model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch, step=step
+        )
+        
         if w_energy is not None:
-            batch_losses.append(w_energy) # Collect w_energy as training loss indicator
-            # Optionally use jax.debug.print for batch loss inside loop if needed
-            # jax.debug.print("Batch {s} training loss (w_energy): {l}", s=step, l=w_energy)
+            batch_w_energies.append(w_energy) 
         else:
             print(f"Warning: w_energy is None for batch {step}")
-            
-        # Keep the per-batch print for now, but consider removing for cleaner logs
-        # print(f"w_energy: {w_energy}, at batch t: {step}") 
+        
+        if train_mse is not None:
+             batch_train_mses.append(train_mse)
+        else:
+             print(f"Warning: train_mse is None for batch {step}")
+
         step += 1
 
-    avg_train_loss = jnp.mean(jnp.array(batch_losses)) if batch_losses else 0.0
-    print(f"Epoch {epoch+1} Average Training Loss (w_energy): {avg_train_loss}")
+    avg_train_w_energy = jnp.mean(jnp.array(batch_w_energies)) if batch_w_energies else 0.0
+    avg_train_mse = jnp.mean(jnp.array(batch_train_mses)) if batch_train_mses else 0.0
     
-    # Return average loss, last gradients (as before)
-    return avg_train_loss, h_grad, w_grad 
+    print(f"Epoch {epoch+1} Average Training w_energy: {avg_train_w_energy}")
+    print(f"Epoch {epoch+1} Average Training MSE: {avg_train_mse}")
+    
+    # Return average w_energy, average mse, last gradients
+    return avg_train_w_energy, avg_train_mse, h_grad, w_grad 
 
 
 # @pxf.jit(static_argnums=0)
