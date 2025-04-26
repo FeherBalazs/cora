@@ -473,7 +473,39 @@ def create_reconstruction_video(all_reconstruction_frames, orig_images, labels_l
         plt.tight_layout()
         fig.canvas.draw() # Draw the canvas, cache the renderer
         frame = np.frombuffer(fig.canvas.tostring_rgb(), dtype='uint8')
-        frame = frame.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+
+        # Calculate shape based on figure size and DPI for robustness
+        width_inches, height_inches = fig.get_size_inches()
+        dpi = fig.dpi
+        width_pixels = int(np.round(width_inches * dpi))
+        height_pixels = int(np.round(height_inches * dpi))
+        expected_shape = (height_pixels, width_pixels, 3)
+
+        # Check if the buffer size matches the calculated shape
+        if frame.size != np.prod(expected_shape):
+            print(f"Warning: Buffer size ({frame.size}) does not match calculated shape {expected_shape} ({np.prod(expected_shape)}). Trying to infer shape.")
+            # Fallback: Infer shape if calculation doesn't match buffer size
+            buffer_pixels = frame.size // 3
+            # Ensure fig_width_pixels and fig_height_pixels are defined (from figsize)
+            # figsize is (width, height) in inches
+            fig_width_inches, fig_height_inches = fig.get_size_inches()
+            aspect_ratio = fig_width_inches / fig_height_inches if fig_height_inches > 0 else 1
+            # Infer height based on aspect ratio: W = H * aspect_ratio
+            # W * H = buffer_pixels => (H * aspect_ratio) * H = buffer_pixels
+            # H^2 = buffer_pixels / aspect_ratio
+            inferred_height = int(np.sqrt(buffer_pixels / aspect_ratio))
+            inferred_width = int(inferred_height * aspect_ratio)
+
+            # Check if inferred shape matches buffer size
+            if inferred_height * inferred_width * 3 == frame.size:
+                 expected_shape = (inferred_height, inferred_width, 3)
+                 print(f"Using inferred shape: {expected_shape}")
+            else:
+                 print(f"Error: Cannot determine correct frame shape. Buffer size: {frame.size}, Calculated shape: {(height_pixels, width_pixels, 3)}, Inferred shape: {(inferred_height, inferred_width, 3)}")
+                 # Raise the original error or handle appropriately
+                 raise ValueError(f"Cannot reshape array of size {frame.size} into calculated shape {(height_pixels, width_pixels, 3)} or inferred shape {(inferred_height, inferred_width, 3)}")
+
+        frame = frame.reshape(expected_shape)
         video_frames.append(frame)
         plt.close(fig)
 
