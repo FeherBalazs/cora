@@ -4,6 +4,7 @@ multiprocessing.set_start_method('spawn', force=True)
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
+from tqdm import tqdm
 
 from typing import Callable, List, Optional, Dict, Any, Tuple
 from functools import partial
@@ -735,7 +736,8 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
             forward(x_batch, model=model)
 
     # Inference iterations
-    for t in range(max_T):
+    # Wrap the range with tqdm for a progress bar
+    for t in tqdm(range(max_T), desc="Inference Steps"):
         if use_corruption:
             # Always save reconstruction at each step
             with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
