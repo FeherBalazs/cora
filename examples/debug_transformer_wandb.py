@@ -55,14 +55,14 @@ class ModelConfig:
     train_subset: int = 100
     test_subset: int = 100
     target_class: Optional[int] = None
-    reconstruction_every_n_epochs: int = 5 # WARNING: changing this to 1 caused training instability. Less frequent reconstruction is better. Tested only with 10 so far which works ok.
-    validation_every_n_epochs: int = 1
+    reconstruction_every_n_epochs: int = 10 # WARNING: changing this to 1 caused training instability. Less frequent reconstruction is better. Tested only with 10 so far which works ok.
+    validation_every_n_epochs: int = 10
     use_corruption: bool = True
     corrupt_ratio: float = 0.5
     use_lower_half_mask: bool = True
 
     # Visualization settings
-    num_images: int = 1
+    num_images: int = 3
     
     # Model architecture
     hidden_size: int = 48
@@ -72,7 +72,7 @@ class ModelConfig:
     patch_size: int = 4
     axes_dim: List[int] = field(default_factory=lambda: [16, 16])
     theta: int = 100
-    act_fn: Callable = jax.nn.relu
+    act_fn: Callable = jax.nn.tanh
     
     # Training settings
     use_noise: bool = True
@@ -91,7 +91,7 @@ class ModelConfig:
     seed: int = 42
     
     # Early stopping settings
-    use_early_stopping: bool = True
+    use_early_stopping: bool = False
     early_stopping_patience: int = 10
     early_stopping_min_delta: float = 0.0001
     save_reconstruction_images: bool = True # Option to save static image grid
@@ -105,7 +105,7 @@ MODEL_CONFIGS = {
         name="debug_tiny",
         hidden_size=64,
         num_heads=12,
-        num_blocks=0,
+        num_blocks=3,
     ),
     "debug_small": ModelConfig(
         name="debug_small",
@@ -1015,7 +1015,7 @@ def main():
             # NOTE: T_values for eval might differ from training T
             # Use val_loader here
             pretext_metrics = eval_pretext_metrics(
-                val_loader, # Use validation loader
+                train_loader, # Use validation loader
                 T_values=config.eval_inference_steps, # Use eval_inference_steps
                 use_corruption=config.use_corruption, 
                 corrupt_ratio=config.corrupt_ratio,
