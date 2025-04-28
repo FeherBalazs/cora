@@ -203,6 +203,83 @@ class TransformerDecoder(pxc.EnergyModule):
         
         return self.vodes[-1].get("u")  # Return prediction
     
+    # def __init__(self, config: TransformerConfig) -> None:
+    #     super().__init__()
+    #     self.config = px.static(config)
+        
+    #     # Initialize random key
+    #     key = jax.random.PRNGKey(0)
+
+    #     print(f"Model initialized with {self.config.num_patches} patches, each with dimension {self.config.patch_dim}")
+    #     print(f"Model initialized with {self.config.hidden_size} hidden_size, {self.config.mlp_hidden_dim} mlp_hidden_dim")
+    #     print(f"Using {'video' if self.config.is_video else 'image'} mode with shape {self.config.image_shape}")
+
+    #     # Define Vodes for predictive coding
+    #     # Top-level latent Vode
+    #     self.vodes = [pxc.Vode(
+    #         energy_fn=None,
+    #         ruleset={
+    #             pxc.STATUS.INIT: ("h, u <- u:to_init",),
+    #             },
+    #         tforms={
+    #             "to_init": lambda n, k, v, rkg: jax.random.normal(
+    #                 px.RKG(), (config.hidden_size,)
+    #             ) * 0.01 if config.use_noise else jnp.zeros((config.hidden_size,))
+    #         }
+    #     )]
+        
+    #     # Create Vodes for each transformer block output except final one where we want different ruleset
+    #     for _ in range(config.num_blocks):
+    #         self.vodes.append(pxc.Vode(
+    #             ruleset={
+    #                 STATUS_FORWARD: ("h -> u",)}
+    #         ))
+
+    #     # Add final output Vode (sensory layer) - shape depends on whether we're handling video or images
+    #     self.vodes.append(pxc.Vode())
+        
+    #     # Freeze the output Vode's hidden state
+    #     self.vodes[-1].h.frozen = True  
+
+    #     # DEBUG: Try FC blocks instead of transformer blocks to see if it works better for reconstruction
+    #     self.fc_blocks = []
+    #     for i in range(config.num_blocks):
+    #         self.fc_blocks.append(
+    #             pxnn.Linear(
+    #                 in_features=config.hidden_size,
+    #                 out_features=config.hidden_size
+    #             )
+    #         )
+
+    #     # Add output projection layer to map from hidden_size back to output_dim
+    #     self.output_projection = pxnn.Linear(in_features=config.hidden_size, out_features=32 * 32 * 3)
+        
+    
+    # def __call__(self, y: jax.Array | None = None):        
+    #     # Get the initial sequence of patch embeddings from Vode 0
+    #     x = self.vodes[0](jnp.empty(()))
+
+    #     # Process through FC blocks
+    #     for i, block in enumerate(self.fc_blocks):
+    #         x_after_block = block(x) 
+    #         x = self.config.act_fn(x_after_block) 
+    #         x = self.vodes[i+1](x) # Apply Vode
+
+    #     # Apply output projection layer
+    #     x = self.output_projection(x)
+        
+    #     # Reshape to match the expected image dimensions (channels, height, width)
+    #     x = jnp.reshape(x, (3, 32, 32))
+        
+    #     # Apply sensory Vode
+    #     x = self.vodes[-1](x)
+        
+    #     # Set target if provided
+    #     if y is not None:
+    #         self.vodes[-1].set("h", y)
+        
+    #     return self.vodes[-1].get("u")  # Return prediction
+    
 
     def unpatchify(self, x, patch_size, image_size, channel_size):
         """
@@ -648,11 +725,13 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
             x_c = jnp.where(mask, noise, x_batch)  # Masked regions get noise, unmasked get original
         
         # Initialize the model with the masked input
-        with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
+        # with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
+        with pxu.step(model, clear_params=pxc.VodeParam.Cache):
             forward(x_c, model=model)
     else:
         # Initialize the model with the input
-        with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
+        # with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
+        with pxu.step(model, clear_params=pxc.VodeParam.Cache):
             forward(x_batch, model=model)
 
     # Inference iterations
@@ -668,27 +747,28 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
             with pxu.step(model, clear_params=pxc.VodeParam.Cache):
                 (h_energy, y_), h_grad = inference_step(model=model)
             
-            # Zero out gradients for unmasked regions to focus updates on masked areas
-            sensory_h_grad = h_grad["model"].vodes[-1].h._value
-            # Reshape mask to match sensory layer output dimensions (batch_size, channels, H, W)
-            mask_broadcasted = mask[:, :, :, :]
-            # Repeat mask across the channel dimension to match sensory_h_grad shape
-            mask_broadcasted = jnp.repeat(mask_broadcasted, sensory_h_grad.shape[1], axis=1)
-            # Flatten mask and sensory gradients for element-wise operation
-            mask_flat = mask_broadcasted.reshape(sensory_h_grad.shape)
-            # Set gradients to 0 for unmasked regions (where mask is 0)
-            modified_sensory_h_grad = jnp.where(mask_flat == 0, 0.0, sensory_h_grad)
-            # Update the gradient value in h_grad
-            h_grad["model"].vodes[-1].h._value = modified_sensory_h_grad
+            # # Zero out gradients for unmasked regions to focus updates on masked areas
+            # sensory_h_grad = h_grad["model"].vodes[-1].h._value
+            # # Reshape mask to match sensory layer output dimensions (batch_size, channels, H, W)
+            # mask_broadcasted = mask[:, :, :, :]
+            # # Repeat mask across the channel dimension to match sensory_h_grad shape
+            # mask_broadcasted = jnp.repeat(mask_broadcasted, sensory_h_grad.shape[1], axis=1)
+            # # Flatten mask and sensory gradients for element-wise operation
+            # mask_flat = mask_broadcasted.reshape(sensory_h_grad.shape)
+            # # Set gradients to 0 for masked regions (where mask is 1)
+            # modified_sensory_h_grad = jnp.where(mask_flat == 1, 0.0, sensory_h_grad)
+            # # Update the gradient value in h_grad
+            # h_grad["model"].vodes[-1].h._value = modified_sensory_h_grad
             
             # Update states
             optim_h.step(model, h_grad["model"])
-            # # Reset unmasked regions to original input to prevent degradation
-            # current_h = model.vodes[-1].h._value
-            # reset_output = current_h.reshape(x_batch.shape)
-            # if mask is not None:
-            #      reset_output = jnp.where(mask == 0, x_batch, reset_output)
-            # model.vodes[-1].h.set(reset_output)
+
+            # fix the value nodes of the sensory layer to the entries of the partial data point 
+            # that we know are equal to the ones of the stored data point, leaving the rest free to be updated
+            current_h = model.vodes[-1].h._value
+            reset_output = current_h.reshape(x_batch.shape)
+            reset_output = jnp.where(mask == 0, x_batch, reset_output)
+            model.vodes[-1].h.set(reset_output)
         else:
             # Standard inference step
             with pxu.step(model, clear_params=pxc.VodeParam.Cache):
