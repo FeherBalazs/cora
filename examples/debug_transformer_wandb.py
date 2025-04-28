@@ -992,6 +992,7 @@ def main():
         print(f"Current learning rates - Weights: {current_w_lr:.6f}, Hidden: {current_h_lr:.6f}")
 
         if config.reinitialize_model_for_each_epoch:
+            # TODO: Not sure about its usage. It could be causing instability. It could make representations more robust.
             print(f"Reinitializing model for epoch {epoch+1}...")
             with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
                 forward(x_init, model=model)
