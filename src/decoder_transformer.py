@@ -723,16 +723,16 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
             # Create masked image with random masking based on corrupt_ratio
             mask = jax.random.bernoulli(px.RKG(), p=corrupt_ratio, shape=(batch_size, 1, H, W))
             noise = jax.random.normal(px.RKG(), shape=x_batch.shape) * 0.1
-            x_c = jnp.where(mask, noise, x_batch)  # Masked regions get noise, unmasked get original
+            x_c = jnp.where(mask == 1, noise, x_batch)  # Masked regions get noise, unmasked get original
         
         # Initialize the model with the masked input
-        # with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
-        with pxu.step(model, clear_params=pxc.VodeParam.Cache):
+        with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
+        # with pxu.step(model, clear_params=pxc.VodeParam.Cache):
             forward(x_c, model=model)
     else:
         # Initialize the model with the input
-        # with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
-        with pxu.step(model, clear_params=pxc.VodeParam.Cache):
+        with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
+        # with pxu.step(model, clear_params=pxc.VodeParam.Cache):
             forward(x_batch, model=model)
 
     # Inference iterations
