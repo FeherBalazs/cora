@@ -395,13 +395,14 @@ def eval_pretext_metrics(dataloader, T_values, use_corruption, corrupt_ratio, *,
         # Use unmask_on_batch_enhanced to get reconstructions and the mask
         # We need the final reconstruction, which is the last element of the list
         # Note: This re-runs inference for every batch. Consider efficiency if needed.
-        _, all_recons_list, mask = unmask_on_batch_enhanced(
+        loss, all_recons_list, mask, _ = unmask_on_batch_enhanced(
             use_corruption=use_corruption,
             corrupt_ratio=corrupt_ratio,
             target_T_values=T_values, # Determines max_T
             x=x_batch,
             model=model,
             optim_h=optim_h
+            # We don't need inference grads here, so log_inference_grads defaults to False
         )
 
         if not all_recons_list:
@@ -680,10 +681,11 @@ def calculate_psnr(img1, img2, data_range=1.0, epsilon=1e-8):
     return psnr
 
 
-def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_T_values: List[int], x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim) -> Tuple[jnp.ndarray, List[jnp.ndarray], jnp.ndarray]:
+def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_T_values: List[int], x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim, log_inference_grads: bool = False) -> Tuple[jnp.ndarray, List[jnp.ndarray], jnp.ndarray, Dict[int, Dict[str, float]]]:
     """
     Enhanced version of unmask_on_batch with random masking, focused loss on masked regions,
-    and detailed logging for debugging. Returns loss, list of reconstructions, and the mask used.
+    and detailed logging for debugging. Returns loss, list of reconstructions, the mask used,
+    and optionally, a log of gradient norms per inference step.
     """
     model.eval()
     optim_h.clear()
@@ -694,6 +696,7 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
 
     max_T = max(target_T_values) if target_T_values else 0
     all_reconstructions = [] # Store all reconstructions
+    inference_grad_norms_log = {} # Initialize log storage
 
     expected_bs = 1
     for vode in model.vodes:
@@ -710,83 +713,92 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
     batch_size, channels, H, W = x_batch.shape
     assert model.config.image_shape == (channels, H, W), "Image shape mismatch"
 
-    mask = None 
+    mask = None
+    x_init = x_batch # Default initialization
 
     if use_corruption:
+        print("use_corruption:", use_corruption)
         # Determine masking type: random or lower half
         use_lower_half_mask = model.config.use_lower_half_mask  # Access config through model
 
         if use_lower_half_mask:
-            # Create mask for lower half of the image
+            print("use_lower_half_mask:", use_lower_half_mask)
+            # Create mask for lower half of the image (mask=1 indicates masked region)
             mask = jnp.zeros((batch_size, 1, H, W))
             mask = mask.at[:, :, H//2:, :].set(1.0)
-            x_c = jnp.where(mask == 1, 0.0, x_batch) # Set masked (lower half) to 0
+            x_c = jnp.where(mask == 1, 0.5, x_batch) # Set masked (lower half) to 0
         else:
-            # Create masked image with random masking based on corrupt_ratio
+            # Create masked image with random masking based on corrupt_ratio (mask=1 indicates masked region)
             mask = jax.random.bernoulli(px.RKG(), p=corrupt_ratio, shape=(batch_size, 1, H, W))
-            noise = jax.random.normal(px.RKG(), shape=x_batch.shape) * 0.1
+            noise = jax.random.normal(px.RKG(), shape=x_batch.shape) * 0.1 # Use small noise for masked regions
             x_c = jnp.where(mask == 1, noise, x_batch)  # Masked regions get noise, unmasked get original
-        
-        # Initialize the model with the masked input
-        with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
-        # with pxu.step(model, clear_params=pxc.VodeParam.Cache):
-            forward(x_c, model=model)
-    else:
-        # Initialize the model with the input
-        with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
-        # with pxu.step(model, clear_params=pxc.VodeParam.Cache):
-            forward(x_batch, model=model)
+
+        x_init = x_c # Initialize with the corrupted image
+
+    # Initialize the model state based on x_init
+    # with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
+    with pxu.step(model, clear_params=pxc.VodeParam.Cache):
+        forward(x_init, model=model)
+
+    # Ensure sensory h is NOT frozen for inference
+    model.vodes[-1].h.frozen = False
 
     # Inference iterations
     # Wrap the range with tqdm for a progress bar
     for t in tqdm(range(max_T), desc="Inference Steps"):
-        if use_corruption:
-            # Always save reconstruction at each step
-            with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
-                current_recon = forward(None, model=model)
-                all_reconstructions.append(current_recon)
-            # Unfreeze sensory layer for inference
-            model.vodes[-1].h.frozen = False
-            # Run inference step
-            with pxu.step(model, clear_params=pxc.VodeParam.Cache):
-                (h_energy, y_), h_grad = inference_step(model=model)
-            
-            # # Zero out gradients for unmasked regions to focus updates on masked areas
-            # sensory_h_grad = h_grad["model"].vodes[-1].h._value
-            # # Reshape mask to match sensory layer output dimensions (batch_size, channels, H, W)
-            # mask_broadcasted = mask[:, :, :, :]
-            # # Repeat mask across the channel dimension to match sensory_h_grad shape
-            # mask_broadcasted = jnp.repeat(mask_broadcasted, sensory_h_grad.shape[1], axis=1)
-            # # Flatten mask and sensory gradients for element-wise operation
-            # mask_flat = mask_broadcasted.reshape(sensory_h_grad.shape)
-            # # Set gradients to 0 for masked regions (where mask is 1)
-            # modified_sensory_h_grad = jnp.where(mask_flat == 1, 0.0, sensory_h_grad)
-            # # Update the gradient value in h_grad
-            # h_grad["model"].vodes[-1].h._value = modified_sensory_h_grad
-            
-            # Update states
-            optim_h.step(model, h_grad["model"])
+        # Always save reconstruction at each step (before clamping)
+        with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
+            current_recon = forward(None, model=model)
+            all_reconstructions.append(current_recon)
 
-            # fix the value nodes of the sensory layer to the entries of the partial data point 
-            # that we know are equal to the ones of the stored data point, leaving the rest free to be updated
-            current_h = model.vodes[-1].h._value
-            reset_output = current_h.reshape(x_batch.shape)
-            reset_output = jnp.where(mask == 0, x_batch, reset_output)
-            model.vodes[-1].h.set(reset_output)
-        else:
-            # Standard inference step
-            with pxu.step(model, clear_params=pxc.VodeParam.Cache):
-                (h_energy, y_), h_grad = inference_step(model=model)
-            # Update states
-            optim_h.step(model, h_grad["model"])
-            # Always save reconstruction at each step
-            with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
-                current_recon = forward(None, model=model)
-                all_reconstructions.append(current_recon)
+        # Run inference step (calculates energy and gradients based on current state)
+        with pxu.step(model, clear_params=pxc.VodeParam.Cache):
+            (h_energy, y_), h_grad = inference_step(model=model)
+
+        # --- Log Gradients if requested ---
+        if log_inference_grads:
+            try:
+                model_grads = h_grad['model']
+                vodes_grads = model_grads.vodes
+                current_step_norms = {}
+                for i in range(len(vodes_grads)):
+                    # Extract gradient tensor - accessing .h might give the VodeParam, need ._value
+                    grad_param = vodes_grads[i].h
+                    grad_values = grad_param._value if hasattr(grad_param, '_value') else None
+
+                    if grad_values is not None:
+                        # Calculate L2 norm using jnp.linalg.norm for stability
+                        l2_norm = float(jnp.linalg.norm(grad_values.flatten()))
+                        current_step_norms[f"vode_{i}_grad_norm"] = l2_norm
+                    else:
+                        # Handle case where gradient might be None (e.g., for frozen vodes, though we select non-frozen)
+                        current_step_norms[f"vode_{i}_grad_norm"] = 0.0
+                inference_grad_norms_log[t] = current_step_norms
+            except Exception as e:
+                print(f"Warning: Failed to log inference grads at step {t}: {e}")
+                # Log empty dict or NaNs to avoid breaking structure if needed
+                inference_grad_norms_log[t] = {f"vode_{i}_grad_norm": float('nan') for i in range(len(model.vodes))}
+        # --- End Log Gradients ---
+
+        # Update ALL hidden states based on gradients (No gradient masking needed)
+        optim_h.step(model, h_grad["model"])
+
+        # If corrupting, clamp the known (unmasked) pixels in the sensory layer *after* the update
+        if use_corruption:
+            current_h_sensory = model.vodes[-1].h._value
+            # Ensure mask is broadcastable to the sensory state shape (B, C, H, W)
+            # The mask is (B, 1, H, W), x_batch is (B, C, H, W)
+            mask_broadcast = jnp.broadcast_to(mask, x_batch.shape)
+            # Clamp: Use x_batch values where mask is 0 (unmasked), keep current h where mask is 1 (masked)
+            clamped_h_sensory = jnp.where(mask_broadcast == 0, x_batch, current_h_sensory)
+            model.vodes[-1].h.set(clamped_h_sensory)
+
+    # No need for separate logic for non-corruption case inside the loop,
+    # as clamping only happens if use_corruption is True.
 
     optim_h.clear()
 
-    # Final forward pass to get reconstruction
+    # Final forward pass to get reconstruction after all inference steps
     with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
          x_hat_batch = forward(None, model=model)
 
@@ -795,27 +807,42 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
         if mask is None:
             # Handle error case, maybe assign a default loss or raise exception
             loss = -1.0 # Placeholder error value
+            print("Error: Mask is None during loss calculation despite use_corruption=True")
         else:
-            masked_loss = jnp.mean(jnp.square(jnp.clip(x_hat_batch * mask, 0.0, 1.0) - x_batch * mask) / jnp.maximum(jnp.mean(mask), 1e-8)) # Normalize by mask ratio
-            unmasked_loss = jnp.mean(jnp.square(jnp.clip(x_hat_batch * (1 - mask), 0.0, 1.0) - x_batch * (1 - mask)) / jnp.maximum(1.0 - jnp.mean(mask), 1e-8)) # Normalize by inverse mask ratio
-            loss = (masked_loss + unmasked_loss) / 2 # Average normalized losses
+            # Ensure mask is broadcast for loss calculation
+            mask_broadcast_loss = jnp.broadcast_to(mask, x_hat_batch.shape)
+            # Calculate MSE separately for masked and unmasked regions, then average
+            # Normalize by the number of pixels in each region to avoid bias
+            num_masked = jnp.sum(mask_broadcast_loss)
+            num_unmasked = jnp.prod(jnp.array(x_hat_batch.shape)) - num_masked
+
+            masked_error_sq = jnp.square(jnp.clip(x_hat_batch, 0.0, 1.0) - x_batch) * mask_broadcast_loss
+            unmasked_error_sq = jnp.square(jnp.clip(x_hat_batch, 0.0, 1.0) - x_batch) * (1 - mask_broadcast_loss)
+
+            masked_mse = jnp.sum(masked_error_sq) / jnp.maximum(num_masked, 1e-8)
+            unmasked_mse = jnp.sum(unmasked_error_sq) / jnp.maximum(num_unmasked, 1e-8)
+
+            loss = (masked_mse + unmasked_mse) / 2 # Average the two MSEs
+
+            # Alternative: Calculate overall MSE (less informative about masked region performance)
+            # loss = jnp.mean(jnp.square(jnp.clip(x_hat_batch, 0.0, 1.0) - x_batch))
     else:
+        # Standard MSE if no corruption was used
         loss = jnp.square(jnp.clip(x_hat_batch.reshape(-1), 0.0, 1.0) - x_batch.reshape(-1)).mean()
         if mask is None: # Ensure mask is assigned even if use_corruption was False
-            mask = jnp.zeros_like(x_batch) 
+            mask = jnp.zeros_like(x_batch) # Assign a zero mask if needed for return type consistency
 
-    # Refreeze sensory layer
+    # Refreeze sensory layer after inference is complete
     model.vodes[-1].h.frozen = True
 
-    # Reset model as the inference could mess up the model state if diverged. 
-    # WARNING: too frequently resetting the model state causes training instability.
-    # with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
-    # One final normal pass to get vode energies and gradients for logging
+    # Reset model state? Maybe not necessary here, let's see.
+    # The subsequent training epoch will re-initialize anyway.
+    # Keep the final pass for potential logging if needed elsewhere.
     with pxu.step(model):
         forward(None, model=model)
-        
-    # Return loss, reconstructions, and the mask
-    return loss, all_reconstructions, mask
+
+    # Return loss, reconstructions, mask, and the grad norm log
+    return loss, all_reconstructions, mask, inference_grad_norms_log
 
 
 def create_config_by_dataset(dataset_name: str, latent_dim: int = 512, num_blocks: int = 6):
