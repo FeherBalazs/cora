@@ -59,10 +59,10 @@ class ModelConfig:
     validation_every_n_epochs: int = 10
     use_corruption: bool = True
     corrupt_ratio: float = 0.5
-    use_lower_half_mask: bool = True
+    use_lower_half_mask: bool = True #If False it uses random masking
 
     # Visualization settings
-    num_images: int = 3
+    num_images: int = 2
     
     # Model architecture
     hidden_size: int = 48
@@ -72,22 +72,23 @@ class ModelConfig:
     patch_size: int = 4
     axes_dim: List[int] = field(default_factory=lambda: [16, 16])
     theta: int = 100
-    act_fn: Callable = jax.nn.tanh
+    act_fn: Callable = jax.nn.swish
     
     # Training settings
     use_noise: bool = True
-    batch_size: int = 100
-    epochs: int = 5
-    inference_steps: int = 32
-    eval_inference_steps: List[int] = field(default_factory=lambda: [32])
-    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 32, 512])
-    # peak_lr_weights: float = 1e-4
-    # peak_lr_hidden: float = 0.01
-    peak_lr_weights: float = 1e-3
-    peak_lr_hidden: float = 0.05
+    batch_size: int = 50
+    epochs: int = 100
+    inference_steps: int = 12
+    eval_inference_steps: List[int] = field(default_factory=lambda: [12])
+    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 32, 64])
+    peak_lr_weights: float = 0.005
+    peak_lr_hidden: float = 0.01
+    # peak_lr_weights: float = 1e-3
+    # peak_lr_hidden: float = 0.05
+    hidden_lr_inference: float = peak_lr_hidden * 1
     weight_decay: float = 2e-4
-    warmup_epochs: int = 15
-    use_lr_schedule: bool = False
+    warmup_epochs: int = 5
+    use_lr_schedule: bool = True
     seed: int = 42
     
     # Early stopping settings
@@ -96,7 +97,7 @@ class ModelConfig:
     early_stopping_min_delta: float = 0.0001
     save_reconstruction_images: bool = True # Option to save static image grid
     save_reconstruction_video: bool = True # Option to save video
-    video_fps: int = 60 # Frames per second for the reconstruction video
+    video_fps: int = 24 # Frames per second for the reconstruction video
     reinitialize_model_for_each_epoch: bool = False # WARNING: setting this to True will get around 0.24 val loss with 100 images vs 0.15 without.
 
 # Predefined configurations for easy experimentation
@@ -104,7 +105,7 @@ MODEL_CONFIGS = {
     "debug_tiny": ModelConfig(
         name="debug_tiny",
         hidden_size=64,
-        num_heads=12,
+        num_heads=8,
         num_blocks=3,
     ),
     "debug_small": ModelConfig(
@@ -309,7 +310,7 @@ def create_reconstruction_images(intermediate_recons, T_values, orig_images, lab
     return reconstruction_path, log_dict
 
 
-def visualize_reconstruction(model, optim_h, dataloader, config, wandb_run=None, epoch=None, step=None):
+def visualize_reconstruction(model, model_config, optim_h, dataloader, config, wandb_run=None, epoch=None, step=None):
     
     # Extract static info from config
     image_shape = model.config.image_shape
@@ -323,6 +324,7 @@ def visualize_reconstruction(model, optim_h, dataloader, config, wandb_run=None,
     recon_images_at_T = {T: [] for T in T_values} # For static images
     all_reconstruction_frames = [] # To store frames for video
     labels_list = []
+    all_inference_grads = [] # Add list to store grad logs per image
     dataloader_iter = iter(dataloader)
 
     # Get the single batch
@@ -340,15 +342,18 @@ def visualize_reconstruction(model, optim_h, dataloader, config, wandb_run=None,
             else:
                 labels_list.append(None)
                 
-            # Call unmask_on_batch_enhanced - it now returns all frames regardless
-            _, all_recons_list, _ = unmask_on_batch_enhanced(
-                use_corruption=use_corruption, 
-                corrupt_ratio=corrupt_ratio, 
+            # Call unmask_on_batch_enhanced - capture the 4th return value
+            # Pass optim_h_inference if using separate optimizer for eval/viz
+            loss, all_recons_list, _, inference_grads = unmask_on_batch_enhanced(
+                use_corruption=use_corruption,
+                corrupt_ratio=corrupt_ratio,
                 target_T_values=T_values, # Determines max_T internally
                 x=single_x,               
                 model=model, 
-                optim_h=optim_h
+                optim_h=optim_h, # Use optim_h_inference if defined/desired
+                log_inference_grads=True # Set the flag
             )
+            all_inference_grads.append(inference_grads) # Store the logs
 
             # Always store all frames, as we might need them for video
             all_reconstruction_frames.append(all_recons_list)
@@ -370,6 +375,49 @@ def visualize_reconstruction(model, optim_h, dataloader, config, wandb_run=None,
     # --- Create Visualizations based on config ---
     final_path = None
     combined_log_dict = {}
+
+    # --- Process and log inference gradients ---
+    if all_inference_grads:
+        print("Logging inference gradients...")
+        # Log grads for the first image only for simplicity
+        first_image_inference_grads = all_inference_grads[0]
+        inference_grad_data = []
+        if first_image_inference_grads:
+            num_vodes = len(model.vodes)
+            # Identify Vodes for transformer blocks (indices 2 to num_blocks + 1)
+            # Also include Vode 0 (initial patch state) and Vode 1 (projected patches)
+            block_indices = list(range(2, model_config.num_blocks + 2))
+            relevant_vode_indices = [0, 1] + block_indices + [num_vodes - 1] # Add sensory Vode too
+
+            steps = sorted(first_image_inference_grads.keys())
+            for t in steps:
+                step_norms = first_image_inference_grads.get(t, {}) # Get norms for step t
+                for vode_idx in relevant_vode_indices:
+                    norm_key = f"vode_{vode_idx}_grad_norm"
+                    norm_value = step_norms.get(norm_key, float('nan'))
+                    if not np.isnan(norm_value):
+                        inference_grad_data.append([t + 1, norm_value, f"Vode {vode_idx}"]) # Use t+1 for 1-based step
+
+        # Log as a multi-line plot using wandb's built-in functionality
+        if inference_grad_data:
+            print("Logging inference gradient time series plot...")
+            try:
+                log_key = f"InferenceGradients/TimeSeries_Epoch{epoch}"
+                # Create plot using custom helper function
+                custom_plot = create_multi_line_chart(
+                    table_data=inference_grad_data,
+                    x_col="inference_step",
+                    y_col="grad_norm",
+                    series_col="vode",
+                    title=f"Inference Gradient Norms vs. Step T (Epoch {epoch})"
+                )
+                # Log the custom plot HTML object directly
+                wandb.log({log_key: custom_plot}, step=epoch)
+                print(f"Logged inference gradient time series plot for W&B (key: {log_key}).")
+            except Exception as e:
+                print(f"Error creating W&B line series plot for inference gradients: {e}")
+        else:
+            print("No valid inference gradient data to log.")
 
     # Create static image grid if requested
     if config.save_reconstruction_images:
@@ -777,9 +825,9 @@ def create_multi_line_chart(table_data, x_col, y_col, series_col, title):
     series_map = {}
     
     for row in table_data:
-        x = row[0]      # epoch
-        series = row[1]  # vode_index
-        y = row[2]      # energy/grad_norm
+        x = row[0]      # epoch or inference_step
+        series = row[2]  # Corrected: vode_index or series label is the 3rd element
+        y = row[1]      # Corrected: energy/grad_norm is the 2nd element
         
         if series not in series_map:
             series_map[series] = []
@@ -812,7 +860,7 @@ def create_multi_line_chart(table_data, x_col, y_col, series_col, title):
             vega_spec["data"]["values"].append({
                 x_col: point["x"],
                 y_col: point["y"],
-                series_col: f"Vode {series}"
+                series_col: series # Use the actual series label directly
             })
     
     # Create HTML with vega-lite
@@ -947,6 +995,7 @@ def main():
     # Create optimizers with the appropriate learning rate function
     # TODO: add gradient clipping
     optim_h = pxu.Optim(lambda: optax.sgd(hidden_lr_fn, momentum=0.1))
+    optim_h_inference = pxu.Optim(lambda: optax.sgd(config.hidden_lr_inference, momentum=0.1))
     optim_w = pxu.Optim(
         lambda: optax.adamw(weights_lr_fn, weight_decay=config.weight_decay), 
         pxu.M(pxnn.LayerParam)(model)
@@ -968,7 +1017,7 @@ def main():
     pretext_metrics = {} # Initialize metrics dict
     
     print(f"Training for {config.epochs} epochs with W&B logging...")
-    
+
     # Initialize the model (set h values of the Vodes) using a dummy batch shape
     # Determine expected input shape: (batch_size, channels, height, width)
     init_shape = (config.batch_size, *model_config.image_shape)
@@ -1016,7 +1065,7 @@ def main():
             # NOTE: T_values for eval might differ from training T
             # Use val_loader here
             pretext_metrics = eval_pretext_metrics(
-                train_loader, # Use validation loader
+                val_loader, # Use validation loader
                 T_values=config.eval_inference_steps, # Use eval_inference_steps
                 use_corruption=config.use_corruption, 
                 corrupt_ratio=config.corrupt_ratio,
@@ -1088,7 +1137,8 @@ def main():
             # Use train_loader for visualizing training samples
             vis_path, vis_logs = visualize_reconstruction(
                 model, 
-                optim_h, 
+                model_config, # <<< Add model_config here
+                optim_h_inference, # <<< Use inference optimizer for visualization
                 train_loader, # Use train_loader for visualization 
                 config=config, # Pass config object
                 wandb_run=run,
