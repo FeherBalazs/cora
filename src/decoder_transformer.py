@@ -36,6 +36,8 @@ STATUS_FORWARD = "forward"
 import jax.random as jrandom
 key = jrandom.PRNGKey(42)
 
+import jax.tree_util # Use JAX's tree utilities directly
+
 
 @dataclass
 class TransformerConfig:
@@ -70,6 +72,14 @@ class TransformerConfig:
     use_noise: bool = False
     use_lower_half_mask: bool = False
     param_dtype: DTypeLike = jnp.float32
+
+    # Layer-specific inference LR scaling
+    use_inference_lr_scaling: bool = False # Enable/disable scaling
+    inference_lr_scale_lower: float = 1.0  # Multiplier for lower layers (Vodes < boundary)
+    inference_lr_scale_upper: float = 1.0  # Multiplier for upper layers (Vodes >= boundary)
+    inference_lr_scale_boundary: int = 3   # Index separating lower/upper 
+    
+    inference_clamp_alpha: float = 1.0     # Blending factor for soft clamping (1.0 = full clamp, <1.0 = blend)
     
     def __post_init__(self):
         # Determine if we're dealing with video based on the shape of image_shape
@@ -681,6 +691,45 @@ def calculate_psnr(img1, img2, data_range=1.0, epsilon=1e-8):
     return psnr
 
 
+def scale_vode_grads(model_grads, lower_scale, upper_scale, boundary_idx):
+    """Scales gradients for Vode hidden states based on layer index."""
+    
+    def map_fn(path, leaf):
+        # Check if the leaf is a VodeParam corresponding to a hidden state gradient
+        # The path for a vode gradient looks like: (..., 'vodes', index, 'h')
+        is_vode_h_grad = (
+            len(path) >= 3 and 
+            path[-3] == 'vodes' and 
+            isinstance(path[-2], jax.tree_util.SequenceKey) and # Check if it's a list index
+            path[-1] == 'h'
+        )
+        
+        if is_vode_h_grad:
+            vode_idx = path[-2].idx
+            scale = lower_scale if vode_idx < boundary_idx else upper_scale
+            # Check if leaf is a parameter object with _value or just the array
+            if hasattr(leaf, '_value') and leaf._value is not None:
+                 # Return a new parameter object with scaled value
+                 # Assuming leaf is a simple dataclass or object we can reconstruct
+                 # This might need adjustment based on the exact type of VodeParam grad leaf
+                 try:
+                     # Attempt reconstruction assuming a simple structure
+                     # This is a potential point of failure if VodeParam structure is complex
+                     return type(leaf)(_value=leaf._value * scale, _frozen=leaf._frozen)
+                 except:
+                      print(f"Warning: Could not reconstruct VodeParam object for scaling at index {vode_idx}. Returning scaled value directly.")
+                      return leaf._value * scale # Fallback: return only the scaled value
+            elif isinstance(leaf, jax.Array): # If leaf is just the array
+                 return leaf * scale
+            else:
+                return leaf # Return unchanged if not a Vode gradient or not an array/expected type
+        else:
+            return leaf # Return other parameters unchanged
+
+    # Apply the mapping function to the gradient tree
+    return jax.tree_util.tree_map_with_path(map_fn, model_grads)
+
+
 def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_T_values: List[int], x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim, log_inference_grads: bool = False) -> Tuple[jnp.ndarray, List[jnp.ndarray], jnp.ndarray, Dict[int, Dict[str, float]]]:
     """
     Enhanced version of unmask_on_batch with random masking, focused loss on masked regions,
@@ -722,11 +771,22 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
         use_lower_half_mask = model.config.use_lower_half_mask  # Access config through model
 
         if use_lower_half_mask:
-            print("use_lower_half_mask:", use_lower_half_mask)
-            # Create mask for lower half of the image (mask=1 indicates masked region)
+            print("use_lower_half_mask:", use_lower_half_mask, "with ratio:", corrupt_ratio)
+            # Calculate the number of rows to mask from the bottom based on corrupt_ratio
+            # Clamp ratio just in case
+            safe_corrupt_ratio = jax.lax.clamp(0.0, corrupt_ratio, 1.0) 
+            num_rows_to_mask = jnp.floor(H * safe_corrupt_ratio).astype(jnp.int32)
+            start_row = H - num_rows_to_mask
+            
+            # Create mask where bottom `num_rows_to_mask` rows are 1 (masked)
             mask = jnp.zeros((batch_size, 1, H, W))
-            mask = mask.at[:, :, H//2:, :].set(1.0)
-            x_c = jnp.where(mask == 1, 0.5, x_batch) # Set masked (lower half) to 0
+            # Only apply mask if start_row is less than H (i.e., ratio > 0)
+            if start_row < H: 
+                mask = mask.at[:, :, start_row:, :].set(1.0)
+                
+            # Initialize corrupted image: masked region gets grey (0.5)
+            placeholder_value = 0.5 # Use grey for masked areas
+            x_c = jnp.where(mask == 1, placeholder_value, x_batch) 
         else:
             # Create masked image with random masking based on corrupt_ratio (mask=1 indicates masked region)
             mask = jax.random.bernoulli(px.RKG(), p=corrupt_ratio, shape=(batch_size, 1, H, W))
@@ -780,18 +840,36 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
                 inference_grad_norms_log[t] = {f"vode_{i}_grad_norm": float('nan') for i in range(len(model.vodes))}
         # --- End Log Gradients ---
 
-        # Update ALL hidden states based on gradients (No gradient masking needed)
-        optim_h.step(model, h_grad["model"])
+        # --- Apply Gradient Scaling if Enabled ---
+        model_grads_to_apply = h_grad["model"]
+        # Access config parameters directly through the model object
+        if model.config.use_inference_lr_scaling:
+            print(f"Applying inference LR scaling (Lower: x{model.config.inference_lr_scale_lower}, Upper: x{model.config.inference_lr_scale_upper}, Boundary: {model.config.inference_lr_scale_boundary})")
+            model_grads_to_apply = scale_vode_grads(
+                model_grads=model_grads_to_apply, 
+                lower_scale=model.config.inference_lr_scale_lower,
+                upper_scale=model.config.inference_lr_scale_upper,
+                boundary_idx=model.config.inference_lr_scale_boundary
+            )
+        # --- End Gradient Scaling ---
+
+        # Update ALL hidden states based on gradients (potentially scaled)
+        optim_h.step(model, model_grads_to_apply)
 
         # If corrupting, clamp the known (unmasked) pixels in the sensory layer *after* the update
         if use_corruption:
             current_h_sensory = model.vodes[-1].h._value
-            # Ensure mask is broadcastable to the sensory state shape (B, C, H, W)
-            # The mask is (B, 1, H, W), x_batch is (B, C, H, W)
             mask_broadcast = jnp.broadcast_to(mask, x_batch.shape)
-            # Clamp: Use x_batch values where mask is 0 (unmasked), keep current h where mask is 1 (masked)
-            clamped_h_sensory = jnp.where(mask_broadcast == 0, x_batch, current_h_sensory)
-            model.vodes[-1].h.set(clamped_h_sensory)
+            alpha = model.config.inference_clamp_alpha # Get alpha from config
+            
+            # Calculate target state: GT for known, current state for unknown/masked
+            target_h = jnp.where(mask_broadcast == 0, x_batch, current_h_sensory)
+            
+            # Blend the target state with the current state based on alpha
+            blended_h = alpha * target_h + (1.0 - alpha) * current_h_sensory
+            
+            # Set the new blended state
+            model.vodes[-1].h.set(blended_h)
 
     # No need for separate logic for non-corruption case inside the loop,
     # as clamping only happens if use_corruption is True.
