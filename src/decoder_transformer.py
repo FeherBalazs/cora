@@ -185,8 +185,8 @@ class TransformerDecoder(pxc.EnergyModule):
 
         # Process through transformer blocks
         for i, block in enumerate(self.transformer_blocks):
-            #TODO: apply residual connection here
-            x = block(x) # Apply transformer block
+            # Apply residual connection
+            x = x + block(x)
             x = self.vodes[i+2](x) # Apply Vode
     
         # Project back to patch_dim
