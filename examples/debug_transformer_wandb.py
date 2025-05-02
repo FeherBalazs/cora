@@ -52,14 +52,15 @@ class ModelConfig:
     # Dataset settings
     dataset: str = "cifar10"
     data_dir: str = "../datasets/"
-    train_subset: int = 100
+    train_subset: int = 300
     test_subset: int = 100
     target_class: Optional[int] = None
     reconstruction_every_n_epochs: int = 10 # WARNING: changing this to 1 caused training instability. Less frequent reconstruction is better. Tested only with 10 so far which works ok.
     validation_every_n_epochs: int = 10
     use_corruption: bool = True
-    corrupt_ratio: float = 0.5
-    use_lower_half_mask: bool = True #If False it uses random masking
+    corrupt_ratio: float = 0.25
+    use_lower_half_mask: bool = False #If False it uses random masking
+    inference_clamp_alpha: float = 0.25
 
     # Visualization settings
     num_images: int = 2
@@ -76,11 +77,11 @@ class ModelConfig:
     
     # Training settings
     use_noise: bool = True
-    batch_size: int = 50
+    batch_size: int = 100
     epochs: int = 100
     inference_steps: int = 12
     eval_inference_steps: List[int] = field(default_factory=lambda: [12])
-    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 32, 64])
+    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 32, 64, 128, 256, 512])
     peak_lr_weights: float = 0.005
     peak_lr_hidden: float = 0.01
     # peak_lr_weights: float = 1e-3
@@ -88,8 +89,15 @@ class ModelConfig:
     hidden_lr_inference: float = peak_lr_hidden * 1
     weight_decay: float = 2e-4
     warmup_epochs: int = 5
-    use_lr_schedule: bool = True
+    use_lr_schedule: bool = False
     seed: int = 42
+    
+    # Layer-specific inference LR scaling
+    # TODO: It is not working yet
+    use_inference_lr_scaling: bool = False # Enable/disable scaling
+    inference_lr_scale_lower: float = 10.0  # Multiplier for lower layers (Vodes < boundary)
+    inference_lr_scale_upper: float = 1.0  # Multiplier for upper layers (Vodes >= boundary)
+    inference_lr_scale_boundary: int = 4   # Index separating lower/upper (e.g., 3 means 0,1,2 are lower)
     
     # Early stopping settings
     use_early_stopping: bool = False
@@ -97,7 +105,7 @@ class ModelConfig:
     early_stopping_min_delta: float = 0.0001
     save_reconstruction_images: bool = True # Option to save static image grid
     save_reconstruction_video: bool = True # Option to save video
-    video_fps: int = 24 # Frames per second for the reconstruction video
+    video_fps: int = 60 # Frames per second for the reconstruction video
     reinitialize_model_for_each_epoch: bool = False # WARNING: setting this to True will get around 0.24 val loss with 100 images vs 0.15 without.
 
 # Predefined configurations for easy experimentation
@@ -106,7 +114,7 @@ MODEL_CONFIGS = {
         name="debug_tiny",
         hidden_size=64,
         num_heads=8,
-        num_blocks=3,
+        num_blocks=1,
     ),
     "debug_small": ModelConfig(
         name="debug_small",
@@ -127,7 +135,9 @@ DEFAULT_CONFIG = "debug_small"
 
 
 def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
-                 mlp_ratio=4.0, patch_size=4, axes_dim=None, theta=10_000, use_noise=True, use_lower_half_mask=False):
+                 mlp_ratio=4.0, patch_size=4, axes_dim=None, theta=10_000, use_noise=True, use_lower_half_mask=False,
+                 use_inference_lr_scaling=False, inference_lr_scale_lower=1.0, inference_lr_scale_upper=1.0, inference_lr_scale_boundary=3,
+                 inference_clamp_alpha=1.0):
     """Create a TransformerConfig based on the dataset name and parameters."""
     axes_dim = axes_dim or [16, 16]
     
@@ -144,7 +154,12 @@ def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
             axes_dim=axes_dim,
             theta=theta,
             use_noise=use_noise,
-            use_lower_half_mask=use_lower_half_mask
+            use_lower_half_mask=use_lower_half_mask,
+            use_inference_lr_scaling=use_inference_lr_scaling,
+            inference_lr_scale_lower=inference_lr_scale_lower,
+            inference_lr_scale_upper=inference_lr_scale_upper,
+            inference_lr_scale_boundary=inference_lr_scale_boundary,
+            inference_clamp_alpha=inference_clamp_alpha
         )
     else:
         raise ValueError(f"Unsupported dataset: {dataset}")
@@ -250,18 +265,19 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
     return TorchDataloader(train_dataloader), TorchDataloader(test_dataloader)
 
 
-def create_reconstruction_images(intermediate_recons, T_values, orig_images, labels_list, num_images, image_shape, wandb_run, epoch):
+def create_reconstruction_images(intermediate_recons, T_values, orig_images, masked_images, labels_list, num_images, image_shape, wandb_run, epoch):
     """
-    Creates a grid of images comparing originals and reconstructions at specific T_values.
+    Creates a grid of images comparing originals, masked inputs, and reconstructions at specific T_values.
     """
     num_channels, H, W = image_shape
-    fig, axes = plt.subplots(num_images, 1 + len(T_values), figsize=(4 * (1 + len(T_values)), 2 * num_images))
+    # Increase columns by 1 to accommodate the masked image
+    fig, axes = plt.subplots(num_images, 2 + len(T_values), figsize=(4 * (2 + len(T_values)), 2 * num_images))
     
     if num_images == 1:
-        axes = axes[None, :]
+        axes = axes[None, :] # Ensure axes is 2D even for one image
 
     for i in range(num_images):
-        # Plot original
+        # Plot original (Column 0)
         orig_np = np.array(orig_images[i])
         if num_channels == 1:
             axes[i, 0].imshow(np.clip(np.squeeze(orig_np), 0.0, 1.0), cmap='gray')
@@ -270,24 +286,34 @@ def create_reconstruction_images(intermediate_recons, T_values, orig_images, lab
         axes[i, 0].set_title(f'Original {labels_list[i] if labels_list[i] is not None else ""}')
         axes[i, 0].axis('off')
         
-        # Plot reconstructions for specific T values
+        # Plot masked input (Column 1)
+        masked_np = np.array(masked_images[i])
+        if num_channels == 1:
+            axes[i, 1].imshow(np.clip(np.squeeze(masked_np), 0.0, 1.0), cmap='gray')
+        else:
+            axes[i, 1].imshow(np.clip(np.transpose(masked_np, (1, 2, 0)), 0.0, 1.0))
+        axes[i, 1].set_title(f'Masked Input')
+        axes[i, 1].axis('off')
+
+        # Plot reconstructions for specific T values (Start from Column 2)
         for j, T in enumerate(T_values):
+            col_idx = j + 2 # Shift column index for reconstructions
             if T in intermediate_recons and i < len(intermediate_recons[T]):
                 recon_T = intermediate_recons[T][i] # Get the i-th image for this T
                 recon_np = np.array(recon_T) # Assuming it's already (C, H, W) or similar after processing
                 
                 if num_channels == 1:
-                    axes[i, j+1].imshow(np.clip(np.squeeze(recon_np), 0.0, 1.0), cmap='gray')
+                    axes[i, col_idx].imshow(np.clip(np.squeeze(recon_np), 0.0, 1.0), cmap='gray')
                 else:
                      # Ensure correct shape and transpose if needed
                     recon_np_reshaped = np.reshape(recon_np, image_shape)
-                    axes[i, j+1].imshow(np.clip(np.transpose(recon_np_reshaped, (1, 2, 0)), 0.0, 1.0))
-                axes[i, j+1].set_title(f'T={T}')
+                    axes[i, col_idx].imshow(np.clip(np.transpose(recon_np_reshaped, (1, 2, 0)), 0.0, 1.0))
+                axes[i, col_idx].set_title(f'T={T}')
             else:
                  # Handle missing reconstruction for this T/image index
-                axes[i, j+1].set_title(f'T={T} (N/A)')
-                axes[i, j+1].imshow(np.zeros((H, W) if num_channels == 1 else (H, W, 3))) # Placeholder
-            axes[i, j+1].axis('off')
+                axes[i, col_idx].set_title(f'T={T} (N/A)')
+                axes[i, col_idx].imshow(np.zeros((H, W) if num_channels == 1 else (H, W, 3))) # Placeholder
+            axes[i, col_idx].axis('off')
 
     plt.tight_layout()
     
@@ -324,6 +350,7 @@ def visualize_reconstruction(model, model_config, optim_h, dataloader, config, w
     recon_images_at_T = {T: [] for T in T_values} # For static images
     all_reconstruction_frames = [] # To store frames for video
     labels_list = []
+    masked_images_list = [] # List to store the masked input images
     all_inference_grads = [] # Add list to store grad logs per image
     dataloader_iter = iter(dataloader)
 
@@ -342,9 +369,8 @@ def visualize_reconstruction(model, model_config, optim_h, dataloader, config, w
             else:
                 labels_list.append(None)
                 
-            # Call unmask_on_batch_enhanced - capture the 4th return value
-            # Pass optim_h_inference if using separate optimizer for eval/viz
-            loss, all_recons_list, _, inference_grads = unmask_on_batch_enhanced(
+            # Call unmask_on_batch_enhanced - capture the mask now
+            loss, all_recons_list, mask_single, inference_grads = unmask_on_batch_enhanced(
                 use_corruption=use_corruption,
                 corrupt_ratio=corrupt_ratio,
                 target_T_values=T_values, # Determines max_T internally
@@ -354,6 +380,20 @@ def visualize_reconstruction(model, model_config, optim_h, dataloader, config, w
                 log_inference_grads=True # Set the flag
             )
             all_inference_grads.append(inference_grads) # Store the logs
+
+            # --- Regenerate the masked input for visualization using the returned mask --- 
+            x_init_single = single_x # Default if no corruption
+            if use_corruption:
+                # Always use the first slice of the returned mask (handles both lower-half and random)
+                mask_for_viz = mask_single[0:1] # Shape (1, 1, H, W) 
+                # Ensure mask_for_viz is broadcastable for the where clause
+                mask_viz = jnp.broadcast_to(mask_for_viz, single_x.shape) 
+                # Use gray (0.5) for masked areas for visualization consistency
+                placeholder_viz = jnp.ones_like(single_x) * 0.5 
+                x_init_single = jnp.where(mask_viz == 1, placeholder_viz, single_x)
+
+            masked_images_list.append(jnp.reshape(x_init_single[0], image_shape))
+            # --- End regeneration ---
 
             # Always store all frames, as we might need them for video
             all_reconstruction_frames.append(all_recons_list)
@@ -425,6 +465,7 @@ def visualize_reconstruction(model, model_config, optim_h, dataloader, config, w
             intermediate_recons=recon_images_at_T,
             T_values=T_values,
             orig_images=orig_images,
+            masked_images=masked_images_list,
             labels_list=labels_list,
             num_images=num_images,
             image_shape=image_shape,
@@ -442,6 +483,7 @@ def visualize_reconstruction(model, model_config, optim_h, dataloader, config, w
             video_path, video_log_dict = create_reconstruction_video(
                 all_reconstruction_frames=all_reconstruction_frames,
                 orig_images=orig_images,
+                masked_images=masked_images_list, # Pass masked images
                 labels_list=labels_list,
                 num_images=num_images,
                 image_shape=image_shape,
@@ -456,13 +498,14 @@ def visualize_reconstruction(model, model_config, optim_h, dataloader, config, w
     return final_path, combined_log_dict
 
 
-def create_reconstruction_video(all_reconstruction_frames, orig_images, labels_list, num_images, image_shape, wandb_run, epoch, fps=10):
+def create_reconstruction_video(all_reconstruction_frames, orig_images, masked_images, labels_list, num_images, image_shape, wandb_run, epoch, fps=10):
     """
     Creates a video comparing original images and their reconstructions over time.
 
     Args:
         all_reconstruction_frames: List (num_images) of lists (T_steps) of reconstruction tensors.
         orig_images: List of original image tensors.
+        masked_images: List of masked input image tensors.
         labels_list: List of labels for the original images.
         num_images: Number of images to include in the video.
         image_shape: Shape of a single image (C, H, W).
@@ -480,29 +523,41 @@ def create_reconstruction_video(all_reconstruction_frames, orig_images, labels_l
 
     # Prepare original images once
     processed_orig_images = []
+    processed_masked_images = []
     for i in range(num_images):
         orig_np = np.array(orig_images[i])
+        masked_np = np.array(masked_images[i])
         if num_channels == 1: # Grayscale
             orig_plot = np.clip(np.squeeze(orig_np), 0.0, 1.0)
             orig_plot = (plt.cm.gray(orig_plot)[:, :, :3] * 255).astype(np.uint8) # Convert grayscale to RGB for video
+            masked_plot = np.clip(np.squeeze(masked_np), 0.0, 1.0)
+            masked_plot = (plt.cm.gray(masked_plot)[:, :, :3] * 255).astype(np.uint8)
         else: # RGB
             orig_plot = np.clip(np.transpose(orig_np, (1, 2, 0)), 0.0, 1.0)
             orig_plot = (orig_plot * 255).astype(np.uint8)
+            masked_plot = np.clip(np.transpose(masked_np, (1, 2, 0)), 0.0, 1.0)
+            masked_plot = (masked_plot * 255).astype(np.uint8)
         processed_orig_images.append(orig_plot)
+        processed_masked_images.append(masked_plot)
 
     # Generate frames for the video
     for t in range(num_steps):
-        fig, axes = plt.subplots(num_images, 2, figsize=(4 * 2, 2 * num_images))
+        fig, axes = plt.subplots(num_images, 3, figsize=(4 * 3, 2 * num_images))
         if num_images == 1:
             axes = axes[None, :] # Make it 2D
 
         for i in range(num_images):
-            # Plot original image
+            # Plot original image (Column 0)
             axes[i, 0].imshow(processed_orig_images[i])
             axes[i, 0].set_title(f'Original {labels_list[i] if labels_list[i] is not None else ""}')
             axes[i, 0].axis('off')
 
-            # Plot reconstruction at step t
+            # Plot masked input (Column 1)
+            axes[i, 1].imshow(processed_masked_images[i])
+            axes[i, 1].set_title(f'Masked Input')
+            axes[i, 1].axis('off')
+
+            # Plot reconstruction at step t (Column 2)
             recon_t = all_reconstruction_frames[i][t]
             recon_np = np.array(recon_t[0]) # Get the first element from batch dim
             recon_np = np.reshape(recon_np, image_shape)
@@ -514,9 +569,10 @@ def create_reconstruction_video(all_reconstruction_frames, orig_images, labels_l
                 recon_plot = np.clip(np.transpose(recon_np, (1, 2, 0)), 0.0, 1.0)
                 recon_plot = (recon_plot * 255).astype(np.uint8)
             
-            axes[i, 1].imshow(recon_plot)
-            axes[i, 1].set_title(f'Recon T={t+1}')
-            axes[i, 1].axis('off')
+            # Plot in column 2
+            axes[i, 2].imshow(recon_plot)
+            axes[i, 2].set_title(f'Recon T={t+1}')
+            axes[i, 2].axis('off')
         
         plt.tight_layout()
         fig.canvas.draw() # Draw the canvas, cache the renderer
@@ -947,7 +1003,12 @@ def main():
         axes_dim=config.axes_dim,
         theta=config.theta,
         use_noise=config.use_noise,
-        use_lower_half_mask=config.use_lower_half_mask
+        use_lower_half_mask=config.use_lower_half_mask,
+        use_inference_lr_scaling=config.use_inference_lr_scaling,
+        inference_lr_scale_lower=config.inference_lr_scale_lower,
+        inference_lr_scale_upper=config.inference_lr_scale_upper,
+        inference_lr_scale_boundary=config.inference_lr_scale_boundary,
+        inference_clamp_alpha=config.inference_clamp_alpha
     )
     
     print(f"Creating debug dataloaders for CIFAR-10...")
@@ -1065,7 +1126,7 @@ def main():
             # NOTE: T_values for eval might differ from training T
             # Use val_loader here
             pretext_metrics = eval_pretext_metrics(
-                val_loader, # Use validation loader
+                train_loader, # Use validation loader
                 T_values=config.eval_inference_steps, # Use eval_inference_steps
                 use_corruption=config.use_corruption, 
                 corrupt_ratio=config.corrupt_ratio,
