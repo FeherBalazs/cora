@@ -81,7 +81,7 @@ class ModelConfig:
     epochs: int = 100
     inference_steps: int = 12
     eval_inference_steps: List[int] = field(default_factory=lambda: [12])
-    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 32, 64, 128, 256, 512])
+    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 32, 64, 128, 200])
     peak_lr_weights: float = 0.005
     peak_lr_hidden: float = 0.01
     # peak_lr_weights: float = 1e-3
