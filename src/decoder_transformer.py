@@ -354,7 +354,9 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
     learning_step = pxf.value_and_grad(pxu.M_hasnot(pxnn.LayerParam).to([False, True]), has_aux=True)(energy)
 
     # Top down sweep and setting target value
-    with pxu.step(model, clear_params=pxc.VodeParam.Cache):
+    # with pxu.step(model, clear_params=pxc.VodeParam.Cache):
+    #     forward(x, model=model)
+    with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
         forward(x, model=model)
 
     
@@ -796,8 +798,8 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
         x_init = x_c # Initialize with the corrupted image
 
     # Initialize the model state based on x_init
-    # with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
-    with pxu.step(model, clear_params=pxc.VodeParam.Cache):
+    with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
+    # with pxu.step(model, clear_params=pxc.VodeParam.Cache):
         forward(x_init, model=model)
 
     # Ensure sensory h is NOT frozen for inference
