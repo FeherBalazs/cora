@@ -80,6 +80,7 @@ class TransformerConfig:
     inference_lr_scale_boundary: int = 3   # Index separating lower/upper 
     
     inference_clamp_alpha: float = 1.0     # Blending factor for soft clamping (1.0 = full clamp, <1.0 = blend)
+    update_weights_during_unmasking: bool = False # New flag
     
     def __post_init__(self):
         # Determine if we're dealing with video based on the shape of image_shape
@@ -354,7 +355,9 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
     learning_step = pxf.value_and_grad(pxu.M_hasnot(pxnn.LayerParam).to([False, True]), has_aux=True)(energy)
 
     # Top down sweep and setting target value
-    with pxu.step(model, clear_params=pxc.VodeParam.Cache):
+    # with pxu.step(model, clear_params=pxc.VodeParam.Cache):
+    #     forward(x, model=model)
+    with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
         forward(x, model=model)
 
     
@@ -387,7 +390,7 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
     return h_energy, w_energy, h_grad, w_grad, train_mse
 
 
-def eval_pretext_metrics(dataloader, T_values, use_corruption, corrupt_ratio, *, model: TransformerDecoder, optim_h: pxu.Optim, data_range=1.0):
+def eval_pretext_metrics(dataloader, T_values, use_corruption, corrupt_ratio, *, model: TransformerDecoder, optim_h: pxu.Optim, optim_w: Optional[pxu.Optim] = None, data_range=1.0):
     """Evaluates pretext task performance (reconstruction/inpainting) on a dataloader."""
     model.eval() # Ensure model is in eval mode
 
@@ -411,7 +414,8 @@ def eval_pretext_metrics(dataloader, T_values, use_corruption, corrupt_ratio, *,
             target_T_values=T_values, # Determines max_T
             x=x_batch,
             model=model,
-            optim_h=optim_h
+            optim_h=optim_h,
+            optim_w=optim_w
             # We don't need inference grads here, so log_inference_grads defaults to False
         )
 
@@ -730,7 +734,7 @@ def scale_vode_grads(model_grads, lower_scale, upper_scale, boundary_idx):
     return jax.tree_util.tree_map_with_path(map_fn, model_grads)
 
 
-def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_T_values: List[int], x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim, log_inference_grads: bool = False) -> Tuple[jnp.ndarray, List[jnp.ndarray], jnp.ndarray, Dict[int, Dict[str, float]]]:
+def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_T_values: List[int], x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim, optim_w: Optional[pxu.Optim] = None, log_inference_grads: bool = False) -> Tuple[jnp.ndarray, List[jnp.ndarray], jnp.ndarray, Dict[int, Dict[str, float]]]:
     """
     Enhanced version of unmask_on_batch with random masking, focused loss on masked regions,
     and detailed logging for debugging. Returns loss, list of reconstructions, the mask used,
@@ -796,8 +800,8 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
         x_init = x_c # Initialize with the corrupted image
 
     # Initialize the model state based on x_init
-    # with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
-    with pxu.step(model, clear_params=pxc.VodeParam.Cache):
+    with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
+    # with pxu.step(model, clear_params=pxc.VodeParam.Cache):
         forward(x_init, model=model)
 
     # Ensure sensory h is NOT frozen for inference
@@ -855,6 +859,20 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
 
         # Update ALL hidden states based on gradients (potentially scaled)
         optim_h.step(model, model_grads_to_apply)
+
+        # --- Conditionally update weights ---
+        if model.config.update_weights_during_unmasking and optim_w is not None:
+            # Define learning_step similar to train_on_batch
+            # WARNING: This selector pxu.M_hasnot(pxnn.LayerParam) calculates gradients for non-LayerParams.
+            # If optim_w targets LayerParams, this might not be the intended gradient source.
+            # Replicating train_on_batch logic as requested.
+            learning_step = pxf.value_and_grad(pxu.M_hasnot(pxnn.LayerParam).to([False, True]), has_aux=True)(energy)
+            with pxu.step(model, clear_params=pxc.VodeParam.Cache): # Consistent with train_on_batch's weight update step
+                (w_energy, y_w), w_grad = learning_step(model=model)
+            # Ensure optim_w is initialized if it hasn't been (though typically it's initialized once)
+            # For safety, one might check if optim_w.opt_state is initialized, but usually handled outside.
+            optim_w.step(model, w_grad["model"], scale_by=1.0/x.shape[0]) # Assuming x is the original batch for scaling
+        # --- End conditional weight update ---
 
         # If corrupting, clamp the known (unmasked) pixels in the sensory layer *after* the update
         if use_corruption:
