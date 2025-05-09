@@ -55,14 +55,14 @@ class ModelConfig:
     train_subset: int = 50000
     test_subset: int = 1000
     target_class: Optional[int] = None
-    reconstruction_every_n_epochs: int = 10 # WARNING: changing this to 1 caused training instability. Less frequent reconstruction is better. Tested only with 10 so far which works ok.
-    validation_every_n_epochs: int = 10
+    reconstruction_every_n_epochs: int = 1 # WARNING: changing this to 1 caused training instability. Less frequent reconstruction is better. Tested only with 10 so far which works ok.
+    validation_every_n_epochs: int = 1
 
     use_corruption: bool = True
     corrupt_ratio: float = 0.25
 
     use_lower_half_mask: bool = False #If False it uses random masking
-    inference_clamp_alpha: float = 1.0
+    inference_clamp_alpha: float = 0.25
 
     # Visualization settings
     num_images: int = 2
@@ -97,7 +97,7 @@ class ModelConfig:
     peak_lr_weights: float = 0.0001
     peak_lr_hidden: float = 0.005
 
-    update_weights_during_unmasking: bool = True
+    update_weights_during_unmasking: bool = False
 
     hidden_lr_inference: float = peak_lr_hidden * 1
     weight_decay: float = 2e-4
