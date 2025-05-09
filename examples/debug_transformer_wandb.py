@@ -52,15 +52,17 @@ class ModelConfig:
     # Dataset settings
     dataset: str = "cifar10"
     data_dir: str = "../datasets/"
-    train_subset: int = 300
-    test_subset: int = 100
+    train_subset: int = 50000
+    test_subset: int = 1000
     target_class: Optional[int] = None
     reconstruction_every_n_epochs: int = 10 # WARNING: changing this to 1 caused training instability. Less frequent reconstruction is better. Tested only with 10 so far which works ok.
     validation_every_n_epochs: int = 10
+
     use_corruption: bool = True
     corrupt_ratio: float = 0.25
+
     use_lower_half_mask: bool = False #If False it uses random masking
-    inference_clamp_alpha: float = 0.25
+    inference_clamp_alpha: float = 1.0
 
     # Visualization settings
     num_images: int = 2
@@ -77,15 +79,26 @@ class ModelConfig:
     
     # Training settings
     use_noise: bool = True
-    batch_size: int = 100
+    batch_size: int = 200
     epochs: int = 100
-    inference_steps: int = 12
-    eval_inference_steps: List[int] = field(default_factory=lambda: [12])
-    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 32, 64, 128, 200])
+    inference_steps: int = 24
+    eval_inference_steps: List[int] = field(default_factory=lambda: [24])
+    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 8, 12, 16, 24, 32, 48, 64])
     peak_lr_weights: float = 0.005
     peak_lr_hidden: float = 0.01
     # peak_lr_weights: float = 1e-3
     # peak_lr_hidden: float = 0.05
+
+    # # Settings without status.init
+    # peak_lr_weights: float = 0.0025
+    # peak_lr_hidden: float = 0.005
+
+    # Settings with status.init
+    peak_lr_weights: float = 0.0001
+    peak_lr_hidden: float = 0.005
+
+    update_weights_during_unmasking: bool = True
+
     hidden_lr_inference: float = peak_lr_hidden * 1
     weight_decay: float = 2e-4
     warmup_epochs: int = 5
@@ -114,7 +127,7 @@ MODEL_CONFIGS = {
         name="debug_tiny",
         hidden_size=64,
         num_heads=8,
-        num_blocks=1,
+        num_blocks=3,
     ),
     "debug_small": ModelConfig(
         name="debug_small",
@@ -137,7 +150,7 @@ DEFAULT_CONFIG = "debug_small"
 def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
                  mlp_ratio=4.0, patch_size=4, axes_dim=None, theta=10_000, use_noise=True, use_lower_half_mask=False,
                  use_inference_lr_scaling=False, inference_lr_scale_lower=1.0, inference_lr_scale_upper=1.0, inference_lr_scale_boundary=3,
-                 inference_clamp_alpha=1.0):
+                 inference_clamp_alpha=1.0, update_weights_during_unmasking=False):
     """Create a TransformerConfig based on the dataset name and parameters."""
     axes_dim = axes_dim or [16, 16]
     
@@ -159,7 +172,8 @@ def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
             inference_lr_scale_lower=inference_lr_scale_lower,
             inference_lr_scale_upper=inference_lr_scale_upper,
             inference_lr_scale_boundary=inference_lr_scale_boundary,
-            inference_clamp_alpha=inference_clamp_alpha
+            inference_clamp_alpha=inference_clamp_alpha,
+            update_weights_during_unmasking=update_weights_during_unmasking
         )
     else:
         raise ValueError(f"Unsupported dataset: {dataset}")
@@ -336,7 +350,7 @@ def create_reconstruction_images(intermediate_recons, T_values, orig_images, mas
     return reconstruction_path, log_dict
 
 
-def visualize_reconstruction(model, model_config, optim_h, dataloader, config, wandb_run=None, epoch=None, step=None):
+def visualize_reconstruction(model, model_config, optim_h, dataloader, config, wandb_run=None, epoch=None, step=None, optim_w=None):
     
     # Extract static info from config
     image_shape = model.config.image_shape
@@ -377,6 +391,7 @@ def visualize_reconstruction(model, model_config, optim_h, dataloader, config, w
                 x=single_x,               
                 model=model, 
                 optim_h=optim_h, # Use optim_h_inference if defined/desired
+                optim_w=optim_w, # <<< Pass optim_w
                 log_inference_grads=True # Set the flag
             )
             all_inference_grads.append(inference_grads) # Store the logs
@@ -1008,7 +1023,8 @@ def main():
         inference_lr_scale_lower=config.inference_lr_scale_lower,
         inference_lr_scale_upper=config.inference_lr_scale_upper,
         inference_lr_scale_boundary=config.inference_lr_scale_boundary,
-        inference_clamp_alpha=config.inference_clamp_alpha
+        inference_clamp_alpha=config.inference_clamp_alpha,
+        update_weights_during_unmasking=config.update_weights_during_unmasking
     )
     
     print(f"Creating debug dataloaders for CIFAR-10...")
@@ -1126,12 +1142,13 @@ def main():
             # NOTE: T_values for eval might differ from training T
             # Use val_loader here
             pretext_metrics = eval_pretext_metrics(
-                train_loader, # Use validation loader
+                val_loader, # Use validation loader
                 T_values=config.eval_inference_steps, # Use eval_inference_steps
                 use_corruption=config.use_corruption, 
                 corrupt_ratio=config.corrupt_ratio,
                 model=model, 
-                optim_h=optim_h
+                optim_h=optim_h,
+                optim_w=optim_w # <<< Pass optim_w
             )
             print(f"Validation Pretext Metrics: {pretext_metrics}")
             
@@ -1198,12 +1215,13 @@ def main():
             # Use train_loader for visualizing training samples
             vis_path, vis_logs = visualize_reconstruction(
                 model, 
-                model_config, # <<< Add model_config here
-                optim_h_inference, # <<< Use inference optimizer for visualization
-                train_loader, # Use train_loader for visualization 
-                config=config, # Pass config object
+                model_config, 
+                optim_h_inference, 
+                train_loader, 
+                config=config, 
                 wandb_run=run,
-                epoch=epoch+1
+                epoch=epoch+1,
+                optim_w=optim_w # <<< Pass optim_w
             )
             # Add visualization logs (either image or video) to wandb logging for this step
             run.log(vis_logs, step=epoch+1) 
