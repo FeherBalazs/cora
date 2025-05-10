@@ -1,3 +1,4 @@
+# TODO: configs are all over the place, need to clean up
 import multiprocessing
 multiprocessing.set_start_method('spawn', force=True) 
 
@@ -24,19 +25,19 @@ import pcx.functional as pxf
 from src.utils import create_positional_encoding
 from jax.typing import DTypeLike
 from einops import rearrange
-from pcx.core._parameter import get as param_get  # Import get function for parameter access
+from pcx.core._parameter import get as param_get
 
 import matplotlib.pyplot as plt
 from datetime import datetime
 import time
-import math  # Import math for log10
+import math
 
 STATUS_FORWARD = "forward"
 
 import jax.random as jrandom
 key = jrandom.PRNGKey(42)
 
-import jax.tree_util # Use JAX's tree utilities directly
+import jax.tree_util
 
 
 @dataclass
@@ -378,10 +379,8 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
         optim_w.step(model, w_grad["model"], scale_by=1.0/x.shape[0])
 
     # After training, forward once more to get final activations
-    # with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
     with pxu.step(model, STATUS_FORWARD):
-    # with pxu.step(model):
-        x_hat_batch = forward(None, model=model) # Get final reconstruction
+        x_hat_batch = forward(None, model=model)
 
     # Calculate MSE loss between final reconstruction and original input
     x_hat_clipped = jnp.clip(x_hat_batch, 0.0, 1.0)
