@@ -91,11 +91,11 @@ class ModelConfig:
 
     # Settings without status.init: hidden_size=64, num_blocks=0, inference_steps=24
     peak_lr_weights: float = 0.005
-    peak_lr_hidden: float = 0.01
+    peak_lr_hidden: float = 0.0075
 
-    # Settings without status.init: hidden_size=64, num_blocks=1, inference_steps=24
-    peak_lr_weights: float = 0.005
-    peak_lr_hidden: float = 0.005
+    # # Settings without status.init: hidden_size=64, num_blocks=1, inference_steps=24
+    # peak_lr_weights: float = 0.005
+    # peak_lr_hidden: float = 0.005
 
     # # Settings with status.init - general
     # peak_lr_weights: float = 0.0001
@@ -188,12 +188,35 @@ def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
         raise ValueError(f"Unsupported dataset: {dataset}")
 
 
+def str_to_bool(value):
+    if isinstance(value, bool):
+        return value
+    if value.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif value.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Debug a transformer model with W&B logging')
     parser.add_argument('--config', type=str, default=DEFAULT_CONFIG,
                         help=f'Predefined configuration to use. Options: {", ".join(MODEL_CONFIGS.keys())}')
     parser.add_argument('--batch-size', type=int, default=None,
                         help='Batch size for training')
+    parser.add_argument('--epochs', type=int, default=None,
+                        help='Number of epochs to train for')
+    parser.add_argument('--num_blocks', type=int, default=None,
+                        help='Number of transformer blocks')
+    parser.add_argument('--peak_lr_weights', type=float, default=None,
+                        help='Peak learning rate for weights')
+    parser.add_argument('--peak_lr_hidden', type=float, default=None,
+                        help='Peak learning rate for hidden states')
+    parser.add_argument('--save_reconstruction_images', type=str_to_bool, nargs='?', const=True, default=None,
+                        help='Save reconstruction images (true/false)')
+    parser.add_argument('--save_reconstruction_video', type=str_to_bool, nargs='?', const=True, default=None,
+                        help='Save reconstruction video (true/false)')
+    # Add any other parameters from ModelConfig you want to control via CLI here
     return parser.parse_args()
 
 
