@@ -55,14 +55,14 @@ class ModelConfig:
     train_subset: int = 50000
     test_subset: int = 1000
     target_class: Optional[int] = None
-    reconstruction_every_n_epochs: int = 1 # WARNING: changing this to 1 caused training instability. Less frequent reconstruction is better. Tested only with 10 so far which works ok.
-    validation_every_n_epochs: int = 1
+    reconstruction_every_n_epochs: int = 10 # WARNING: changing this to 1 caused training instability. Less frequent reconstruction is better. Tested only with 10 so far which works ok.
+    validation_every_n_epochs: int = 10
 
-    use_corruption: bool = True
+    use_corruption: bool = False
     corrupt_ratio: float = 0.25
 
     use_lower_half_mask: bool = False #If False it uses random masking
-    inference_clamp_alpha: float = 0.25
+    inference_clamp_alpha: float = 0.5
 
     # Visualization settings
     num_images: int = 2
@@ -76,26 +76,30 @@ class ModelConfig:
     axes_dim: List[int] = field(default_factory=lambda: [16, 16])
     theta: int = 100
     act_fn: Callable = jax.nn.swish
+
+    # Status init settings for training and unmasking
+    use_status_init_in_training: bool = False
+    use_status_init_in_unmasking: bool = False
     
     # Training settings
     use_noise: bool = True
     batch_size: int = 200
-    epochs: int = 100
+    epochs: int = 10
     inference_steps: int = 24
     eval_inference_steps: List[int] = field(default_factory=lambda: [24])
-    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 8, 12, 16, 24, 32, 48, 64])
+    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 8, 12, 16, 24, 32, 48])
+
+    # Settings without status.init: hidden_size=64, num_blocks=0, inference_steps=24
     peak_lr_weights: float = 0.005
     peak_lr_hidden: float = 0.01
-    # peak_lr_weights: float = 1e-3
-    # peak_lr_hidden: float = 0.05
 
-    # # Settings without status.init
-    # peak_lr_weights: float = 0.0025
-    # peak_lr_hidden: float = 0.005
-
-    # Settings with status.init
-    peak_lr_weights: float = 0.0001
+    # Settings without status.init: hidden_size=64, num_blocks=1, inference_steps=24
+    peak_lr_weights: float = 0.005
     peak_lr_hidden: float = 0.005
+
+    # # Settings with status.init - general
+    # peak_lr_weights: float = 0.0001
+    # peak_lr_hidden: float = 0.005
 
     update_weights_during_unmasking: bool = False
 
@@ -121,13 +125,15 @@ class ModelConfig:
     video_fps: int = 60 # Frames per second for the reconstruction video
     reinitialize_model_for_each_epoch: bool = False # WARNING: setting this to True will get around 0.24 val loss with 100 images vs 0.15 without.
 
+    
+
 # Predefined configurations for easy experimentation
 MODEL_CONFIGS = {
     "debug_tiny": ModelConfig(
         name="debug_tiny",
         hidden_size=64,
-        num_heads=8,
-        num_blocks=3,
+        num_heads=1,
+        num_blocks=1,
     ),
     "debug_small": ModelConfig(
         name="debug_small",
@@ -150,7 +156,8 @@ DEFAULT_CONFIG = "debug_small"
 def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
                  mlp_ratio=4.0, patch_size=4, axes_dim=None, theta=10_000, use_noise=True, use_lower_half_mask=False,
                  use_inference_lr_scaling=False, inference_lr_scale_lower=1.0, inference_lr_scale_upper=1.0, inference_lr_scale_boundary=3,
-                 inference_clamp_alpha=1.0, update_weights_during_unmasking=False):
+                 inference_clamp_alpha=1.0, update_weights_during_unmasking=False,
+                 use_status_init_in_training: bool = True, use_status_init_in_unmasking: bool = True):
     """Create a TransformerConfig based on the dataset name and parameters."""
     axes_dim = axes_dim or [16, 16]
     
@@ -173,7 +180,9 @@ def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
             inference_lr_scale_upper=inference_lr_scale_upper,
             inference_lr_scale_boundary=inference_lr_scale_boundary,
             inference_clamp_alpha=inference_clamp_alpha,
-            update_weights_during_unmasking=update_weights_during_unmasking
+            update_weights_during_unmasking=update_weights_during_unmasking,
+            use_status_init_in_training=use_status_init_in_training,
+            use_status_init_in_unmasking=use_status_init_in_unmasking
         )
     else:
         raise ValueError(f"Unsupported dataset: {dataset}")
@@ -232,11 +241,18 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
         download=True,
         train=True,
     )
+    # test_dataset = torchvision.datasets.CIFAR10(
+    #     root=dataset_root,
+    #     transform=test_transform,
+    #     download=True,
+    #     train=False,
+    # )
+    # TODO: Remove this once we have a proper test set
     test_dataset = torchvision.datasets.CIFAR10(
         root=dataset_root,
         transform=test_transform,
         download=True,
-        train=False,
+        train=True,
     )
     
     if target_class is not None:
@@ -954,22 +970,42 @@ def create_multi_line_chart(table_data, x_col, y_col, series_col, title):
     
     return wandb.Html(html)
 
-def main():
+def run_experiment(base_config_name: str = DEFAULT_CONFIG,
+                     config_overrides: Optional[Dict[str, Any]] = None,
+                     wandb_project_name: str = "debug-transformer-search",
+                     wandb_run_name: Optional[str] = None,
+                     wandb_mode: str = "online"):
     """Main function to run the debugging process with W&B logging."""
-    args = parse_args()
+    # args = parse_args() # Args will be handled by overrides or a new main
     
     # Load the base configuration
-    config = MODEL_CONFIGS[args.config]
+    if base_config_name not in MODEL_CONFIGS:
+        print(f"Error: Base config name '{base_config_name}' not found. Available: {list(MODEL_CONFIGS.keys())}")
+        return float('inf') # Return a high MSE indicating failure
+        
+    config = MODEL_CONFIGS[base_config_name]
     
-    # Override configuration with any command-line arguments
-    for arg_name, arg_value in vars(args).items():
-        if arg_value is not None and arg_name != 'config':
-            setattr(config, arg_name, arg_value)
+    # Apply overrides
+    if config_overrides:
+        for key, value in config_overrides.items():
+            if hasattr(config, key):
+                setattr(config, key, value)
+            else:
+                print(f"Warning: Key '{key}' not found in ModelConfig. Skipping override.")
+
+    # Override with any command-line arguments if needed (though typically covered by config_overrides for programmatic calls)
+    # This part is mostly for when this function is adapted to be called from a CLI-driven main()
+    # For pure programmatic calls, config_overrides is the primary way.
+    # args = parse_args() # We'll handle CLI args in a separate main()
+    # for arg_name, arg_value in vars(args).items():
+    #     if arg_value is not None and arg_name != 'config': # 'config' here refers to the base_config_name
+    #         if hasattr(config, arg_name):
+    #             setattr(config, arg_name, arg_value)
     
     # Print the effective configuration
-    print(f"\nUsing configuration '{config.name}' with settings:")
+    print(f"\nUsing base configuration '{config.name}' with effective settings:")
     for key, value in vars(config).items():
-        if key != 'name':
+        if key != 'name': # name is already part of the base config
             print(f"  {key}: {value}")
     print()
     
@@ -978,34 +1014,50 @@ def main():
     torch.manual_seed(config.seed)
     key = jax.random.PRNGKey(config.seed)
     
+    # Determine run name for WandB
+    effective_wandb_run_name = wandb_run_name
+    if not effective_wandb_run_name:
+        # Create a more descriptive run name if not provided
+        lr_w_str = f"lrw{config.peak_lr_weights:.0e}" if config.peak_lr_weights else "lrwDEF"
+        lr_h_str = f"lrw{config.peak_lr_hidden:.0e}" if config.peak_lr_hidden else "lrhDEF"
+        nb_str = f"nb{config.num_blocks}"
+        hs_str = f"hs{config.hidden_size}"
+        effective_wandb_run_name = f"{config.name}_{nb_str}_{hs_str}_{lr_w_str}_{lr_h_str}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
     # Initialize Weights & Biases
     run = wandb.init(
-        entity="neural-machines",
-        project="debug-transformer",
+        entity="neural-machines", # Replace with your entity or remove if not needed
+        project=wandb_project_name,
+        name=effective_wandb_run_name,
         config=vars(config),
-        mode="online"  # Change to online for immediate verification
+        mode=wandb_mode  # Allows disabling for search
     )
     
-    # Upload code artifacts to W&B
-    try:
-        code_artifact = wandb.Artifact(name="source_code", type="code")
-        
-        # Add the current file
-        code_artifact.add_file(__file__)
-        
-        # Add the decoder_transformer.py file
-        decoder_transformer_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "src/decoder_transformer.py")
-        if os.path.exists(decoder_transformer_path):
-            code_artifact.add_file(decoder_transformer_path)
-            print(f"Added decoder_transformer.py to W&B artifact")
-        else:
-            print(f"Warning: Could not find decoder_transformer.py at {decoder_transformer_path}")
-        
-        # Log the artifact to W&B
-        run.log_artifact(code_artifact)
-        print("Uploaded code artifacts to W&B")
-    except Exception as e:
-        print(f"Error uploading code to W&B: {e}")
+    # Upload code artifacts to W&B if an active run exists and not disabled
+    if wandb.run and wandb.run.mode != "disabled":
+        try:
+            # Use a consistent artifact name, W&B will version it
+            code_artifact = wandb.Artifact(name=f"source_code_{config.name}", type="code")
+            
+            # Add the current file (debug_transformer_wandb.py)
+            code_artifact.add_file(__file__)
+            
+            # Add the decoder_transformer.py file
+            # Assuming src is one level up from examples
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            decoder_transformer_path = os.path.join(script_dir, "../src/decoder_transformer.py")
+            decoder_transformer_path = os.path.abspath(decoder_transformer_path)
+            if os.path.exists(decoder_transformer_path):
+                code_artifact.add_file(decoder_transformer_path, name="src/decoder_transformer.py") # Explicitly name it for clarity in W&B UI
+            else:
+                print(f"Warning: Could not find decoder_transformer.py at {decoder_transformer_path}")
+            
+            wandb.run.log_artifact(code_artifact)
+            print("Logged source code artifact to W&B.")
+        except Exception as e:
+            print(f"Error uploading code to W&B: {e}")
+            import traceback
+            traceback.print_exc()
     
     print(f"Creating configuration for debugging CIFAR-10 transformer...")
     model_config = create_config(
@@ -1024,7 +1076,9 @@ def main():
         inference_lr_scale_upper=config.inference_lr_scale_upper,
         inference_lr_scale_boundary=config.inference_lr_scale_boundary,
         inference_clamp_alpha=config.inference_clamp_alpha,
-        update_weights_during_unmasking=config.update_weights_during_unmasking
+        update_weights_during_unmasking=config.update_weights_during_unmasking,
+        use_status_init_in_training=config.use_status_init_in_training,
+        use_status_init_in_unmasking=config.use_status_init_in_unmasking
     )
     
     print(f"Creating debug dataloaders for CIFAR-10...")
@@ -1261,6 +1315,30 @@ def main():
     wandb.finish()
     
     print("Debug run completed!")
+    # Return the average training MSE of the last epoch
+    # Assuming avg_train_mse is updated each epoch and we want the one from the final epoch of training.
+    # If early stopping happens, this will be the MSE from the epoch it stopped.
+    last_train_mse = epoch_metrics.get('Losses/train_mse_avg', float('inf')) # Get from last logged metrics
+    
+    # A more robust way if epoch_metrics might not be populated if training is very short (e.g. 0 epochs)
+    # or if the loop was broken before epoch_metrics was set.
+    # For simplicity, we assume epochs > 0 and epoch_metrics is set.
+    # If training loop doesn't run, avg_train_mse might not be defined.
+    # Let's ensure we return a value from within the training loop if possible or a default.
+    final_avg_train_mse = float('inf')
+    if 'avg_train_mse' in locals() or 'avg_train_mse' in globals():
+         final_avg_train_mse = avg_train_mse # This would be from the last completed epoch
+    elif 'epoch_metrics' in locals() and 'Losses/train_mse_avg' in epoch_metrics:
+         final_avg_train_mse = epoch_metrics['Losses/train_mse_avg']
+    
+    print(f"Run {effective_wandb_run_name} finished with final avg_train_mse: {final_avg_train_mse}")
+    return final_avg_train_mse
 
 if __name__ == "__main__":
-    main() 
+    cli_args = parse_args()
+    
+    # Prepare config_overrides from CLI arguments, excluding 'config' which is used for base_config_name
+    overrides = {k: v for k, v in vars(cli_args).items() if v is not None and k != 'config'}
+    
+    run_experiment(base_config_name=cli_args.config, 
+                   config_overrides=overrides) 
