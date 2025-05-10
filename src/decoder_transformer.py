@@ -82,6 +82,10 @@ class TransformerConfig:
     inference_clamp_alpha: float = 1.0     # Blending factor for soft clamping (1.0 = full clamp, <1.0 = blend)
     update_weights_during_unmasking: bool = False # New flag
     
+    # Status init settings
+    use_status_init_in_training: bool = True
+    use_status_init_in_unmasking: bool = True
+
     def __post_init__(self):
         # Determine if we're dealing with video based on the shape of image_shape
         if len(self.image_shape) == 4:
@@ -355,9 +359,8 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
     learning_step = pxf.value_and_grad(pxu.M_hasnot(pxnn.LayerParam).to([False, True]), has_aux=True)(energy)
 
     # Top down sweep and setting target value
-    # with pxu.step(model, clear_params=pxc.VodeParam.Cache):
-    #     forward(x, model=model)
-    with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
+    initial_status_train = pxc.STATUS.INIT if model.config.use_status_init_in_training else None
+    with pxu.step(model, initial_status_train, clear_params=pxc.VodeParam.Cache):
         forward(x, model=model)
 
     
@@ -376,7 +379,8 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
 
     # After training, forward once more to get final activations
     # with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
-    with pxu.step(model):
+    with pxu.step(model, STATUS_FORWARD):
+    # with pxu.step(model):
         x_hat_batch = forward(None, model=model) # Get final reconstruction
 
     # Calculate MSE loss between final reconstruction and original input
@@ -800,8 +804,8 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
         x_init = x_c # Initialize with the corrupted image
 
     # Initialize the model state based on x_init
-    with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
-    # with pxu.step(model, clear_params=pxc.VodeParam.Cache):
+    initial_status_unmask = pxc.STATUS.INIT if model.config.use_status_init_in_unmasking else None
+    with pxu.step(model, initial_status_unmask, clear_params=pxc.VodeParam.Cache):
         forward(x_init, model=model)
 
     # Ensure sensory h is NOT frozen for inference
@@ -812,6 +816,7 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
     for t in tqdm(range(max_T), desc="Inference Steps"):
         # Always save reconstruction at each step (before clamping)
         with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
+        # with pxu.step(model, clear_params=pxc.VodeParam.Cache):
             current_recon = forward(None, model=model)
             all_reconstructions.append(current_recon)
 
@@ -896,6 +901,7 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
 
     # Final forward pass to get reconstruction after all inference steps
     with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
+    # with pxu.step(model, clear_params=pxc.VodeParam.Cache):
          x_hat_batch = forward(None, model=model)
 
     # Compute loss, focusing on masked regions if corruption is used
