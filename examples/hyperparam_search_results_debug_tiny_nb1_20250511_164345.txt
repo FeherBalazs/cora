@@ -1,0 +1,78 @@
+Hyperparameter Search Log - 2025-05-11 16:43:45
+Base Config: debug_tiny
+Fixed Overrides:
+  num_blocks: 1
+  num_heads: 1
+  hidden_size: 64
+  epochs: 10
+  reconstruction_every_n_epochs: 10
+  validation_every_n_epochs: 10
+  save_reconstruction_images: False
+  save_reconstruction_video: False
+  use_status_init_in_training: False
+  use_status_init_in_unmasking: False
+  reconstruction_steps: [1]
+  dataset: cifar10
+  data_dir: ../datasets/
+  train_subset: 50000
+  test_subset: 200
+  target_class: None
+  use_corruption: False
+  corrupt_ratio: 0.25
+  use_lower_half_mask: False
+  inference_clamp_alpha: 0.5
+  num_images: 1
+  mlp_ratio: 4.0
+  patch_size: 4
+  axes_dim: [16, 16]
+  theta: 100
+  use_noise: True
+  batch_size: 200
+  inference_steps: 20
+  eval_inference_steps: [1]
+  update_weights_during_unmasking: False
+  weight_decay: 0.0002
+  warmup_epochs: 5
+  use_lr_schedule: False
+  seed: 42
+  use_inference_lr_scaling: False
+  inference_lr_scale_lower: 10.0
+  inference_lr_scale_upper: 1.0
+  inference_lr_scale_boundary: 4
+  use_early_stopping: True
+  early_stopping_patience: 2
+  early_stopping_min_delta: 0.001
+  video_fps: 60
+  reinitialize_model_for_each_epoch: False
+  update_weights_every_inference_step: False
+--------------------------------------------------------------------------------
+Run | LR Weights | LR Hidden  | W&B Run Name                   | Final Train MSE
+--------------------------------------------------------------------------------
+1   | 0.001      | 0.001      | nb1_lrw1e-03_lrh1e-03          | 0.09587836
+2   | 0.001      | 0.0025     | nb1_lrw1e-03_lrh3e-03          | 0.09280114
+3   | 0.001      | 0.005      | nb1_lrw1e-03_lrh5e-03          | 0.08514363
+4   | 0.001      | 0.0075     | nb1_lrw1e-03_lrh7e-03          | 0.050757576
+5   | 0.001      | 0.01       | nb1_lrw1e-03_lrh1e-02          | 0.025612045
+6   | 0.0025     | 0.001      | nb1_lrw3e-03_lrh1e-03          | 0.08883494
+7   | 0.0025     | 0.0025     | nb1_lrw3e-03_lrh3e-03          | 0.052991696
+8   | 0.0025     | 0.005      | nb1_lrw3e-03_lrh5e-03          | 0.049306262
+9   | 0.0025     | 0.0075     | nb1_lrw3e-03_lrh7e-03          | 0.08301294
+10  | 0.0025     | 0.01       | nb1_lrw3e-03_lrh1e-02          | 0.031751838
+11  | 0.005      | 0.001      | nb1_lrw5e-03_lrh1e-03          | 0.17519589
+12  | 0.005      | 0.0025     | nb1_lrw5e-03_lrh3e-03          | 0.28571853
+13  | 0.005      | 0.005      | nb1_lrw5e-03_lrh5e-03          | 0.06897723
+14  | 0.005      | 0.0075     | nb1_lrw5e-03_lrh7e-03          | 0.03889072
+15  | 0.005      | 0.01       | nb1_lrw5e-03_lrh1e-02          | 0.03746361
+16  | 0.0075     | 0.001      | nb1_lrw7e-03_lrh1e-03          | 0.0817325
+17  | 0.0075     | 0.0025     | nb1_lrw7e-03_lrh3e-03          | 0.08282774
+18  | 0.0075     | 0.005      | nb1_lrw7e-03_lrh5e-03          | 0.4216384
+19  | 0.0075     | 0.0075     | nb1_lrw7e-03_lrh7e-03          | 0.4454929
+20  | 0.0075     | 0.01       | nb1_lrw7e-03_lrh1e-02          | 0.3284818
+21  | 0.01       | 0.001      | nb1_lrw1e-02_lrh1e-03          | 0.10367475
+22  | 0.01       | 0.0025     | nb1_lrw1e-02_lrh3e-03          | 0.3260914
+23  | 0.01       | 0.005      | nb1_lrw1e-02_lrh5e-03          | 0.42442593
+24  | 0.01       | 0.0075     | nb1_lrw1e-02_lrh7e-03          | 0.19552115
+25  | 0.01       | 0.01       | nb1_lrw1e-02_lrh1e-02          | 0.37614283
+--------------------------------------------------------------------------------
+Best LRs: peak_lr_weights=0.001, peak_lr_hidden=0.01
+Best MSE: 0.025612
