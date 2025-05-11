@@ -132,8 +132,8 @@ MODEL_CONFIGS = {
     "debug_tiny": ModelConfig(
         name="debug_tiny",
         hidden_size=64,
-        num_heads=1,
-        num_blocks=1,
+        num_heads=8,
+        num_blocks=0,
     ),
     "debug_small": ModelConfig(
         name="debug_small",
