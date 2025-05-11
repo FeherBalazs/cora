@@ -17,23 +17,61 @@ def perform_hyperparameter_search():
 
     # Fixed parameters for this search
     fixed_overrides = {
-        "num_blocks": 6,
-        "epochs": 10,
-        "reconstruction_every_n_epochs": 10, # Avoid frequent reconstructions during search
-        "validation_every_n_epochs": 10,   # Avoid frequent validation during search
+        "num_blocks": 1,
+        "num_heads": 1,
+        "hidden_size": 64,
+        "epochs": 25,
+        "reconstruction_every_n_epochs": 25, # Avoid frequent reconstructions during search
+        "validation_every_n_epochs": 25,   # Avoid frequent validation during search
         "save_reconstruction_images": False,
         "save_reconstruction_video": False,
         "use_status_init_in_training": False, # As per your current ModelConfig
         "use_status_init_in_unmasking": False, # As per your current ModelConfig
-        "reconstruction_steps": [1]
+        "reconstruction_steps": [1],
+        "dataset": "cifar10",
+        "data_dir": "../datasets/",
+        "train_subset": 50000,
+        "test_subset": 200,
+        "target_class": None,
+        "use_corruption": False,
+        "corrupt_ratio": 0.25,
+        "use_lower_half_mask": False,
+        "inference_clamp_alpha": 0.5,
+        "num_images": 1,
+        "mlp_ratio": 4.0,
+        "patch_size": 4,
+        "axes_dim": [16, 16],
+        "theta": 100,
+        "use_noise": True,
+        "batch_size": 200,
+        "inference_steps": 20,
+        "eval_inference_steps": [1],
+        "update_weights_during_unmasking": False,
+        "weight_decay": 2e-4,
+        "warmup_epochs": 5,
+        "use_lr_schedule": False,
+        "seed": 42,
+        "use_inference_lr_scaling": False,
+        "inference_lr_scale_lower": 10.0,
+        "inference_lr_scale_upper": 1.0,
+        "inference_lr_scale_boundary": 4,
+        "use_early_stopping": True,
+        "early_stopping_patience": 2,
+        "early_stopping_min_delta": 0.001,
+        "video_fps": 60,
+        "reinitialize_model_for_each_epoch": False,
+        "update_weights_every_inference_step": False
         # Add any other parameters you want to keep fixed for this search
     }
 
     # Learning rate candidates for grid search
     # You can use np.logspace for a logarithmic scale, e.g.,
-    # lr_weights_candidates = np.logspace(-4, -2, num=5).tolist() # 0.0001 to 0.01
-    lr_weights_candidates = [0.001, 0.0025, 0.005, 0.0075, 0.01]
-    lr_hidden_candidates =  [0.001, 0.0025, 0.005, 0.0075, 0.01]
+    lr_weights_candidates = np.logspace(-4, -3, num=4).tolist() # 0.0001 to 0.01
+    # lr_hidden_candidates = np.logspace(-2, -1, num=4).tolist() # 0.0001 to 0.01
+    # lr_weights_candidates = [0.001, 0.0025, 0.005, 0.0075, 0.01]
+    # lr_hidden_candidates =  [0.001, 0.0025, 0.005, 0.0075, 0.01]
+
+    lr_hidden_candidates =  [0.1]
 
     # target_mse = 0.008 # Removed, as we are looking for the minimum MSE
     best_run_info = {
@@ -89,7 +127,8 @@ def perform_hyperparameter_search():
                         "run_number": current_run,
                         "lr_weights": lr_w,
                         "lr_hidden": lr_h,
-                        "mse": final_mse
+                        "mse": final_mse,
+                        "wandb_run_name": wandb_run_name
                     })
                     
                     if final_mse < best_run_info["mse"]:
@@ -104,7 +143,8 @@ def perform_hyperparameter_search():
                         "run_number": current_run,
                         "lr_weights": lr_w,
                         "lr_hidden": lr_h,
-                        "mse": "Failed or Invalid"
+                        "mse": "Failed or Invalid",
+                        "wandb_run_name": wandb_run_name
                     })
 
             except Exception as e:
@@ -135,14 +175,17 @@ def perform_hyperparameter_search():
     with open(log_file_path, 'w') as f:
         f.write(f"Hyperparameter Search Log - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"Base Config: {base_config_to_use}\n")
-        f.write(f"Fixed Overrides: {fixed_overrides}\n")
-        f.write("-----------------------------------------------------\n")
-        f.write("Run | LR Weights | LR Hidden  | Final Train MSE\n")
-        f.write("-----------------------------------------------------\n")
+        f.write(f"Fixed Overrides:\n")
+        for key, value in fixed_overrides.items():
+            f.write(f"  {key}: {value}\n")
+        f.write("--------------------------------------------------------------------------------\n")
+        f.write("Run | LR Weights | LR Hidden  | W&B Run Name                   | Final Train MSE\n")
+        f.write("--------------------------------------------------------------------------------\n")
         for result in sorted(all_run_results, key=lambda x: (x['mse'] if isinstance(x['mse'], float) else float('inf'), x['run_number'])):
             mse_str = f"{result['mse']:.6f}" if isinstance(result['mse'], float) else str(result['mse'])
-            f.write(f"{result['run_number']:<3} | {result['lr_weights']:<10} | {result['lr_hidden']:<10} | {mse_str}\n")
-        f.write("-----------------------------------------------------\n")
+            run_name_str = result.get('wandb_run_name', 'N/A')
+            f.write(f"{result['run_number']:<3} | {result['lr_weights']:<10} | {result['lr_hidden']:<10} | {run_name_str:<30} | {mse_str}\n")
+        f.write("--------------------------------------------------------------------------------\n")
         if best_run_info["lr_weights"] is not None:
             f.write(f"Best LRs: peak_lr_weights={best_run_info['lr_weights']}, peak_lr_hidden={best_run_info['lr_hidden']}\n")
             f.write(f"Best MSE: {best_run_info['mse']:.6f}\n")
