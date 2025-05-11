@@ -82,6 +82,7 @@ class TransformerConfig:
     
     inference_clamp_alpha: float = 1.0     # Blending factor for soft clamping (1.0 = full clamp, <1.0 = blend)
     update_weights_during_unmasking: bool = False # New flag
+    update_weights_every_inference_step: bool = True # New flag
     
     # Status init settings
     use_status_init_in_training: bool = True
@@ -353,32 +354,65 @@ def energy(*, model: TransformerDecoder):
 def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.Optim, epoch=None, step=None):
     model.train()
 
-    h_energy, w_energy, h_grad, w_grad = None, None, None, None
+    # These are defined once and captured by the scan function
+    inference_step_fn = pxf.value_and_grad(pxu.M_hasnot(pxc.VodeParam, frozen=True).to([False, True]), has_aux=True)(energy)
+    learning_step_fn = pxf.value_and_grad(pxu.M_hasnot(pxnn.LayerParam).to([False, True]), has_aux=True)(energy) # For weights
 
-    inference_step = pxf.value_and_grad(pxu.M_hasnot(pxc.VodeParam, frozen=True).to([False, True]), has_aux=True)(energy)
-
-    learning_step = pxf.value_and_grad(pxu.M_hasnot(pxnn.LayerParam).to([False, True]), has_aux=True)(energy)
-
-    # Top down sweep and setting target value
+    # Initial forward pass and optimizer init (common to both modes)
     initial_status_train = pxc.STATUS.INIT if model.config.use_status_init_in_training else None
     with pxu.step(model, initial_status_train, clear_params=pxc.VodeParam.Cache):
         forward(x, model=model)
-
-    
     optim_h.init(pxu.M_hasnot(pxc.VodeParam, frozen=True)(model))
 
-    # Inference and learning steps
-    # TODO: check how pxf.scan is used to wrap the T steps with JAX - this can speed up the loop
-    for t in range(T):
-        with pxu.step(model, clear_params=pxc.VodeParam.Cache):
-            (h_energy, y_), h_grad = inference_step(model=model)
-        optim_h.step(model, h_grad["model"])
+    dummy_carry_init = None
 
-        with pxu.step(model, clear_params=pxc.VodeParam.Cache):
-            (w_energy, y_), w_grad = learning_step(model=model)
-        optim_w.step(model, w_grad["model"], scale_by=1.0/x.shape[0])
+    if model.config.update_weights_every_inference_step:
+        # --- MODE 1: Update weights every inference step (current behavior) ---
+        def combined_training_iteration_for_scan(iter_idx_ignored, carry_dummy, *, model_closure, optim_w_closure, optim_h_closure, batch_x_shape_0_closure):
+            # Inference part (updates hidden states)
+            with pxu.step(model_closure, clear_params=pxc.VodeParam.Cache):
+                (h_energy_iter, _), h_grad_iter = inference_step_fn(model=model_closure)
+            optim_h_closure.step(model_closure, h_grad_iter["model"])
+            # Learning part (updates weights)
+            with pxu.step(model_closure, clear_params=pxc.VodeParam.Cache):
+                (w_energy_iter, _), w_grad_iter = learning_step_fn(model=model_closure)
+            optim_w_closure.step(model_closure, w_grad_iter["model"], scale_by=1.0/batch_x_shape_0_closure)
+            return carry_dummy, (h_energy_iter, w_energy_iter, h_grad_iter, w_grad_iter)
 
-    # After training, forward once more to get final activations
+        _, (h_energies_scanned, w_energies_scanned, h_grads_scanned, w_grads_scanned) = pxf.scan(
+            combined_training_iteration_for_scan,
+            xs=jnp.arange(T)
+        )(dummy_carry_init, model_closure=model, optim_w_closure=optim_w, optim_h_closure=optim_h, batch_x_shape_0_closure=x.shape[0])
+
+        final_h_energy = h_energies_scanned[-1]
+        final_w_energy = w_energies_scanned[-1]
+        final_h_grad = jax.tree_util.tree_map(lambda leaf: leaf[-1], h_grads_scanned)
+        final_w_grad = jax.tree_util.tree_map(lambda leaf: leaf[-1], w_grads_scanned)
+
+    else:
+        # --- MODE 2: T inference steps, then 1 weight update ---
+        def inference_only_iteration_for_scan(iter_idx_ignored, carry_dummy, *, model_closure, optim_h_closure):
+            with pxu.step(model_closure, clear_params=pxc.VodeParam.Cache):
+                (h_energy_iter, _), h_grad_iter = inference_step_fn(model=model_closure)
+            optim_h_closure.step(model_closure, h_grad_iter["model"])
+            return carry_dummy, (h_energy_iter, h_grad_iter) # Collect h_energy and h_grad for this iteration
+
+        _, (h_energies_scanned, h_grads_scanned) = pxf.scan(
+            inference_only_iteration_for_scan,
+            xs=jnp.arange(T)
+        )(dummy_carry_init, model_closure=model, optim_h_closure=optim_h)
+
+        final_h_energy = h_energies_scanned[-1] # h_energy from the last inference step
+        final_h_grad = jax.tree_util.tree_map(lambda leaf: leaf[-1], h_grads_scanned) # h_grad from the last inference step
+        
+        # Single learning step after all T inference steps
+        # This uses the model state (hidden variables) as it is after T inference steps
+        with pxu.step(model, clear_params=pxc.VodeParam.Cache):
+            (final_w_energy, _), final_w_grad = learning_step_fn(model=model)
+        optim_w.step(model, final_w_grad["model"], scale_by=1.0/x.shape[0])
+        # final_w_energy and final_w_grad are from this single weight update step
+    
+    # Common post-loop steps (MSE calculation, etc.)
     with pxu.step(model, STATUS_FORWARD):
         x_hat_batch = forward(None, model=model)
 
@@ -390,7 +424,7 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
     optim_h.clear()
 
     # Return energies, gradients, and the calculated training MSE
-    return h_energy, w_energy, h_grad, w_grad, train_mse
+    return final_h_energy, final_w_energy, final_h_grad, final_w_grad, train_mse
 
 
 def eval_pretext_metrics(dataloader, T_values, use_corruption, corrupt_ratio, *, model: TransformerDecoder, optim_h: pxu.Optim, optim_w: Optional[pxu.Optim] = None, data_range=1.0):
