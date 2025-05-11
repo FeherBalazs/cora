@@ -55,8 +55,8 @@ class ModelConfig:
     train_subset: int = 50000
     test_subset: int = 1000
     target_class: Optional[int] = None
-    reconstruction_every_n_epochs: int = 10 # WARNING: changing this to 1 caused training instability. Less frequent reconstruction is better. Tested only with 10 so far which works ok.
-    validation_every_n_epochs: int = 10
+    reconstruction_every_n_epochs: int = 25 # WARNING: changing this to 1 caused training instability. Less frequent reconstruction is better. Tested only with 10 so far which works ok.
+    validation_every_n_epochs: int = 25
 
     use_corruption: bool = False
     corrupt_ratio: float = 0.25
@@ -84,18 +84,22 @@ class ModelConfig:
     # Training settings
     use_noise: bool = True
     batch_size: int = 200
-    epochs: int = 10
-    inference_steps: int = 24
-    eval_inference_steps: List[int] = field(default_factory=lambda: [24])
-    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 8, 12, 16, 24, 32, 48])
+    epochs: int = 25
+    inference_steps: int = 20
+    eval_inference_steps: List[int] = field(default_factory=lambda: [20])
+    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 8, 12, 16, 24, 32, 48, 64])
 
-    # Settings without status.init: hidden_size=64, num_blocks=0, inference_steps=24
+    # Settings without status.init: epochs=10, hidden_size=64, num_blocks=0, inference_steps=24, mse=0.007
     peak_lr_weights: float = 0.005
     peak_lr_hidden: float = 0.0075
 
-    # # Settings without status.init: hidden_size=64, num_blocks=1, inference_steps=24
-    # peak_lr_weights: float = 0.005
-    # peak_lr_hidden: float = 0.005
+    # Settings without status.init: epochs=10, hidden_size=64, num_blocks=1, inference_steps=20, update_weights_every_inference_step=False, mse=0.025
+    peak_lr_weights: float = 0.001
+    peak_lr_hidden: float = 0.1
+
+    # # Settings without status.init: hidden_size=64, num_blocks=3, inference_steps=24
+    # peak_lr_weights: float = 0.0025
+    # peak_lr_hidden: float = 0.0025
 
     # # Settings with status.init - general
     # peak_lr_weights: float = 0.0001
@@ -117,23 +121,24 @@ class ModelConfig:
     inference_lr_scale_boundary: int = 4   # Index separating lower/upper (e.g., 3 means 0,1,2 are lower)
     
     # Early stopping settings
-    use_early_stopping: bool = False
+    use_early_stopping: bool = True
     early_stopping_patience: int = 10
     early_stopping_min_delta: float = 0.0001
     save_reconstruction_images: bool = True # Option to save static image grid
     save_reconstruction_video: bool = True # Option to save video
     video_fps: int = 60 # Frames per second for the reconstruction video
     reinitialize_model_for_each_epoch: bool = False # WARNING: setting this to True will get around 0.24 val loss with 100 images vs 0.15 without.
-
     
+    update_weights_every_inference_step: bool = False # New flag for training mode
+
 
 # Predefined configurations for easy experimentation
 MODEL_CONFIGS = {
     "debug_tiny": ModelConfig(
         name="debug_tiny",
         hidden_size=64,
-        num_heads=8,
-        num_blocks=0,
+        num_heads=1,
+        num_blocks=1,
     ),
     "debug_small": ModelConfig(
         name="debug_small",
@@ -157,7 +162,8 @@ def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
                  mlp_ratio=4.0, patch_size=4, axes_dim=None, theta=10_000, use_noise=True, use_lower_half_mask=False,
                  use_inference_lr_scaling=False, inference_lr_scale_lower=1.0, inference_lr_scale_upper=1.0, inference_lr_scale_boundary=3,
                  inference_clamp_alpha=1.0, update_weights_during_unmasking=False,
-                 use_status_init_in_training: bool = True, use_status_init_in_unmasking: bool = True):
+                 use_status_init_in_training: bool = True, use_status_init_in_unmasking: bool = True,
+                 update_weights_every_inference_step: bool = True):
     """Create a TransformerConfig based on the dataset name and parameters."""
     axes_dim = axes_dim or [16, 16]
     
@@ -182,7 +188,8 @@ def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
             inference_clamp_alpha=inference_clamp_alpha,
             update_weights_during_unmasking=update_weights_during_unmasking,
             use_status_init_in_training=use_status_init_in_training,
-            use_status_init_in_unmasking=use_status_init_in_unmasking
+            use_status_init_in_unmasking=use_status_init_in_unmasking,
+            update_weights_every_inference_step=update_weights_every_inference_step
         )
     else:
         raise ValueError(f"Unsupported dataset: {dataset}")
@@ -1101,7 +1108,8 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         inference_clamp_alpha=config.inference_clamp_alpha,
         update_weights_during_unmasking=config.update_weights_during_unmasking,
         use_status_init_in_training=config.use_status_init_in_training,
-        use_status_init_in_unmasking=config.use_status_init_in_unmasking
+        use_status_init_in_unmasking=config.use_status_init_in_unmasking,
+        update_weights_every_inference_step=config.update_weights_every_inference_step
     )
     
     print(f"Creating debug dataloaders for CIFAR-10...")
