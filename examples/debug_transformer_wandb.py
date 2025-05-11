@@ -87,13 +87,13 @@ class ModelConfig:
     epochs: int = 25
     inference_steps: int = 20
     eval_inference_steps: List[int] = field(default_factory=lambda: [20])
-    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 8, 12, 16, 24, 32, 48, 64])
+    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 8, 12, 16, 20, 40])
 
-    # Settings without status.init: epochs=10, hidden_size=64, num_blocks=0, inference_steps=24, mse=0.007
-    peak_lr_weights: float = 0.005
-    peak_lr_hidden: float = 0.0075
+    # # Settings without status.init: epochs=10, hidden_size=64, num_blocks=0, inference_steps=24, mse=0.007
+    # peak_lr_weights: float = 0.005
+    # peak_lr_hidden: float = 0.0075
 
-    # Settings without status.init: epochs=10, hidden_size=64, num_blocks=1, inference_steps=20, update_weights_every_inference_step=False, mse=0.025
+    # Settings without status.init: epochs=20, hidden_size=64, num_blocks=1, inference_steps=20, update_weights_every_inference_step=False, mse=0.0008
     peak_lr_weights: float = 0.001
     peak_lr_hidden: float = 0.1
 
@@ -271,19 +271,19 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
         download=True,
         train=True,
     )
-    # test_dataset = torchvision.datasets.CIFAR10(
-    #     root=dataset_root,
-    #     transform=test_transform,
-    #     download=True,
-    #     train=False,
-    # )
-    # TODO: Remove this once we have a proper test set
     test_dataset = torchvision.datasets.CIFAR10(
         root=dataset_root,
         transform=test_transform,
         download=True,
-        train=True,
+        train=False,
     )
+    # # TODO: Remove this once we have a proper test set
+    # test_dataset = torchvision.datasets.CIFAR10(
+    #     root=dataset_root,
+    #     transform=test_transform,
+    #     download=True,
+    #     train=True,
+    # )
     
     if target_class is not None:
         target_indices = (train_dataset.targets == target_class).nonzero(as_tuple=True)[0].tolist()
