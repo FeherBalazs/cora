@@ -17,12 +17,12 @@ def perform_hyperparameter_search():
 
     # Fixed parameters for this search
     fixed_overrides = {
-        "num_blocks": 1,
+        "num_blocks": 4,
         "num_heads": 1,
         "hidden_size": 64,
-        "epochs": 25,
-        "reconstruction_every_n_epochs": 25, # Avoid frequent reconstructions during search
-        "validation_every_n_epochs": 25,   # Avoid frequent validation during search
+        "epochs": 10,
+        "reconstruction_every_n_epochs": 10, # Avoid frequent reconstructions during search
+        "validation_every_n_epochs": 10,   # Avoid frequent validation during search
         "save_reconstruction_images": False,
         "save_reconstruction_video": False,
         "use_status_init_in_training": False, # As per your current ModelConfig
@@ -51,10 +51,8 @@ def perform_hyperparameter_search():
         "warmup_epochs": 5,
         "use_lr_schedule": False,
         "seed": 42,
-        "use_inference_lr_scaling": False,
-        "inference_lr_scale_lower": 10.0,
-        "inference_lr_scale_upper": 1.0,
-        "inference_lr_scale_boundary": 4,
+        "use_inference_lr_scaling": True,
+        "grad_clip_norm": None,
         "use_early_stopping": True,
         "early_stopping_patience": 2,
         "early_stopping_min_delta": 0.001,
@@ -66,17 +64,20 @@ def perform_hyperparameter_search():
 
     # Learning rate candidates for grid search
     # You can use np.logspace for a logarithmic scale, e.g.,
-    lr_weights_candidates = np.logspace(-4, -3, num=4).tolist() # 0.0001 to 0.01
-    # lr_hidden_candidates = np.logspace(-2, -1, num=4).tolist() # 0.0001 to 0.01
+    lr_weights_candidates = np.logspace(-4, -3, num=3).tolist() 
+    lr_hidden_candidates = np.logspace(-2, -1, num=3).tolist()
     # lr_weights_candidates = [0.001, 0.0025, 0.005, 0.0075, 0.01]
     # lr_hidden_candidates =  [0.001, 0.0025, 0.005, 0.0075, 0.01]
 
-    lr_hidden_candidates =  [0.1]
+    lr_weights_candidates = [0.001]
+    lr_hidden_candidates =  [0.01, 0.05, 0.1]
+    inference_lr_scale_base_candidates = [1.1, 1.3, 1.5, 1.7, 2.0, 3.0] 
 
     # target_mse = 0.008 # Removed, as we are looking for the minimum MSE
     best_run_info = {
         "lr_weights": None,
         "lr_hidden": None,
+        "inference_lr_scale_base": None, # <<< ADD TO BEST RUN INFO
         "mse": float('inf'),
         # "mse_diff": float('inf") # Removed
     }
@@ -84,7 +85,9 @@ def perform_hyperparameter_search():
     # successful_runs = [] # Removed, we just track the best overall
     all_run_results = [] # To store results of all runs for logging
 
-    total_runs = len(lr_weights_candidates) * len(lr_hidden_candidates)
+    # <<< --- UPDATE TOTAL RUNS --- >>>
+    total_runs = len(lr_weights_candidates) * len(lr_hidden_candidates) * len(inference_lr_scale_base_candidates)
+    # <<< --- END UPDATE --- >>>
     current_run = 0
 
     # --- WandB Configuration for Search ---
@@ -97,60 +100,75 @@ def perform_hyperparameter_search():
 
     for lr_w in lr_weights_candidates:
         for lr_h in lr_hidden_candidates:
-            current_run += 1
-            start_time = time.time()
-            
-            print(f"\n--- Starting Run {current_run}/{total_runs} ---")
-            
-            current_overrides = deepcopy(fixed_overrides)
-            current_overrides["peak_lr_weights"] = lr_w
-            current_overrides["peak_lr_hidden"] = lr_h
+            # <<< --- ADD LOOP FOR SCALING BASE --- >>>
+            for scale_base in inference_lr_scale_base_candidates:
+            # <<< --- END ADD --- >>>
+                current_run += 1
+                start_time = time.time()
+                
+                print(f"\n--- Starting Run {current_run}/{total_runs} ---")
+                
+                current_overrides = deepcopy(fixed_overrides)
+                current_overrides["peak_lr_weights"] = lr_w
+                current_overrides["peak_lr_hidden"] = lr_h
+                current_overrides["inference_lr_scale_base"] = scale_base # <<< ADD OVERRIDE
 
-            # Create a unique run name for WandB if logging is enabled
-            wandb_run_name = f"nb{current_overrides['num_blocks']}_lrw{lr_w:.0e}_lrh{lr_h:.0e}"
+                # Create a unique run name for WandB if logging is enabled
+                # <<< --- UPDATE WANDB RUN NAME --- >>>
+                wandb_run_name = f"nb{current_overrides['num_blocks']}_lrw{lr_w:.0e}_lrh{lr_h:.0e}_sb{scale_base:.1f}"
+                # <<< --- END UPDATE --- >>>
 
-            print(f"Parameters: peak_lr_weights={lr_w}, peak_lr_hidden={lr_h}")
-            print(f"Other fixed overrides: {fixed_overrides}")
+                # <<< --- UPDATE PRINT STATEMENT --- >>>
+                print(f"Parameters: peak_lr_weights={lr_w}, peak_lr_hidden={lr_h}, scale_base={scale_base}")
+                # <<< --- END UPDATE --- >>>
+                print(f"Other fixed overrides: {fixed_overrides}")
 
-            try:
-                final_mse = run_experiment(
-                    base_config_name=base_config_to_use,
-                    config_overrides=current_overrides,
-                    wandb_project_name=wandb_project,
-                    wandb_run_name=wandb_run_name,
-                    wandb_mode=wandb_mode_for_runs
-                )
-                print(f"Run {current_run} Result: final_train_mse = {final_mse:.6f}")
+                try:
+                    final_mse = run_experiment(
+                        base_config_name=base_config_to_use,
+                        config_overrides=current_overrides,
+                        wandb_project_name=wandb_project,
+                        wandb_run_name=wandb_run_name,
+                        wandb_mode=wandb_mode_for_runs
+                    )
+                    print(f"Run {current_run} Result: final_train_mse = {final_mse:.6f}")
 
-                if final_mse is not None and final_mse != float('inf'):
-                    all_run_results.append({
-                        "run_number": current_run,
-                        "lr_weights": lr_w,
-                        "lr_hidden": lr_h,
-                        "mse": final_mse,
-                        "wandb_run_name": wandb_run_name
-                    })
-                    
-                    if final_mse < best_run_info["mse"]:
-                        best_run_info["lr_weights"] = lr_w
-                        best_run_info["lr_hidden"] = lr_h
-                        best_run_info["mse"] = final_mse
-                        print(f"*** New best MSE: {final_mse:.6f} with LRs w:{lr_w}, h:{lr_h} ***")
+                    if final_mse is not None and final_mse != float('inf'):
+                        all_run_results.append({
+                            "run_number": current_run,
+                            "lr_weights": lr_w,
+                            "lr_hidden": lr_h,
+                            "inference_lr_scale_base": scale_base, # <<< ADD TO RESULTS
+                            "mse": final_mse,
+                            "wandb_run_name": wandb_run_name
+                        })
+                        
+                        if final_mse < best_run_info["mse"]:
+                            best_run_info["lr_weights"] = lr_w
+                            best_run_info["lr_hidden"] = lr_h
+                            best_run_info["inference_lr_scale_base"] = scale_base # <<< ADD TO BEST RUN INFO
+                            best_run_info["mse"] = final_mse
+                            # <<< --- UPDATE PRINT STATEMENT --- >>>
+                            print(f"*** New best MSE: {final_mse:.6f} with LRs w:{lr_w}, h:{lr_h}, scale_base:{scale_base} ***")
+                            # <<< --- END UPDATE --- >>>
 
-                else:
-                    print(f"Run {current_run} did not return a valid MSE.")
-                    all_run_results.append({
-                        "run_number": current_run,
-                        "lr_weights": lr_w,
-                        "lr_hidden": lr_h,
-                        "mse": "Failed or Invalid",
-                        "wandb_run_name": wandb_run_name
-                    })
+                    else:
+                        print(f"Run {current_run} did not return a valid MSE.")
+                        all_run_results.append({
+                            "run_number": current_run,
+                            "lr_weights": lr_w,
+                            "lr_hidden": lr_h,
+                            "inference_lr_scale_base": scale_base, # <<< ADD TO RESULTS
+                            "mse": "Failed or Invalid",
+                            "wandb_run_name": wandb_run_name
+                        })
 
-            except Exception as e:
-                print(f"!!!! Run {current_run} failed with LRs w:{lr_w}, h:{lr_h}. Error: {e} !!!!")
-                import traceback
-                traceback.print_exc()
+                except Exception as e:
+                    # <<< --- UPDATE PRINT STATEMENT --- >>>
+                    print(f"!!!! Run {current_run} failed with LRs w:{lr_w}, h:{lr_h}, scale_base:{scale_base}. Error: {e} !!!!")
+                    # <<< --- END UPDATE --- >>>
+                    import traceback
+                    traceback.print_exc()
             
             end_time = time.time()
             print(f"Run {current_run} took {end_time - start_time:.2f} seconds.")
@@ -161,6 +179,7 @@ def perform_hyperparameter_search():
         print(f"Best overall LRs found for minimum MSE:")
         print(f"  peak_lr_weights: {best_run_info['lr_weights']}")
         print(f"  peak_lr_hidden: {best_run_info['lr_hidden']}")
+        print(f"  inference_lr_scale_base: {best_run_info['inference_lr_scale_base']}") # <<< ADD TO SUMMARY
         print(f"  Achieved Minimum MSE: {best_run_info['mse']:.6f}")
     else:
         print(f"No successful runs completed or no runs achieved a valid MSE.")
@@ -179,15 +198,21 @@ def perform_hyperparameter_search():
         for key, value in fixed_overrides.items():
             f.write(f"  {key}: {value}\n")
         f.write("--------------------------------------------------------------------------------\n")
-        f.write("Run | LR Weights | LR Hidden  | W&B Run Name                   | Final Train MSE\n")
+        # <<< --- UPDATE LOG HEADER --- >>>
+        f.write("Run | LR Weights | LR Hidden  | Scale Base | W&B Run Name                   | Final Train MSE\n")
+        # <<< --- END UPDATE --- >>>
         f.write("--------------------------------------------------------------------------------\n")
         for result in sorted(all_run_results, key=lambda x: (x['mse'] if isinstance(x['mse'], float) else float('inf'), x['run_number'])):
             mse_str = f"{result['mse']:.6f}" if isinstance(result['mse'], float) else str(result['mse'])
             run_name_str = result.get('wandb_run_name', 'N/A')
-            f.write(f"{result['run_number']:<3} | {result['lr_weights']:<10} | {result['lr_hidden']:<10} | {run_name_str:<30} | {mse_str}\n")
+            # <<< --- UPDATE LOG LINE --- >>>
+            f.write(f"{result['run_number']:<3} | {result['lr_weights']:<10} | {result['lr_hidden']:<10} | {result['inference_lr_scale_base']:<10} | {run_name_str:<30} | {mse_str}\n")
+            # <<< --- END UPDATE --- >>>
         f.write("--------------------------------------------------------------------------------\n")
         if best_run_info["lr_weights"] is not None:
-            f.write(f"Best LRs: peak_lr_weights={best_run_info['lr_weights']}, peak_lr_hidden={best_run_info['lr_hidden']}\n")
+            # <<< --- UPDATE BEST RUN SUMMARY --- >>>
+            f.write(f"Best Params: peak_lr_weights={best_run_info['lr_weights']}, peak_lr_hidden={best_run_info['lr_hidden']}, inference_lr_scale_base={best_run_info['inference_lr_scale_base']}\n")
+            # <<< --- END UPDATE --- >>>
             f.write(f"Best MSE: {best_run_info['mse']:.6f}\n")
         else:
             f.write("No best run found.\n")
