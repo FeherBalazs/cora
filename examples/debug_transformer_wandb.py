@@ -101,6 +101,10 @@ class ModelConfig:
     peak_lr_weights: float = 0.001
     peak_lr_hidden: float = 0.1
 
+    # Settings without status.init: epochs=50, hidden_size=64, num_blocks=5, inference_steps=20, update_weights_every_inference_step=False, use_inference_lr_scaling=True, inference_lr_scale_base=1.3, grad_clip_norm=None, mse=0.022
+    peak_lr_weights: float = 0.001
+    peak_lr_hidden: float = 0.05
+
     # # Settings without status.init: hidden_size=64, num_blocks=3, inference_steps=24
     # peak_lr_weights: float = 0.0025
     # peak_lr_hidden: float = 0.0025
@@ -121,7 +125,7 @@ class ModelConfig:
     use_inference_lr_scaling: bool = True
     inference_lr_scale_base: Optional[float] = 1.3 # Base for exponential scaling (None to disable scaling calculation)
 
-    grad_clip_norm: Optional[float] = 1000.0 # Max norm for gradient clipping (None to disable)
+    grad_clip_norm: Optional[float] = 200.0 # Max norm for gradient clipping (None to disable)
 
     # iPC or classic PC
     update_weights_every_inference_step: bool = False
@@ -1009,7 +1013,7 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     # Load the base configuration
     if base_config_name not in MODEL_CONFIGS:
         print(f"Error: Base config name '{base_config_name}' not found. Available: {list(MODEL_CONFIGS.keys())}")
-        return float('inf') # Return a high MSE indicating failure
+        return float('inf'), None # Return a high MSE indicating failure and None for early_stop_reason
         
     config = MODEL_CONFIGS[base_config_name]
     
@@ -1230,15 +1234,25 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
             train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch
         )
         
+        # <<< DEBUG PRINT >>>
+        print(f"DEBUG: avg_train_mse from train() - Value: {avg_train_mse}, Type: {type(avg_train_mse)}")
+        
+        # <<< Ensure metrics are Python floats/NaN >>>
+        avg_train_w_energy = float(avg_train_w_energy) if not jnp.isnan(avg_train_w_energy) else float('nan')
+        avg_train_mse = float(avg_train_mse) if not jnp.isnan(avg_train_mse) else float('nan')
+        # <<< END MODIFICATION --- >>>
+        
         training_nan_detected = False
         if jnp.isnan(avg_train_w_energy) or jnp.isnan(avg_train_mse):
             print(f"!!! WARNING: NaN detected in training metrics (Energy: {avg_train_w_energy}, MSE: {avg_train_mse}) at Epoch {epoch+1}. Stopping training for this run. !!!")
             early_stopped = True
+            early_stop_reason = 'NaN' # <<< Indicate reason for NaN stop
             early_stopped_epoch = epoch
             training_nan_detected = True
             # Ensure metrics logged reflect the failure
             avg_train_w_energy = float('nan')
             avg_train_mse = float('nan') 
+
         
         # Initialize epoch_metrics here to store training metrics
         epoch_metrics = {
@@ -1279,10 +1293,10 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
                 print("Warning: Gradients not available for Vode stats logging.")
 
             # Initialize best_val_loss on the first validation run
-            current_val_metric = pretext_metrics.get('masked_mse', float('inf')) # Use masked_mse for early stopping
+            current_val_metric = pretext_metrics.get('full_mse', float('inf')) # <<< Use full_mse for early stopping
             if best_val_loss == float('inf') and current_val_metric != float('inf'):
                  best_val_loss = current_val_metric
-                 print(f"Initialized best_val_loss for early stopping with masked_mse: {best_val_loss:.6f}")
+                 print(f"Initialized best_val_loss for early stopping with full_mse: {best_val_loss:.6f}")
             
              # Early stopping check based on the chosen metric (e.g., masked_mse)
             if config.use_early_stopping and best_val_loss != float('inf'): # Ensure best_val_loss is initialized
@@ -1297,6 +1311,7 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
                     if epochs_without_improvement >= config.early_stopping_patience:
                         print(f"Early stopping triggered after {epoch+1} epochs!")
                         early_stopped = True
+                        early_stop_reason = "Validation" # <<< Indicate reason
                         early_stopped_epoch = epoch
                         # Log final metrics before breaking
                         run.log(epoch_metrics, step=epoch+1)
@@ -1308,7 +1323,7 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         # Generate reconstructions every N epochs (and for the final epoch)
         # Base the condition on one of the new validation metrics if available and valid
         # Use the most recently calculated validation metric if available
-        current_val_metric_for_recon = pretext_metrics.get('masked_mse', float('inf')) 
+        current_val_metric_for_recon = pretext_metrics.get('full_mse', float('inf')) 
 
         # Trigger reconstruction based on interval OR significant improvement OR final epoch/stop
         trigger_reconstruction = False
@@ -1341,6 +1356,11 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         # Break loop if early stopping occurred in the validation check
         if early_stopped and epoch == early_stopped_epoch:
             break
+    
+    # <<< DETERMINE FINAL STATUS >>>
+    if not early_stopped:
+        early_stop_reason = None # Completed normally
+    # If early_stopped is True, early_stop_reason is already set ('Validation' or 'NaN')
     
     # Create summary tables after training is complete
     if all_epochs_energy_data:
@@ -1375,16 +1395,22 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     # <<< --- MODIFY FINAL RETURN VALUE --- >>>
     final_avg_train_mse = float('inf') # Default to infinity
     if 'epoch_metrics' in locals() and 'Losses/train_mse_avg' in epoch_metrics:
-        last_logged_mse = epoch_metrics['Losses/train_mse_avg']
-        if not np.isnan(last_logged_mse): # Check if the last logged value was valid
-            final_avg_train_mse = last_logged_mse
+        # epoch_metrics now guaranteed to contain Python float or NaN
+        final_avg_train_mse = epoch_metrics['Losses/train_mse_avg'] 
     elif 'avg_train_mse' in locals() and not np.isnan(avg_train_mse):
         # Fallback if epoch_metrics wasn't populated but avg_train_mse from the last loop iteration is valid
-        final_avg_train_mse = avg_train_mse
+        final_avg_train_mse = float(avg_train_mse) # Ensure fallback is float
+    
+    # If a NaN was detected during training, explicitly set final_avg_train_mse to NaN for clarity
+    if early_stop_reason == 'NaN':
+        final_avg_train_mse = float('nan') # Use NaN to be distinct from other high MSEs
     # <<< --- END MODIFICATION --- >>>
     
     print(f"Run {effective_wandb_run_name} finished with final avg_train_mse: {final_avg_train_mse}")
-    return final_avg_train_mse
+    
+    # <<< DEBUG PRINT >>>
+    print(f"DEBUG: Returning from run_experiment - final_mse: {final_avg_train_mse}, Type: {type(final_avg_train_mse)}, Reason: {early_stop_reason}")
+    return final_avg_train_mse, early_stop_reason
 
 if __name__ == "__main__":
     cli_args = parse_args()
