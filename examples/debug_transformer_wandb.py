@@ -55,14 +55,14 @@ class ModelConfig:
     train_subset: int = 50000
     test_subset: int = 1000
     target_class: Optional[int] = None
-    reconstruction_every_n_epochs: int = 25 # WARNING: changing this to 1 caused training instability. Less frequent reconstruction is better. Tested only with 10 so far which works ok.
-    validation_every_n_epochs: int = 25
+    reconstruction_every_n_epochs: int = 50 # WARNING: changing this to 1 caused training instability. Less frequent reconstruction is better. Tested only with 10 so far which works ok.
+    validation_every_n_epochs: int = 50
 
     use_corruption: bool = False
     corrupt_ratio: float = 0.25
 
     use_lower_half_mask: bool = False #If False it uses random masking
-    inference_clamp_alpha: float = 0.5
+    inference_clamp_alpha: float = 1.0     # Blending factor for soft clamping
 
     # Visualization settings
     num_images: int = 2
@@ -84,16 +84,20 @@ class ModelConfig:
     # Training settings
     use_noise: bool = True
     batch_size: int = 200
-    epochs: int = 25
+    epochs: int = 50
     inference_steps: int = 20
     eval_inference_steps: List[int] = field(default_factory=lambda: [20])
-    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 8, 12, 16, 20, 40])
+    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 8, 12, 16, 20])
 
     # # Settings without status.init: epochs=10, hidden_size=64, num_blocks=0, inference_steps=24, mse=0.007
     # peak_lr_weights: float = 0.005
     # peak_lr_hidden: float = 0.0075
 
     # Settings without status.init: epochs=20, hidden_size=64, num_blocks=1, inference_steps=20, update_weights_every_inference_step=False, mse=0.0008
+    peak_lr_weights: float = 0.001
+    peak_lr_hidden: float = 0.1
+
+    # Settings without status.init: epochs=50, hidden_size=64, num_blocks=4, inference_steps=20, update_weights_every_inference_step=False, use_inference_lr_scaling=True, inference_lr_scale_base=1.3, grad_clip_norm=None, mse=0.004
     peak_lr_weights: float = 0.001
     peak_lr_hidden: float = 0.1
 
@@ -114,11 +118,13 @@ class ModelConfig:
     seed: int = 42
     
     # Layer-specific inference LR scaling
-    # TODO: It is not working yet
-    use_inference_lr_scaling: bool = False # Enable/disable scaling
-    inference_lr_scale_lower: float = 10.0  # Multiplier for lower layers (Vodes < boundary)
-    inference_lr_scale_upper: float = 1.0  # Multiplier for upper layers (Vodes >= boundary)
-    inference_lr_scale_boundary: int = 4   # Index separating lower/upper (e.g., 3 means 0,1,2 are lower)
+    use_inference_lr_scaling: bool = True
+    inference_lr_scale_base: Optional[float] = 1.3 # Base for exponential scaling (None to disable scaling calculation)
+
+    grad_clip_norm: Optional[float] = 1000.0 # Max norm for gradient clipping (None to disable)
+
+    # iPC or classic PC
+    update_weights_every_inference_step: bool = False
     
     # Early stopping settings
     use_early_stopping: bool = True
@@ -129,7 +135,7 @@ class ModelConfig:
     video_fps: int = 60 # Frames per second for the reconstruction video
     reinitialize_model_for_each_epoch: bool = False # WARNING: setting this to True will get around 0.24 val loss with 100 images vs 0.15 without.
     
-    update_weights_every_inference_step: bool = False # New flag for training mode
+    
 
 
 # Predefined configurations for easy experimentation
@@ -138,7 +144,7 @@ MODEL_CONFIGS = {
         name="debug_tiny",
         hidden_size=64,
         num_heads=1,
-        num_blocks=1,
+        num_blocks=5,
     ),
     "debug_small": ModelConfig(
         name="debug_small",
@@ -160,10 +166,11 @@ DEFAULT_CONFIG = "debug_small"
 
 def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
                  mlp_ratio=4.0, patch_size=4, axes_dim=None, theta=10_000, use_noise=True, use_lower_half_mask=False,
-                 use_inference_lr_scaling=False, inference_lr_scale_lower=1.0, inference_lr_scale_upper=1.0, inference_lr_scale_boundary=3,
+                 use_inference_lr_scaling=False, 
+                 inference_lr_scale_base=1.1,
                  inference_clamp_alpha=1.0, update_weights_during_unmasking=False,
                  use_status_init_in_training: bool = True, use_status_init_in_unmasking: bool = True,
-                 update_weights_every_inference_step: bool = True):
+                 update_weights_every_inference_step=False):
     """Create a TransformerConfig based on the dataset name and parameters."""
     axes_dim = axes_dim or [16, 16]
     
@@ -182,9 +189,7 @@ def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
             use_noise=use_noise,
             use_lower_half_mask=use_lower_half_mask,
             use_inference_lr_scaling=use_inference_lr_scaling,
-            inference_lr_scale_lower=inference_lr_scale_lower,
-            inference_lr_scale_upper=inference_lr_scale_upper,
-            inference_lr_scale_boundary=inference_lr_scale_boundary,
+            inference_lr_scale_base=inference_lr_scale_base,
             inference_clamp_alpha=inference_clamp_alpha,
             update_weights_during_unmasking=update_weights_during_unmasking,
             use_status_init_in_training=use_status_init_in_training,
@@ -277,13 +282,6 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
         download=True,
         train=False,
     )
-    # # TODO: Remove this once we have a proper test set
-    # test_dataset = torchvision.datasets.CIFAR10(
-    #     root=dataset_root,
-    #     transform=test_transform,
-    #     download=True,
-    #     train=True,
-    # )
     
     if target_class is not None:
         target_indices = (train_dataset.targets == target_class).nonzero(as_tuple=True)[0].tolist()
@@ -1102,9 +1100,7 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         use_noise=config.use_noise,
         use_lower_half_mask=config.use_lower_half_mask,
         use_inference_lr_scaling=config.use_inference_lr_scaling,
-        inference_lr_scale_lower=config.inference_lr_scale_lower,
-        inference_lr_scale_upper=config.inference_lr_scale_upper,
-        inference_lr_scale_boundary=config.inference_lr_scale_boundary,
+        inference_lr_scale_base=config.inference_lr_scale_base,
         inference_clamp_alpha=config.inference_clamp_alpha,
         update_weights_during_unmasking=config.update_weights_during_unmasking,
         use_status_init_in_training=config.use_status_init_in_training,
@@ -1154,12 +1150,29 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         hidden_lr_fn = config.peak_lr_hidden
         print(f"Using constant learning rates - Weights: {weights_lr_fn}, Hidden: {hidden_lr_fn}")
     
-    # Create optimizers with the appropriate learning rate function
-    # TODO: add gradient clipping
-    optim_h = pxu.Optim(lambda: optax.sgd(hidden_lr_fn, momentum=0.1))
-    optim_h_inference = pxu.Optim(lambda: optax.sgd(config.hidden_lr_inference, momentum=0.1))
+    # --- Create base optimizers --- 
+    base_optim_h_train = optax.sgd(hidden_lr_fn, momentum=0.1)
+    base_optim_h_inference = optax.sgd(config.hidden_lr_inference, momentum=0.1)
+    base_optim_w = optax.adamw(weights_lr_fn, weight_decay=config.weight_decay)
+    
+    # --- Apply gradient clipping if configured --- 
+    if config.grad_clip_norm is not None and config.grad_clip_norm > 0:
+        print(f"Applying gradient clipping with max_norm = {config.grad_clip_norm}")
+        clipper = optax.clip_by_global_norm(config.grad_clip_norm)
+        final_optim_h_train = optax.chain(clipper, base_optim_h_train)
+        final_optim_h_inference = optax.chain(clipper, base_optim_h_inference)
+        final_optim_w = optax.chain(clipper, base_optim_w)
+    else:
+        print("Gradient clipping is disabled.")
+        final_optim_h_train = base_optim_h_train
+        final_optim_h_inference = base_optim_h_inference
+        final_optim_w = base_optim_w
+
+    # --- Create pcx Optim wrappers using the final optimizers --- 
+    optim_h = pxu.Optim(lambda: final_optim_h_train)
+    optim_h_inference = pxu.Optim(lambda: final_optim_h_inference)
     optim_w = pxu.Optim(
-        lambda: optax.adamw(weights_lr_fn, weight_decay=config.weight_decay), 
+        lambda: final_optim_w, 
         pxu.M(pxnn.LayerParam)(model)
     )
     
@@ -1190,6 +1203,10 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     
     for epoch in range(config.epochs):
         epoch_start = time.time()
+        if model_config.use_inference_lr_scaling:
+            print(f"Current inference_lr_scale_base: {model_config.inference_lr_scale_base}")
+        else:
+            print("Inference LR scaling is disabled.")
         print(f"Epoch {epoch+1}/{config.epochs}")
         
         # Get current learning rates - handle both scheduled and constant LR cases
@@ -1213,6 +1230,16 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
             train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch
         )
         
+        training_nan_detected = False
+        if jnp.isnan(avg_train_w_energy) or jnp.isnan(avg_train_mse):
+            print(f"!!! WARNING: NaN detected in training metrics (Energy: {avg_train_w_energy}, MSE: {avg_train_mse}) at Epoch {epoch+1}. Stopping training for this run. !!!")
+            early_stopped = True
+            early_stopped_epoch = epoch
+            training_nan_detected = True
+            # Ensure metrics logged reflect the failure
+            avg_train_w_energy = float('nan')
+            avg_train_mse = float('nan') 
+        
         # Initialize epoch_metrics here to store training metrics
         epoch_metrics = {
             'Losses/train_w_energy_avg': avg_train_w_energy,
@@ -1221,11 +1248,11 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
             'LearningRate/hidden': current_h_lr
         }
 
-        if (epoch + 1) % config.validation_every_n_epochs == 0 or epoch == config.epochs - 1 or (config.use_early_stopping and early_stopped and epoch == early_stopped_epoch):
+        # --- Run validation and other epoch-end tasks only if training was successful --- 
+        # <<< --- ADD CHECK: Only proceed if no NaN and not already early stopped normally --- >>>
+        if not training_nan_detected and ( (epoch + 1) % config.validation_every_n_epochs == 0 or epoch == config.epochs - 1 or (config.use_early_stopping and early_stopped and epoch == early_stopped_epoch) ):
+        # <<< --- END CHECK --- >>>
             print(f"Evaluating pretext task metrics on validation set...")
-            # Use config settings for evaluation masking
-            # NOTE: T_values for eval might differ from training T
-            # Use val_loader here
             pretext_metrics = eval_pretext_metrics(
                 val_loader, # Use validation loader
                 T_values=config.eval_inference_steps, # Use eval_inference_steps
@@ -1294,10 +1321,8 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         elif early_stopped and epoch == early_stopped_epoch: # After early stopping
              trigger_reconstruction = True
              
-        if trigger_reconstruction:
+        if trigger_reconstruction and not training_nan_detected:
             print(f"Generating reconstructions for epoch {epoch+1} (Val Metric: {current_val_metric_for_recon:.6f})...")
-            # Pass the config object here
-            # Use train_loader for visualizing training samples
             vis_path, vis_logs = visualize_reconstruction(
                 model, 
                 model_config, 
@@ -1346,21 +1371,17 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     wandb.finish()
     
     print("Debug run completed!")
-    # Return the average training MSE of the last epoch
-    # Assuming avg_train_mse is updated each epoch and we want the one from the final epoch of training.
-    # If early stopping happens, this will be the MSE from the epoch it stopped.
-    last_train_mse = epoch_metrics.get('Losses/train_mse_avg', float('inf')) # Get from last logged metrics
-    
-    # A more robust way if epoch_metrics might not be populated if training is very short (e.g. 0 epochs)
-    # or if the loop was broken before epoch_metrics was set.
-    # For simplicity, we assume epochs > 0 and epoch_metrics is set.
-    # If training loop doesn't run, avg_train_mse might not be defined.
-    # Let's ensure we return a value from within the training loop if possible or a default.
-    final_avg_train_mse = float('inf')
-    if 'avg_train_mse' in locals() or 'avg_train_mse' in globals():
-         final_avg_train_mse = avg_train_mse # This would be from the last completed epoch
-    elif 'epoch_metrics' in locals() and 'Losses/train_mse_avg' in epoch_metrics:
-         final_avg_train_mse = epoch_metrics['Losses/train_mse_avg']
+    # Return the average training MSE of the last epoch, or infinity if NaN occurred
+    # <<< --- MODIFY FINAL RETURN VALUE --- >>>
+    final_avg_train_mse = float('inf') # Default to infinity
+    if 'epoch_metrics' in locals() and 'Losses/train_mse_avg' in epoch_metrics:
+        last_logged_mse = epoch_metrics['Losses/train_mse_avg']
+        if not np.isnan(last_logged_mse): # Check if the last logged value was valid
+            final_avg_train_mse = last_logged_mse
+    elif 'avg_train_mse' in locals() and not np.isnan(avg_train_mse):
+        # Fallback if epoch_metrics wasn't populated but avg_train_mse from the last loop iteration is valid
+        final_avg_train_mse = avg_train_mse
+    # <<< --- END MODIFICATION --- >>>
     
     print(f"Run {effective_wandb_run_name} finished with final avg_train_mse: {final_avg_train_mse}")
     return final_avg_train_mse

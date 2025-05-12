@@ -76,9 +76,7 @@ class TransformerConfig:
 
     # Layer-specific inference LR scaling
     use_inference_lr_scaling: bool = False # Enable/disable scaling
-    inference_lr_scale_lower: float = 1.0  # Multiplier for lower layers (Vodes < boundary)
-    inference_lr_scale_upper: float = 1.0  # Multiplier for upper layers (Vodes >= boundary)
-    inference_lr_scale_boundary: int = 3   # Index separating lower/upper 
+    inference_lr_scale_base: Optional[float] = 1.1
     
     inference_clamp_alpha: float = 1.0     # Blending factor for soft clamping (1.0 = full clamp, <1.0 = blend)
     update_weights_during_unmasking: bool = False # New flag
@@ -350,11 +348,55 @@ def energy(*, model: TransformerDecoder):
     return jax.lax.psum(model.energy(), "batch"), y_
 
 
+def apply_exponential_layer_scaling(model_grads, config: TransformerConfig):
+    """
+    Applies exponential scaling to Vode hidden state gradients (h).
+    The scaling factor doubles for each layer moving up the hierarchy
+    (away from the sensory layer).
+
+    Args:
+        model_grads: The PyTree of gradients for the model.
+        config: The model configuration object.
+
+    Returns:
+        The gradient PyTree with scaled h gradients.
+    """
+    num_blocks = config.num_blocks
+
+    # Total number of Vodes whose h gradients are computed (excluding frozen sensory)
+    num_vodes_with_grad = num_blocks + 2
+    # Index of the lowest layer (closest to sensory) whose h gradient is computed
+    base_layer_idx = num_vodes_with_grad - 1
+
+    def map_fn(path, leaf):
+
+        is_vode_h_grad_value = (
+            len(path) == 4 and
+            isinstance(path[0], jax.tree_util.GetAttrKey) and path[0].name == 'vodes' and
+            isinstance(path[1], jax.tree_util.SequenceKey) and
+            isinstance(path[2], jax.tree_util.GetAttrKey) and path[2].name == 'h' and
+            isinstance(path[3], jax.tree_util.GetAttrKey) and path[3].name == 'value'
+        )
+
+        if is_vode_h_grad_value:
+            vode_idx = path[1].idx
+            scale_base = config.inference_lr_scale_base if config.inference_lr_scale_base is not None else 1.0
+            scale = jnp.power(scale_base, float(base_layer_idx - vode_idx))
+
+            if isinstance(leaf, jax.Array):
+                 return leaf * scale
+            else:
+                 return leaf
+        else:
+            return leaf
+
+    return jax.tree_util.tree_map_with_path(map_fn, model_grads)
+
+
 @pxf.jit(static_argnums=0)
 def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.Optim, epoch=None, step=None):
     model.train()
 
-    # These are defined once and captured by the scan function
     inference_step_fn = pxf.value_and_grad(pxu.M_hasnot(pxc.VodeParam, frozen=True).to([False, True]), has_aux=True)(energy)
     learning_step_fn = pxf.value_and_grad(pxu.M_hasnot(pxnn.LayerParam).to([False, True]), has_aux=True)(energy) # For weights
 
@@ -394,16 +436,32 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
         def inference_only_iteration_for_scan(iter_idx_ignored, carry_dummy, *, model_closure, optim_h_closure):
             with pxu.step(model_closure, clear_params=pxc.VodeParam.Cache):
                 (h_energy_iter, _), h_grad_iter = inference_step_fn(model=model_closure)
-            optim_h_closure.step(model_closure, h_grad_iter["model"])
-            return carry_dummy, (h_energy_iter, h_grad_iter) # Collect h_energy and h_grad for this iteration
+            
+            # Apply scaling if enabled, directly modifying model_grads_to_apply
+            model_grads_to_apply = h_grad_iter["model"] 
+            if model_closure.config.use_inference_lr_scaling:
+                model_grads_to_apply = apply_exponential_layer_scaling(
+                    model_grads=model_grads_to_apply,
+                    config=model_closure.config
+                )
 
-        _, (h_energies_scanned, h_grads_scanned) = pxf.scan(
+            # Update hidden states using the (potentially scaled) gradients
+            optim_h_closure.step(model_closure, model_grads_to_apply)
+
+            # We need to return the full h_grad_iter structure but with potentially scaled model grads
+            final_grad_structure = h_grad_iter.copy() 
+            final_grad_structure["model"] = model_grads_to_apply # Directly use the applied grads
+
+            return carry_dummy, (h_energy_iter, final_grad_structure) 
+
+        _, (h_energies_scanned, h_grads_potentially_scaled_scanned) = pxf.scan(
             inference_only_iteration_for_scan,
             xs=jnp.arange(T)
         )(dummy_carry_init, model_closure=model, optim_h_closure=optim_h)
 
-        final_h_energy = h_energies_scanned[-1] # h_energy from the last inference step
-        final_h_grad = jax.tree_util.tree_map(lambda leaf: leaf[-1], h_grads_scanned) # h_grad from the last inference step
+        final_h_energy = h_energies_scanned[-1]
+        # final_h_grad now contains the potentially scaled gradients from the last step T
+        final_h_grad = jax.tree_util.tree_map(lambda leaf: leaf[-1], h_grads_potentially_scaled_scanned)
         
         # Single learning step after all T inference steps
         # This uses the model state (hidden variables) as it is after T inference steps
@@ -732,45 +790,6 @@ def calculate_psnr(img1, img2, data_range=1.0, epsilon=1e-8):
     return psnr
 
 
-def scale_vode_grads(model_grads, lower_scale, upper_scale, boundary_idx):
-    """Scales gradients for Vode hidden states based on layer index."""
-    
-    def map_fn(path, leaf):
-        # Check if the leaf is a VodeParam corresponding to a hidden state gradient
-        # The path for a vode gradient looks like: (..., 'vodes', index, 'h')
-        is_vode_h_grad = (
-            len(path) >= 3 and 
-            path[-3] == 'vodes' and 
-            isinstance(path[-2], jax.tree_util.SequenceKey) and # Check if it's a list index
-            path[-1] == 'h'
-        )
-        
-        if is_vode_h_grad:
-            vode_idx = path[-2].idx
-            scale = lower_scale if vode_idx < boundary_idx else upper_scale
-            # Check if leaf is a parameter object with _value or just the array
-            if hasattr(leaf, '_value') and leaf._value is not None:
-                 # Return a new parameter object with scaled value
-                 # Assuming leaf is a simple dataclass or object we can reconstruct
-                 # This might need adjustment based on the exact type of VodeParam grad leaf
-                 try:
-                     # Attempt reconstruction assuming a simple structure
-                     # This is a potential point of failure if VodeParam structure is complex
-                     return type(leaf)(_value=leaf._value * scale, _frozen=leaf._frozen)
-                 except:
-                      print(f"Warning: Could not reconstruct VodeParam object for scaling at index {vode_idx}. Returning scaled value directly.")
-                      return leaf._value * scale # Fallback: return only the scaled value
-            elif isinstance(leaf, jax.Array): # If leaf is just the array
-                 return leaf * scale
-            else:
-                return leaf # Return unchanged if not a Vode gradient or not an array/expected type
-        else:
-            return leaf # Return other parameters unchanged
-
-    # Apply the mapping function to the gradient tree
-    return jax.tree_util.tree_map_with_path(map_fn, model_grads)
-
-
 def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_T_values: List[int], x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim, optim_w: Optional[pxu.Optim] = None, log_inference_grads: bool = False) -> Tuple[jnp.ndarray, List[jnp.ndarray], jnp.ndarray, Dict[int, Dict[str, float]]]:
     """
     Enhanced version of unmask_on_batch with random masking, focused loss on masked regions,
@@ -857,45 +876,46 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
         with pxu.step(model, clear_params=pxc.VodeParam.Cache):
             (h_energy, y_), h_grad = inference_step(model=model)
 
+        # Apply Gradient Scaling if Enabled
+        model_grads_to_apply = h_grad["model"]
+        scaled_grads_used_inference = False
+        if model.config.use_inference_lr_scaling:
+            model_grads_to_apply = apply_exponential_layer_scaling(
+                model_grads=model_grads_to_apply,
+                config=model.config
+            )
+            scaled_grads_used_inference = True
+
         # --- Log Gradients if requested ---
         if log_inference_grads:
             try:
-                model_grads = h_grad['model']
-                vodes_grads = model_grads.vodes
+                # Use the grads that will be used for the update step for norm calculation
+                grads_for_norm_calc = model_grads_to_apply # These are potentially scaled
+                vodes_grads = grads_for_norm_calc.vodes # Access vodes within the potentially scaled structure
                 current_step_norms = {}
                 for i in range(len(vodes_grads)):
-                    # Extract gradient tensor - accessing .h might give the VodeParam, need ._value
                     grad_param = vodes_grads[i].h
-                    grad_values = grad_param._value if hasattr(grad_param, '_value') else None
+                    # Handle cases where the value might be accessed differently
+                    # depending on whether scaling returned the object or just the value
+                    if hasattr(grad_param, '_value'):
+                        grad_values = grad_param._value
+                    elif isinstance(grad_param, jax.Array): # Check if it's just the array (fallback from scaling)
+                        grad_values = grad_param
+                    else:
+                        grad_values = None # Or handle other potential structures
 
                     if grad_values is not None:
-                        # Calculate L2 norm using jnp.linalg.norm for stability
                         l2_norm = float(jnp.linalg.norm(grad_values.flatten()))
                         current_step_norms[f"vode_{i}_grad_norm"] = l2_norm
                     else:
-                        # Handle case where gradient might be None (e.g., for frozen vodes, though we select non-frozen)
-                        current_step_norms[f"vode_{i}_grad_norm"] = 0.0
+                        current_step_norms[f"vode_{i}_grad_norm"] = 0.0 # Or NaN
                 inference_grad_norms_log[t] = current_step_norms
             except Exception as e:
                 print(f"Warning: Failed to log inference grads at step {t}: {e}")
-                # Log empty dict or NaNs to avoid breaking structure if needed
                 inference_grad_norms_log[t] = {f"vode_{i}_grad_norm": float('nan') for i in range(len(model.vodes))}
         # --- End Log Gradients ---
 
-        # --- Apply Gradient Scaling if Enabled ---
-        model_grads_to_apply = h_grad["model"]
-        # Access config parameters directly through the model object
-        if model.config.use_inference_lr_scaling:
-            print(f"Applying inference LR scaling (Lower: x{model.config.inference_lr_scale_lower}, Upper: x{model.config.inference_lr_scale_upper}, Boundary: {model.config.inference_lr_scale_boundary})")
-            model_grads_to_apply = scale_vode_grads(
-                model_grads=model_grads_to_apply, 
-                lower_scale=model.config.inference_lr_scale_lower,
-                upper_scale=model.config.inference_lr_scale_upper,
-                boundary_idx=model.config.inference_lr_scale_boundary
-            )
-        # --- End Gradient Scaling ---
-
-        # Update ALL hidden states based on gradients (potentially scaled)
+        # Update ALL hidden states using the (potentially scaled) gradients
         optim_h.step(model, model_grads_to_apply)
 
         # --- Conditionally update weights ---
