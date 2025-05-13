@@ -25,7 +25,19 @@ echo "Mounting from $HOST_CORA_DIR"
 # Build the Docker image using sudo
 sudo docker image build -t cora:latest -f ./DockerfileGH200 ..
 
-# Run the Docker container with the detected directory using sudo
-sudo docker run --gpus all -it \
+# Run the Docker container with the detected directory using sudo, and capture its ID
+CONTAINER_ID=$(sudo docker run --gpus all -d --restart unless-stopped \
   -v "$HOST_CORA_DIR:/home/cora/workspace" \
-  cora:latest /bin/bash
+  cora:latest /bin/bash -c "sleep infinity")
+
+# Check if the container started successfully and we have an ID
+if [ -z "$CONTAINER_ID" ]; then
+  echo "Error: Failed to start the Docker container or capture its ID."
+  exit 1
+fi
+
+echo "Container started with ID: $CONTAINER_ID"
+
+# Automatically exec into the container
+echo "Attempting to exec into the container..."
+sudo docker exec -it "$CONTAINER_ID" /bin/bash
