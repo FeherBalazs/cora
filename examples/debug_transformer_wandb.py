@@ -53,7 +53,7 @@ class ModelConfig:
     dataset: str = "cifar10"
     data_dir: str = "../datasets/"
     train_subset: int = 50000
-    test_subset: int = 1000
+    test_subset: int = 200
     target_class: Optional[int] = None
     reconstruction_every_n_epochs: int = 25 # Adjusted for shorter runs
     validation_every_n_epochs: int = 5 # Adjusted for shorter runs
@@ -65,7 +65,7 @@ class ModelConfig:
     inference_clamp_alpha: float = 1.0     # Blending factor for soft clamping
 
     # Visualization settings
-    num_images: int = 2
+    num_images: int = 1
     
     # Model architecture
     hidden_size: int = 48
@@ -101,18 +101,14 @@ class ModelConfig:
     # peak_lr_weights: float = 0.001
     # peak_lr_hidden: float = 0.1
 
-    # TODO: this is the best one so far.
-    # Settings without status.init: epochs=50, hidden_size=64, num_blocks=5, inference_steps=20, update_weights_every_inference_step=False, use_inference_lr_scaling=True, inference_lr_scale_base=1.3, h_grad_clip_norm=1000.0, w_grad_clip_norm=None, mse=0.022
-    peak_lr_weights: float = 0.001       # Maintained from successful searches
-    peak_lr_hidden: float = 0.07          # Updated for current experiment
+    # Settings without status.init: epochs=50, hidden_size=64, num_blocks=5, inference_steps=20, update_weights_every_inference_step=False, use_inference_lr_scaling=True, inference_lr_scale_base=1.2, h_grad_clip_norm=1000.0, w_grad_clip_norm=500.0, mse=0.005 => possible to hit but erratically
+    peak_lr_weights: float = 0.001
+    peak_lr_hidden: float = 0.1
 
     # # Settings without status.init: hidden_size=64, num_blocks=3, inference_steps=24
     # peak_lr_weights: float = 0.0025
     # peak_lr_hidden: float = 0.0025
 
-    # # Settings with status.init - general
-    # peak_lr_weights: float = 0.0001
-    # peak_lr_hidden: float = 0.005
 
     update_weights_during_unmasking: bool = False
 
@@ -136,7 +132,7 @@ class ModelConfig:
     # Early stopping settings
     use_early_stopping: bool = True
     early_stopping_patience: int = 7 # Adjusted for longer runs
-    early_stopping_min_delta: float = 0.0001
+    early_stopping_min_delta: float = 0.001
     save_reconstruction_images: bool = True # Option to save static image grid
     save_reconstruction_video: bool = True # Option to save video
     video_fps: int = 60 # Frames per second for the reconstruction video
