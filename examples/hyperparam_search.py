@@ -5,14 +5,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import os
 
-# Assuming debug_transformer_wandb.py is in the same directory
-# or adjust the import path accordingly.
+
 from debug_transformer_wandb import run_experiment, MODEL_CONFIGS
 
 def perform_hyperparameter_search():
     print("Starting hyperparameter search...")
 
-    # --- Search Configuration ---
     base_config_to_use = "debug_tiny" # Base config already has num_blocks=5
 
     # Fixed parameters for this new focused search (50 epochs)
@@ -45,15 +43,12 @@ def perform_hyperparameter_search():
         "lr_weights": fixed_overrides["peak_lr_weights"], # Fixed
         "lr_hidden": None, 
         "inference_lr_scale_base": None,
-        # "grad_clip_norm": None, # Old combined
         "h_grad_clip_norm": None,
         "w_grad_clip_norm": None,
         "seed": None, # Added seed to best_run_info
         "mse": float('inf'),
-        # "mse_diff": float('inf") # Removed
     }
 
-    # successful_runs = [] # Removed, we just track the best overall
     all_run_results = [] # To store results of all runs for logging
 
     # <<< --- UPDATE TOTAL RUNS --- >>>
