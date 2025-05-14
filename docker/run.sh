@@ -15,6 +15,8 @@ if [ -d "/home/ubuntu/balazs-texas/cora" ]; then
   HOST_CORA_DIR="/home/ubuntu/balazs-texas/cora"
 elif [ -d "/home/ubuntu/balazs/cora" ]; then
   HOST_CORA_DIR="/home/ubuntu/balazs/cora"
+elif [ -d "/home/balazs/Documents/code/cora" ]; then
+  HOST_CORA_DIR="/home/balazs/Documents/code/cora"
 else
   echo "Error: Could not find cora directory in either /home/ubuntu/balazs or /home/ubuntu/balazs-texas"
   exit 1
