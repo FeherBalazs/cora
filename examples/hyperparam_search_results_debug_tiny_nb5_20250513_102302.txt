@@ -1,0 +1,59 @@
+Hyperparameter Search Log - 2025-05-13 10:23:02
+Base Config: debug_tiny (num_blocks=5)
+Fixed Overrides (excluding searched params):
+  num_blocks: 5
+  num_heads: 1
+  hidden_size: 64
+  epochs: 50
+  peak_lr_weights: 0.001
+  reconstruction_every_n_epochs: 50
+  validation_every_n_epochs: 5
+  save_reconstruction_images: False
+  save_reconstruction_video: False
+  use_status_init_in_training: False
+  use_status_init_in_unmasking: False
+  reconstruction_steps: [1]
+  dataset: cifar10
+  data_dir: ../datasets/
+  train_subset: 50000
+  test_subset: 200
+  target_class: None
+  use_corruption: False
+  corrupt_ratio: 0.25
+  use_lower_half_mask: False
+  inference_clamp_alpha: 0.5
+  num_images: 1
+  mlp_ratio: 4.0
+  patch_size: 4
+  axes_dim: [16, 16]
+  theta: 100
+  use_noise: True
+  batch_size: 200
+  inference_steps: 20
+  eval_inference_steps: [20]
+  update_weights_during_unmasking: False
+  weight_decay: 0.0002
+  warmup_epochs: 5
+  use_lr_schedule: False
+  seed: 42
+  use_inference_lr_scaling: True
+  use_early_stopping: True
+  early_stopping_patience: 2
+  early_stopping_min_delta: 0.001
+  video_fps: 60
+  reinitialize_model_for_each_epoch: False
+  update_weights_every_inference_step: False
+-------------------------------------------------------------------------------------------------
+Run | LR Hid | Scale | Clip  | W&B Run Name                             | Final Train MSE | Status
+-------------------------------------------------------------------------------------------------
+7   | 0.001  | 2.0   | None  | nb5_lrw1e-03_lrh1e-03_sb2.0_clipNone       | 0.10554423      | (ES)  
+8   | 0.0001 | 2.0   | None  | nb5_lrw1e-03_lrh1e-04_sb2.0_clipNone       | 0.10786173      | (ES)  
+6   | 0.005  | 2.0   | None  | nb5_lrw1e-03_lrh5e-03_sb2.0_clipNone       | 0.15544337      | (ES)  
+5   | 0.01   | 2.0   | None  | nb5_lrw1e-03_lrh1e-02_sb2.0_clipNone       | 0.16762051      | (ES)  
+1   | 0.1    | 2.0   | None  | nb5_lrw1e-03_lrh1e-01_sb2.0_clipNone       | NaN             | (ES)  
+2   | 0.07   | 2.0   | None  | nb5_lrw1e-03_lrh7e-02_sb2.0_clipNone       | NaN             | (ES)  
+3   | 0.05   | 2.0   | None  | nb5_lrw1e-03_lrh5e-02_sb2.0_clipNone       | NaN             | (ES)  
+4   | 0.03   | 2.0   | None  | nb5_lrw1e-03_lrh3e-02_sb2.0_clipNone       | NaN             | (ES)  
+-------------------------------------------------------------------------------------------------
+Best Params: peak_lr_hidden=0.001, inference_lr_scale_base=2.0, grad_clip_norm=None (lr_weights=0.001 fixed)
+Best MSE: 0.105544

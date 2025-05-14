@@ -55,14 +55,14 @@ class ModelConfig:
     train_subset: int = 50000
     test_subset: int = 1000
     target_class: Optional[int] = None
-    reconstruction_every_n_epochs: int = 1 # WARNING: changing this to 1 caused training instability. Less frequent reconstruction is better. Tested only with 10 so far which works ok.
-    validation_every_n_epochs: int = 1
+    reconstruction_every_n_epochs: int = 25 # Adjusted for shorter runs
+    validation_every_n_epochs: int = 5 # Adjusted for shorter runs
 
     use_corruption: bool = False
     corrupt_ratio: float = 0.25
-    
+
     use_lower_half_mask: bool = False #If False it uses random masking
-    inference_clamp_alpha: float = 1.0
+    inference_clamp_alpha: float = 1.0     # Blending factor for soft clamping
 
     # Visualization settings
     num_images: int = 2
@@ -76,28 +76,45 @@ class ModelConfig:
     axes_dim: List[int] = field(default_factory=lambda: [16, 16])
     theta: int = 100
     act_fn: Callable = jax.nn.swish
+
+    # Status init settings for training and unmasking
+    use_status_init_in_training: bool = False
+    use_status_init_in_unmasking: bool = False
     
     # Training settings
     use_noise: bool = True
     batch_size: int = 200
-    epochs: int = 100
-    inference_steps: int = 24
-    eval_inference_steps: List[int] = field(default_factory=lambda: [24])
-    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 32, 64, 128, 256])
-    peak_lr_weights: float = 0.005
-    peak_lr_hidden: float = 0.01
-    # peak_lr_weights: float = 1e-3
-    # peak_lr_hidden: float = 0.05
+    epochs: int = 75 # Updated for current experiment, increased from 25
+    inference_steps: int = 20
+    eval_inference_steps: List[int] = field(default_factory=lambda: [20])
+    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 8, 12, 16, 20])
 
-    # # Settings without status.init
+    # # Settings without status.init: epochs=10, hidden_size=64, num_blocks=4, inference_steps=20, update_weights_every_inference_step=False, use_inference_lr_scaling=True, inference_lr_scale_base=1.3, h_grad_clip_norm=1000.0, w_grad_clip_norm=None, mse=0.006
+    # peak_lr_weights: float = 0.001
+    # peak_lr_hidden: float = 0.1
+
+    # # Settings without status.init: epochs=50, hidden_size=64, num_blocks=4, inference_steps=20, update_weights_every_inference_step=False, use_inference_lr_scaling=True, inference_lr_scale_base=1.3, grad_clip_norm=None, mse=0.004
+    # peak_lr_weights: float = 0.001
+    # peak_lr_hidden: float = 0.1
+
+    # # Settings without status.init: epochs=10, hidden_size=64, num_blocks=4, inference_steps=20, update_weights_every_inference_step=False, use_inference_lr_scaling=True, inference_lr_scale_base=1.3, grad_clip_norm=1000.0, mse=0.006
+    # peak_lr_weights: float = 0.001
+    # peak_lr_hidden: float = 0.1
+
+    # TODO: this is the best one so far.
+    # Settings without status.init: epochs=50, hidden_size=64, num_blocks=5, inference_steps=20, update_weights_every_inference_step=False, use_inference_lr_scaling=True, inference_lr_scale_base=1.3, h_grad_clip_norm=1000.0, w_grad_clip_norm=None, mse=0.022
+    peak_lr_weights: float = 0.001       # Maintained from successful searches
+    peak_lr_hidden: float = 0.07          # Updated for current experiment
+
+    # # Settings without status.init: hidden_size=64, num_blocks=3, inference_steps=24
     # peak_lr_weights: float = 0.0025
+    # peak_lr_hidden: float = 0.0025
+
+    # # Settings with status.init - general
+    # peak_lr_weights: float = 0.0001
     # peak_lr_hidden: float = 0.005
 
-    # Settings with status.init
-    peak_lr_weights: float = 0.0001
-    peak_lr_hidden: float = 0.005
-
-    update_weights_during_unmasking: bool = True
+    update_weights_during_unmasking: bool = False
 
     hidden_lr_inference: float = peak_lr_hidden * 1
     weight_decay: float = 2e-4
@@ -106,28 +123,78 @@ class ModelConfig:
     seed: int = 42
     
     # Layer-specific inference LR scaling
-    # TODO: It is not working yet
-    use_inference_lr_scaling: bool = False # Enable/disable scaling
-    inference_lr_scale_lower: float = 10.0  # Multiplier for lower layers (Vodes < boundary)
-    inference_lr_scale_upper: float = 1.0  # Multiplier for upper layers (Vodes >= boundary)
-    inference_lr_scale_boundary: int = 4   # Index separating lower/upper (e.g., 3 means 0,1,2 are lower)
+    use_inference_lr_scaling: bool = True
+    inference_lr_scale_base: Optional[float] = 1.1 # Updated for current experiment
+
+    # grad_clip_norm: Optional[float] = 1000.0 # Max norm for gradient clipping (None to disable) # Old combined clipping
+    h_grad_clip_norm: Optional[float] = 1000.0 # Max norm for H-gradient clipping
+    w_grad_clip_norm: Optional[float] = 500.0  # Max norm for W-gradient clipping
+
+    # iPC or classic PC
+    update_weights_every_inference_step: bool = False
     
     # Early stopping settings
-    use_early_stopping: bool = False
-    early_stopping_patience: int = 10
+    use_early_stopping: bool = True
+    early_stopping_patience: int = 7 # Adjusted for longer runs
     early_stopping_min_delta: float = 0.0001
     save_reconstruction_images: bool = True # Option to save static image grid
     save_reconstruction_video: bool = True # Option to save video
     video_fps: int = 60 # Frames per second for the reconstruction video
     reinitialize_model_for_each_epoch: bool = False # WARNING: setting this to True will get around 0.24 val loss with 100 images vs 0.15 without.
+    
+    
+
 
 # Predefined configurations for easy experimentation
 MODEL_CONFIGS = {
     "debug_tiny": ModelConfig(
         name="debug_tiny",
         hidden_size=64,
-        num_heads=8,
-        num_blocks=3,
+        num_heads=1,
+        num_blocks=5,
+        # Target experiment settings for next run:
+        peak_lr_hidden=0.07,
+        inference_lr_scale_base=1.1,
+        h_grad_clip_norm=1000.0,
+        w_grad_clip_norm=500.0,
+        epochs=25,
+        use_inference_lr_scaling=True,
+        validation_every_n_epochs=5, # Keep frequent validation
+        reconstruction_every_n_epochs=25 # And reconstruction
+    ),
+    "5block_candidate_A": ModelConfig(
+        name="5block_candidate_A",
+        num_blocks=5,
+        hidden_size=64,
+        num_heads=1,
+        epochs=50,
+        peak_lr_weights=0.001,
+        peak_lr_hidden=0.1,
+        inference_lr_scale_base=1.3,
+        h_grad_clip_norm=1000.0,
+        w_grad_clip_norm=500.0,
+        early_stopping_patience=7,
+        use_inference_lr_scaling=True,
+        weight_decay=2e-4,
+        use_status_init_in_training=False,
+        use_status_init_in_unmasking=False
+    ),
+    "5block_candidate_B": ModelConfig(
+        name="5block_candidate_B",
+        num_blocks=5,
+        hidden_size=64,
+        num_heads=1,
+        epochs=50,
+        peak_lr_weights=0.001,
+        peak_lr_hidden=0.07, # Difference from Candidate A
+        inference_lr_scale_base=1.3,
+        h_grad_clip_norm=1000.0,
+        w_grad_clip_norm=500.0,
+        early_stopping_patience=7,
+        use_inference_lr_scaling=True,
+        weight_decay=2e-4,
+        use_status_init_in_training=False,
+        use_status_init_in_unmasking=False
     ),
     "debug_small": ModelConfig(
         name="debug_small",
@@ -144,13 +211,16 @@ MODEL_CONFIGS = {
 }
 
 # Default configuration to use
-DEFAULT_CONFIG = "debug_small"
+DEFAULT_CONFIG = "debug_tiny" # Changed to run the new specific settings
 
 
 def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
                  mlp_ratio=4.0, patch_size=4, axes_dim=None, theta=10_000, use_noise=True, use_lower_half_mask=False,
-                 use_inference_lr_scaling=False, inference_lr_scale_lower=1.0, inference_lr_scale_upper=1.0, inference_lr_scale_boundary=3,
-                 inference_clamp_alpha=1.0, update_weights_during_unmasking=False):
+                 use_inference_lr_scaling=False, 
+                 inference_lr_scale_base=1.1,
+                 inference_clamp_alpha=1.0, update_weights_during_unmasking=False,
+                 use_status_init_in_training: bool = True, use_status_init_in_unmasking: bool = True,
+                 update_weights_every_inference_step=False):
     """Create a TransformerConfig based on the dataset name and parameters."""
     axes_dim = axes_dim or [16, 16]
     
@@ -169,15 +239,26 @@ def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
             use_noise=use_noise,
             use_lower_half_mask=use_lower_half_mask,
             use_inference_lr_scaling=use_inference_lr_scaling,
-            inference_lr_scale_lower=inference_lr_scale_lower,
-            inference_lr_scale_upper=inference_lr_scale_upper,
-            inference_lr_scale_boundary=inference_lr_scale_boundary,
+            inference_lr_scale_base=inference_lr_scale_base,
             inference_clamp_alpha=inference_clamp_alpha,
-            update_weights_during_unmasking=update_weights_during_unmasking
+            update_weights_during_unmasking=update_weights_during_unmasking,
+            use_status_init_in_training=use_status_init_in_training,
+            use_status_init_in_unmasking=use_status_init_in_unmasking,
+            update_weights_every_inference_step=update_weights_every_inference_step
         )
     else:
         raise ValueError(f"Unsupported dataset: {dataset}")
 
+
+def str_to_bool(value):
+    if isinstance(value, bool):
+        return value
+    if value.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif value.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Debug a transformer model with W&B logging')
@@ -185,6 +266,19 @@ def parse_args():
                         help=f'Predefined configuration to use. Options: {", ".join(MODEL_CONFIGS.keys())}')
     parser.add_argument('--batch-size', type=int, default=None,
                         help='Batch size for training')
+    parser.add_argument('--epochs', type=int, default=None,
+                        help='Number of epochs to train for')
+    parser.add_argument('--num_blocks', type=int, default=None,
+                        help='Number of transformer blocks')
+    parser.add_argument('--peak_lr_weights', type=float, default=None,
+                        help='Peak learning rate for weights')
+    parser.add_argument('--peak_lr_hidden', type=float, default=None,
+                        help='Peak learning rate for hidden states')
+    parser.add_argument('--save_reconstruction_images', type=str_to_bool, nargs='?', const=True, default=None,
+                        help='Save reconstruction images (true/false)')
+    parser.add_argument('--save_reconstruction_video', type=str_to_bool, nargs='?', const=True, default=None,
+                        help='Save reconstruction video (true/false)')
+    # Add any other parameters from ModelConfig you want to control via CLI here
     return parser.parse_args()
 
 
@@ -954,22 +1048,42 @@ def create_multi_line_chart(table_data, x_col, y_col, series_col, title):
     
     return wandb.Html(html)
 
-def main():
+def run_experiment(base_config_name: str = DEFAULT_CONFIG,
+                     config_overrides: Optional[Dict[str, Any]] = None,
+                     wandb_project_name: str = "debug-transformer-search",
+                     wandb_run_name: Optional[str] = None,
+                     wandb_mode: str = "online"):
     """Main function to run the debugging process with W&B logging."""
-    args = parse_args()
+    # args = parse_args() # Args will be handled by overrides or a new main
     
     # Load the base configuration
-    config = MODEL_CONFIGS[args.config]
+    if base_config_name not in MODEL_CONFIGS:
+        print(f"Error: Base config name '{base_config_name}' not found. Available: {list(MODEL_CONFIGS.keys())}")
+        return float('inf'), None # Return a high MSE indicating failure and None for early_stop_reason
+        
+    config = MODEL_CONFIGS[base_config_name]
     
-    # Override configuration with any command-line arguments
-    for arg_name, arg_value in vars(args).items():
-        if arg_value is not None and arg_name != 'config':
-            setattr(config, arg_name, arg_value)
+    # Apply overrides
+    if config_overrides:
+        for key, value in config_overrides.items():
+            if hasattr(config, key):
+                setattr(config, key, value)
+            else:
+                print(f"Warning: Key '{key}' not found in ModelConfig. Skipping override.")
+
+    # Override with any command-line arguments if needed (though typically covered by config_overrides for programmatic calls)
+    # This part is mostly for when this function is adapted to be called from a CLI-driven main()
+    # For pure programmatic calls, config_overrides is the primary way.
+    # args = parse_args() # We'll handle CLI args in a separate main()
+    # for arg_name, arg_value in vars(args).items():
+    #     if arg_value is not None and arg_name != 'config': # 'config' here refers to the base_config_name
+    #         if hasattr(config, arg_name):
+    #             setattr(config, arg_name, arg_value)
     
     # Print the effective configuration
-    print(f"\nUsing configuration '{config.name}' with settings:")
+    print(f"\nUsing base configuration '{config.name}' with effective settings:")
     for key, value in vars(config).items():
-        if key != 'name':
+        if key != 'name': # name is already part of the base config
             print(f"  {key}: {value}")
     print()
     
@@ -978,34 +1092,54 @@ def main():
     torch.manual_seed(config.seed)
     key = jax.random.PRNGKey(config.seed)
     
+    # Determine run name for WandB
+    effective_wandb_run_name = wandb_run_name
+    if not effective_wandb_run_name:
+        # Create a more descriptive run name if not provided
+        lr_w_str = f"lrw{config.peak_lr_weights:.0e}" if config.peak_lr_weights else "lrwDEF"
+        lr_h_str = f"lrh{config.peak_lr_hidden:.2f}".replace('.', 'p') # Format for clarity
+        nb_str = f"nb{config.num_blocks}"
+        hs_str = f"hs{config.hidden_size}"
+        scale_base_str = f"sbase{config.inference_lr_scale_base:.2f}".replace('.', 'p') if config.use_inference_lr_scaling and config.inference_lr_scale_base is not None else "sbaseOFF"
+        hclip_str = f"hclip{config.h_grad_clip_norm}" if config.h_grad_clip_norm is not None else "hclipOFF"
+        wclip_str = f"wclip{config.w_grad_clip_norm}" if config.w_grad_clip_norm is not None else "wclipOFF"
+        
+        effective_wandb_run_name = f"{config.name}_{nb_str}_{hs_str}_{lr_w_str}_{lr_h_str}_{scale_base_str}_{hclip_str}_{wclip_str}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
     # Initialize Weights & Biases
     run = wandb.init(
-        entity="neural-machines",
-        project="debug-transformer",
+        entity="neural-machines", # Replace with your entity or remove if not needed
+        project=wandb_project_name,
+        name=effective_wandb_run_name,
         config=vars(config),
-        mode="online"  # Change to online for immediate verification
+        mode=wandb_mode  # Allows disabling for search
     )
     
-    # Upload code artifacts to W&B
-    try:
-        code_artifact = wandb.Artifact(name="source_code", type="code")
-        
-        # Add the current file
-        code_artifact.add_file(__file__)
-        
-        # Add the decoder_transformer.py file
-        decoder_transformer_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "src/decoder_transformer.py")
-        if os.path.exists(decoder_transformer_path):
-            code_artifact.add_file(decoder_transformer_path)
-            print(f"Added decoder_transformer.py to W&B artifact")
-        else:
-            print(f"Warning: Could not find decoder_transformer.py at {decoder_transformer_path}")
-        
-        # Log the artifact to W&B
-        run.log_artifact(code_artifact)
-        print("Uploaded code artifacts to W&B")
-    except Exception as e:
-        print(f"Error uploading code to W&B: {e}")
+    # Upload code artifacts to W&B if an active run exists and not disabled
+    if wandb.run and wandb.run.mode != "disabled":
+        try:
+            # Use a consistent artifact name, W&B will version it
+            code_artifact = wandb.Artifact(name=f"source_code_{config.name}", type="code")
+            
+            # Add the current file (debug_transformer_wandb.py)
+            code_artifact.add_file(__file__)
+            
+            # Add the decoder_transformer.py file
+            # Assuming src is one level up from examples
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            decoder_transformer_path = os.path.join(script_dir, "../src/decoder_transformer.py")
+            decoder_transformer_path = os.path.abspath(decoder_transformer_path)
+            if os.path.exists(decoder_transformer_path):
+                code_artifact.add_file(decoder_transformer_path, name="src/decoder_transformer.py") # Explicitly name it for clarity in W&B UI
+            else:
+                print(f"Warning: Could not find decoder_transformer.py at {decoder_transformer_path}")
+            
+            wandb.run.log_artifact(code_artifact)
+            print("Logged source code artifact to W&B.")
+        except Exception as e:
+            print(f"Error uploading code to W&B: {e}")
+            import traceback
+            traceback.print_exc()
     
     print(f"Creating configuration for debugging CIFAR-10 transformer...")
     model_config = create_config(
@@ -1020,11 +1154,12 @@ def main():
         use_noise=config.use_noise,
         use_lower_half_mask=config.use_lower_half_mask,
         use_inference_lr_scaling=config.use_inference_lr_scaling,
-        inference_lr_scale_lower=config.inference_lr_scale_lower,
-        inference_lr_scale_upper=config.inference_lr_scale_upper,
-        inference_lr_scale_boundary=config.inference_lr_scale_boundary,
+        inference_lr_scale_base=config.inference_lr_scale_base,
         inference_clamp_alpha=config.inference_clamp_alpha,
-        update_weights_during_unmasking=config.update_weights_during_unmasking
+        update_weights_during_unmasking=config.update_weights_during_unmasking,
+        use_status_init_in_training=config.use_status_init_in_training,
+        use_status_init_in_unmasking=config.use_status_init_in_unmasking,
+        update_weights_every_inference_step=config.update_weights_every_inference_step
     )
     
     print(f"Creating debug dataloaders for CIFAR-10...")
@@ -1069,12 +1204,46 @@ def main():
         hidden_lr_fn = config.peak_lr_hidden
         print(f"Using constant learning rates - Weights: {weights_lr_fn}, Hidden: {hidden_lr_fn}")
     
-    # Create optimizers with the appropriate learning rate function
-    # TODO: add gradient clipping
-    optim_h = pxu.Optim(lambda: optax.sgd(hidden_lr_fn, momentum=0.1))
-    optim_h_inference = pxu.Optim(lambda: optax.sgd(config.hidden_lr_inference, momentum=0.1))
+    # --- Create base optimizers --- 
+    base_optim_h_train = optax.sgd(hidden_lr_fn, momentum=0.1)
+    base_optim_h_inference = optax.sgd(config.hidden_lr_inference, momentum=0.1)
+    base_optim_w = optax.adamw(weights_lr_fn, weight_decay=config.weight_decay)
+    
+    # --- Apply gradient clipping if configured ---
+
+    # Clipping for H gradients (training)
+    optim_h_train_steps = []
+    if config.h_grad_clip_norm is not None and config.h_grad_clip_norm > 0:
+        print(f"Applying H-gradient clipping with max_norm = {config.h_grad_clip_norm}")
+        h_clipper = optax.clip_by_global_norm(config.h_grad_clip_norm)
+        optim_h_train_steps.append(h_clipper)
+    optim_h_train_steps.append(base_optim_h_train)
+    final_optim_h_train = optax.chain(*optim_h_train_steps)
+
+    # Clipping for H gradients (inference)
+    optim_h_inference_steps = []
+    if config.h_grad_clip_norm is not None and config.h_grad_clip_norm > 0:
+        # Assuming same clipping for training and inference h grads, if not, add another config field
+        if 'h_clipper' not in locals(): # Define h_clipper if not already defined (e.g. if h_grad_clip_norm was only for training)
+            h_clipper = optax.clip_by_global_norm(config.h_grad_clip_norm)
+        optim_h_inference_steps.append(h_clipper)
+    optim_h_inference_steps.append(base_optim_h_inference)
+    final_optim_h_inference = optax.chain(*optim_h_inference_steps)
+
+    # Clipping for W gradients
+    optim_w_steps = []
+    if config.w_grad_clip_norm is not None and config.w_grad_clip_norm > 0:
+        print(f"Applying W-gradient clipping with max_norm = {config.w_grad_clip_norm}")
+        w_clipper = optax.clip_by_global_norm(config.w_grad_clip_norm)
+        optim_w_steps.append(w_clipper)
+    optim_w_steps.append(base_optim_w)
+    final_optim_w = optax.chain(*optim_w_steps)
+
+    # --- Create pcx Optim wrappers using the final optimizers ---
+    optim_h = pxu.Optim(lambda: final_optim_h_train)
+    optim_h_inference = pxu.Optim(lambda: final_optim_h_inference)
     optim_w = pxu.Optim(
-        lambda: optax.adamw(weights_lr_fn, weight_decay=config.weight_decay), 
+        lambda: final_optim_w, 
         pxu.M(pxnn.LayerParam)(model)
     )
     
@@ -1105,6 +1274,10 @@ def main():
     
     for epoch in range(config.epochs):
         epoch_start = time.time()
+        if model_config.use_inference_lr_scaling:
+            print(f"Current inference_lr_scale_base: {model_config.inference_lr_scale_base}")
+        else:
+            print("Inference LR scaling is disabled.")
         print(f"Epoch {epoch+1}/{config.epochs}")
         
         # Get current learning rates - handle both scheduled and constant LR cases
@@ -1128,6 +1301,26 @@ def main():
             train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch
         )
         
+        # <<< DEBUG PRINT >>>
+        print(f"DEBUG: avg_train_mse from train() - Value: {avg_train_mse}, Type: {type(avg_train_mse)}")
+        
+        # <<< Ensure metrics are Python floats/NaN >>>
+        avg_train_w_energy = float(avg_train_w_energy) if not jnp.isnan(avg_train_w_energy) else float('nan')
+        avg_train_mse = float(avg_train_mse) if not jnp.isnan(avg_train_mse) else float('nan')
+        # <<< END MODIFICATION --- >>>
+        
+        training_nan_detected = False
+        if jnp.isnan(avg_train_w_energy) or jnp.isnan(avg_train_mse):
+            print(f"!!! WARNING: NaN detected in training metrics (Energy: {avg_train_w_energy}, MSE: {avg_train_mse}) at Epoch {epoch+1}. Stopping training for this run. !!!")
+            early_stopped = True
+            early_stop_reason = 'NaN' # <<< Indicate reason for NaN stop
+            early_stopped_epoch = epoch
+            training_nan_detected = True
+            # Ensure metrics logged reflect the failure
+            avg_train_w_energy = float('nan')
+            avg_train_mse = float('nan') 
+
+        
         # Initialize epoch_metrics here to store training metrics
         epoch_metrics = {
             'Losses/train_w_energy_avg': avg_train_w_energy,
@@ -1136,11 +1329,11 @@ def main():
             'LearningRate/hidden': current_h_lr
         }
 
-        if (epoch + 1) % config.validation_every_n_epochs == 0 or epoch == config.epochs - 1 or (config.use_early_stopping and early_stopped and epoch == early_stopped_epoch):
+        # --- Run validation and other epoch-end tasks only if training was successful --- 
+        # <<< --- ADD CHECK: Only proceed if no NaN and not already early stopped normally --- >>>
+        if not training_nan_detected and ( (epoch + 1) % config.validation_every_n_epochs == 0 or epoch == config.epochs - 1 or (config.use_early_stopping and early_stopped and epoch == early_stopped_epoch) ):
+        # <<< --- END CHECK --- >>>
             print(f"Evaluating pretext task metrics on validation set...")
-            # Use config settings for evaluation masking
-            # NOTE: T_values for eval might differ from training T
-            # Use val_loader here
             pretext_metrics = eval_pretext_metrics(
                 val_loader, # Use validation loader
                 T_values=config.eval_inference_steps, # Use eval_inference_steps
@@ -1167,10 +1360,10 @@ def main():
                 print("Warning: Gradients not available for Vode stats logging.")
 
             # Initialize best_val_loss on the first validation run
-            current_val_metric = pretext_metrics.get('masked_mse', float('inf')) # Use masked_mse for early stopping
+            current_val_metric = pretext_metrics.get('full_mse', float('inf')) # <<< Use full_mse for early stopping
             if best_val_loss == float('inf') and current_val_metric != float('inf'):
                  best_val_loss = current_val_metric
-                 print(f"Initialized best_val_loss for early stopping with masked_mse: {best_val_loss:.6f}")
+                 print(f"Initialized best_val_loss for early stopping with full_mse: {best_val_loss:.6f}")
             
              # Early stopping check based on the chosen metric (e.g., masked_mse)
             if config.use_early_stopping and best_val_loss != float('inf'): # Ensure best_val_loss is initialized
@@ -1185,6 +1378,7 @@ def main():
                     if epochs_without_improvement >= config.early_stopping_patience:
                         print(f"Early stopping triggered after {epoch+1} epochs!")
                         early_stopped = True
+                        early_stop_reason = "Validation" # <<< Indicate reason
                         early_stopped_epoch = epoch
                         # Log final metrics before breaking
                         run.log(epoch_metrics, step=epoch+1)
@@ -1196,7 +1390,7 @@ def main():
         # Generate reconstructions every N epochs (and for the final epoch)
         # Base the condition on one of the new validation metrics if available and valid
         # Use the most recently calculated validation metric if available
-        current_val_metric_for_recon = pretext_metrics.get('masked_mse', float('inf')) 
+        current_val_metric_for_recon = pretext_metrics.get('full_mse', float('inf')) 
 
         # Trigger reconstruction based on interval OR significant improvement OR final epoch/stop
         trigger_reconstruction = False
@@ -1209,10 +1403,8 @@ def main():
         elif early_stopped and epoch == early_stopped_epoch: # After early stopping
              trigger_reconstruction = True
              
-        if trigger_reconstruction:
+        if trigger_reconstruction and not training_nan_detected:
             print(f"Generating reconstructions for epoch {epoch+1} (Val Metric: {current_val_metric_for_recon:.6f})...")
-            # Pass the config object here
-            # Use train_loader for visualizing training samples
             vis_path, vis_logs = visualize_reconstruction(
                 model, 
                 model_config, 
@@ -1231,6 +1423,11 @@ def main():
         # Break loop if early stopping occurred in the validation check
         if early_stopped and epoch == early_stopped_epoch:
             break
+    
+    # <<< DETERMINE FINAL STATUS >>>
+    if not early_stopped:
+        early_stop_reason = None # Completed normally
+    # If early_stopped is True, early_stop_reason is already set ('Validation' or 'NaN')
     
     # Create summary tables after training is complete
     if all_epochs_energy_data:
@@ -1261,6 +1458,32 @@ def main():
     wandb.finish()
     
     print("Debug run completed!")
+    # Return the average training MSE of the last epoch, or infinity if NaN occurred
+    # <<< --- MODIFY FINAL RETURN VALUE --- >>>
+    final_avg_train_mse = float('inf') # Default to infinity
+    if 'epoch_metrics' in locals() and 'Losses/train_mse_avg' in epoch_metrics:
+        # epoch_metrics now guaranteed to contain Python float or NaN
+        final_avg_train_mse = epoch_metrics['Losses/train_mse_avg'] 
+    elif 'avg_train_mse' in locals() and not np.isnan(avg_train_mse):
+        # Fallback if epoch_metrics wasn't populated but avg_train_mse from the last loop iteration is valid
+        final_avg_train_mse = float(avg_train_mse) # Ensure fallback is float
+    
+    # If a NaN was detected during training, explicitly set final_avg_train_mse to NaN for clarity
+    if early_stop_reason == 'NaN':
+        final_avg_train_mse = float('nan') # Use NaN to be distinct from other high MSEs
+    # <<< --- END MODIFICATION --- >>>
+    
+    print(f"Run {effective_wandb_run_name} finished with final avg_train_mse: {final_avg_train_mse}")
+    
+    # <<< DEBUG PRINT >>>
+    print(f"DEBUG: Returning from run_experiment - final_mse: {final_avg_train_mse}, Type: {type(final_avg_train_mse)}, Reason: {early_stop_reason}")
+    return final_avg_train_mse, early_stop_reason
 
 if __name__ == "__main__":
-    main() 
+    cli_args = parse_args()
+    
+    # Prepare config_overrides from CLI arguments, excluding 'config' which is used for base_config_name
+    overrides = {k: v for k, v in vars(cli_args).items() if v is not None and k != 'config'}
+    
+    run_experiment(base_config_name=cli_args.config, 
+                   config_overrides=overrides) 
