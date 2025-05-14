@@ -55,8 +55,8 @@ class ModelConfig:
     train_subset: int = 50000
     test_subset: int = 1000
     target_class: Optional[int] = None
-    reconstruction_every_n_epochs: int = 50 # WARNING: changing this to 1 caused training instability. Less frequent reconstruction is better. Tested only with 10 so far which works ok.
-    validation_every_n_epochs: int = 50
+    reconstruction_every_n_epochs: int = 25 # Adjusted for shorter runs
+    validation_every_n_epochs: int = 5 # Adjusted for shorter runs
 
     use_corruption: bool = False
     corrupt_ratio: float = 0.25
@@ -84,26 +84,27 @@ class ModelConfig:
     # Training settings
     use_noise: bool = True
     batch_size: int = 200
-    epochs: int = 50
+    epochs: int = 75 # Updated for current experiment, increased from 25
     inference_steps: int = 20
     eval_inference_steps: List[int] = field(default_factory=lambda: [20])
     reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 8, 12, 16, 20])
 
-    # # Settings without status.init: epochs=10, hidden_size=64, num_blocks=0, inference_steps=24, mse=0.007
-    # peak_lr_weights: float = 0.005
-    # peak_lr_hidden: float = 0.0075
+    # # Settings without status.init: epochs=10, hidden_size=64, num_blocks=4, inference_steps=20, update_weights_every_inference_step=False, use_inference_lr_scaling=True, inference_lr_scale_base=1.3, h_grad_clip_norm=1000.0, w_grad_clip_norm=None, mse=0.006
+    # peak_lr_weights: float = 0.001
+    # peak_lr_hidden: float = 0.1
 
-    # Settings without status.init: epochs=20, hidden_size=64, num_blocks=1, inference_steps=20, update_weights_every_inference_step=False, mse=0.0008
-    peak_lr_weights: float = 0.001
-    peak_lr_hidden: float = 0.1
+    # # Settings without status.init: epochs=50, hidden_size=64, num_blocks=4, inference_steps=20, update_weights_every_inference_step=False, use_inference_lr_scaling=True, inference_lr_scale_base=1.3, grad_clip_norm=None, mse=0.004
+    # peak_lr_weights: float = 0.001
+    # peak_lr_hidden: float = 0.1
 
-    # Settings without status.init: epochs=50, hidden_size=64, num_blocks=4, inference_steps=20, update_weights_every_inference_step=False, use_inference_lr_scaling=True, inference_lr_scale_base=1.3, grad_clip_norm=None, mse=0.004
-    peak_lr_weights: float = 0.001
-    peak_lr_hidden: float = 0.1
+    # # Settings without status.init: epochs=10, hidden_size=64, num_blocks=4, inference_steps=20, update_weights_every_inference_step=False, use_inference_lr_scaling=True, inference_lr_scale_base=1.3, grad_clip_norm=1000.0, mse=0.006
+    # peak_lr_weights: float = 0.001
+    # peak_lr_hidden: float = 0.1
 
-    # Settings without status.init: epochs=50, hidden_size=64, num_blocks=5, inference_steps=20, update_weights_every_inference_step=False, use_inference_lr_scaling=True, inference_lr_scale_base=1.3, grad_clip_norm=None, mse=0.022
-    peak_lr_weights: float = 0.001
-    peak_lr_hidden: float = 0.05
+    # TODO: this is the best one so far.
+    # Settings without status.init: epochs=50, hidden_size=64, num_blocks=5, inference_steps=20, update_weights_every_inference_step=False, use_inference_lr_scaling=True, inference_lr_scale_base=1.3, h_grad_clip_norm=1000.0, w_grad_clip_norm=None, mse=0.022
+    peak_lr_weights: float = 0.001       # Maintained from successful searches
+    peak_lr_hidden: float = 0.07          # Updated for current experiment
 
     # # Settings without status.init: hidden_size=64, num_blocks=3, inference_steps=24
     # peak_lr_weights: float = 0.0025
@@ -123,16 +124,18 @@ class ModelConfig:
     
     # Layer-specific inference LR scaling
     use_inference_lr_scaling: bool = True
-    inference_lr_scale_base: Optional[float] = 1.3 # Base for exponential scaling (None to disable scaling calculation)
+    inference_lr_scale_base: Optional[float] = 1.1 # Updated for current experiment
 
-    grad_clip_norm: Optional[float] = 200.0 # Max norm for gradient clipping (None to disable)
+    # grad_clip_norm: Optional[float] = 1000.0 # Max norm for gradient clipping (None to disable) # Old combined clipping
+    h_grad_clip_norm: Optional[float] = 1000.0 # Max norm for H-gradient clipping
+    w_grad_clip_norm: Optional[float] = 500.0  # Max norm for W-gradient clipping
 
     # iPC or classic PC
     update_weights_every_inference_step: bool = False
     
     # Early stopping settings
     use_early_stopping: bool = True
-    early_stopping_patience: int = 10
+    early_stopping_patience: int = 7 # Adjusted for longer runs
     early_stopping_min_delta: float = 0.0001
     save_reconstruction_images: bool = True # Option to save static image grid
     save_reconstruction_video: bool = True # Option to save video
@@ -149,6 +152,49 @@ MODEL_CONFIGS = {
         hidden_size=64,
         num_heads=1,
         num_blocks=5,
+        # Target experiment settings for next run:
+        peak_lr_hidden=0.07,
+        inference_lr_scale_base=1.1,
+        h_grad_clip_norm=1000.0,
+        w_grad_clip_norm=500.0,
+        epochs=25,
+        use_inference_lr_scaling=True,
+        validation_every_n_epochs=5, # Keep frequent validation
+        reconstruction_every_n_epochs=25 # And reconstruction
+    ),
+    "5block_candidate_A": ModelConfig(
+        name="5block_candidate_A",
+        num_blocks=5,
+        hidden_size=64,
+        num_heads=1,
+        epochs=50,
+        peak_lr_weights=0.001,
+        peak_lr_hidden=0.1,
+        inference_lr_scale_base=1.3,
+        h_grad_clip_norm=1000.0,
+        w_grad_clip_norm=500.0,
+        early_stopping_patience=7,
+        use_inference_lr_scaling=True,
+        weight_decay=2e-4,
+        use_status_init_in_training=False,
+        use_status_init_in_unmasking=False
+    ),
+    "5block_candidate_B": ModelConfig(
+        name="5block_candidate_B",
+        num_blocks=5,
+        hidden_size=64,
+        num_heads=1,
+        epochs=50,
+        peak_lr_weights=0.001,
+        peak_lr_hidden=0.07, # Difference from Candidate A
+        inference_lr_scale_base=1.3,
+        h_grad_clip_norm=1000.0,
+        w_grad_clip_norm=500.0,
+        early_stopping_patience=7,
+        use_inference_lr_scaling=True,
+        weight_decay=2e-4,
+        use_status_init_in_training=False,
+        use_status_init_in_unmasking=False
     ),
     "debug_small": ModelConfig(
         name="debug_small",
@@ -165,7 +211,7 @@ MODEL_CONFIGS = {
 }
 
 # Default configuration to use
-DEFAULT_CONFIG = "debug_small"
+DEFAULT_CONFIG = "debug_tiny" # Changed to run the new specific settings
 
 
 def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
@@ -1051,10 +1097,14 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     if not effective_wandb_run_name:
         # Create a more descriptive run name if not provided
         lr_w_str = f"lrw{config.peak_lr_weights:.0e}" if config.peak_lr_weights else "lrwDEF"
-        lr_h_str = f"lrw{config.peak_lr_hidden:.0e}" if config.peak_lr_hidden else "lrhDEF"
+        lr_h_str = f"lrh{config.peak_lr_hidden:.2f}".replace('.', 'p') # Format for clarity
         nb_str = f"nb{config.num_blocks}"
         hs_str = f"hs{config.hidden_size}"
-        effective_wandb_run_name = f"{config.name}_{nb_str}_{hs_str}_{lr_w_str}_{lr_h_str}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        scale_base_str = f"sbase{config.inference_lr_scale_base:.2f}".replace('.', 'p') if config.use_inference_lr_scaling and config.inference_lr_scale_base is not None else "sbaseOFF"
+        hclip_str = f"hclip{config.h_grad_clip_norm}" if config.h_grad_clip_norm is not None else "hclipOFF"
+        wclip_str = f"wclip{config.w_grad_clip_norm}" if config.w_grad_clip_norm is not None else "wclipOFF"
+        
+        effective_wandb_run_name = f"{config.name}_{nb_str}_{hs_str}_{lr_w_str}_{lr_h_str}_{scale_base_str}_{hclip_str}_{wclip_str}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
     # Initialize Weights & Biases
     run = wandb.init(
@@ -1159,20 +1209,37 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     base_optim_h_inference = optax.sgd(config.hidden_lr_inference, momentum=0.1)
     base_optim_w = optax.adamw(weights_lr_fn, weight_decay=config.weight_decay)
     
-    # --- Apply gradient clipping if configured --- 
-    if config.grad_clip_norm is not None and config.grad_clip_norm > 0:
-        print(f"Applying gradient clipping with max_norm = {config.grad_clip_norm}")
-        clipper = optax.clip_by_global_norm(config.grad_clip_norm)
-        final_optim_h_train = optax.chain(clipper, base_optim_h_train)
-        final_optim_h_inference = optax.chain(clipper, base_optim_h_inference)
-        final_optim_w = optax.chain(clipper, base_optim_w)
-    else:
-        print("Gradient clipping is disabled.")
-        final_optim_h_train = base_optim_h_train
-        final_optim_h_inference = base_optim_h_inference
-        final_optim_w = base_optim_w
+    # --- Apply gradient clipping if configured ---
 
-    # --- Create pcx Optim wrappers using the final optimizers --- 
+    # Clipping for H gradients (training)
+    optim_h_train_steps = []
+    if config.h_grad_clip_norm is not None and config.h_grad_clip_norm > 0:
+        print(f"Applying H-gradient clipping with max_norm = {config.h_grad_clip_norm}")
+        h_clipper = optax.clip_by_global_norm(config.h_grad_clip_norm)
+        optim_h_train_steps.append(h_clipper)
+    optim_h_train_steps.append(base_optim_h_train)
+    final_optim_h_train = optax.chain(*optim_h_train_steps)
+
+    # Clipping for H gradients (inference)
+    optim_h_inference_steps = []
+    if config.h_grad_clip_norm is not None and config.h_grad_clip_norm > 0:
+        # Assuming same clipping for training and inference h grads, if not, add another config field
+        if 'h_clipper' not in locals(): # Define h_clipper if not already defined (e.g. if h_grad_clip_norm was only for training)
+            h_clipper = optax.clip_by_global_norm(config.h_grad_clip_norm)
+        optim_h_inference_steps.append(h_clipper)
+    optim_h_inference_steps.append(base_optim_h_inference)
+    final_optim_h_inference = optax.chain(*optim_h_inference_steps)
+
+    # Clipping for W gradients
+    optim_w_steps = []
+    if config.w_grad_clip_norm is not None and config.w_grad_clip_norm > 0:
+        print(f"Applying W-gradient clipping with max_norm = {config.w_grad_clip_norm}")
+        w_clipper = optax.clip_by_global_norm(config.w_grad_clip_norm)
+        optim_w_steps.append(w_clipper)
+    optim_w_steps.append(base_optim_w)
+    final_optim_w = optax.chain(*optim_w_steps)
+
+    # --- Create pcx Optim wrappers using the final optimizers ---
     optim_h = pxu.Optim(lambda: final_optim_h_train)
     optim_h_inference = pxu.Optim(lambda: final_optim_h_inference)
     optim_w = pxu.Optim(
