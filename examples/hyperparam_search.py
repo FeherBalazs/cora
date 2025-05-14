@@ -24,7 +24,7 @@ def perform_hyperparameter_search():
         "peak_lr_weights": 0.001, 
         "peak_lr_hidden": 0.1, # Best found hidden LR
         "reconstruction_every_n_epochs": 25, # Adjust for longer runs
-        "validation_every_n_epochs": 5,    
+        "validation_every_n_epochs": 1,    
         "use_inference_lr_scaling": True,
         "h_grad_clip_norm": 1000.0, 
         "w_grad_clip_norm": 500.0,   
@@ -33,8 +33,8 @@ def perform_hyperparameter_search():
     }
 
     # Parameter candidates for the new focused grid search (50 epochs)
-    lr_hidden_candidates = [0.1] # Fixed to best found
-    inference_lr_scale_base_candidates = [1.15, 1.20, 1.25] # Best performing scales
+    lr_hidden_candidates = [0.1, 1.1, 1.2] # Fixed to best found
+    inference_lr_scale_base_candidates = [1.15, 1.20] # Best performing scales
     h_grad_clip_norm_candidates = [fixed_overrides["h_grad_clip_norm"]] # Fixed
     w_grad_clip_norm_candidates = [fixed_overrides["w_grad_clip_norm"]] # Fixed
     seed_candidates = [42, 123, 1024] # Seeds for robustness check
