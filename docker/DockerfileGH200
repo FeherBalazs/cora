@@ -23,8 +23,12 @@ RUN groupadd -g 1000 cora \
     && useradd -m -u 1000 -g cora cora \
     # Allow the user to install packages
     && chmod -R a+rwx /usr/local /usr/include/python3.11
-USER cora:cora
+
+# Set the working directory and ensure the cora user owns it
 WORKDIR /home/cora/workspace
+RUN chown cora:cora /home/cora/workspace
+
+USER cora:cora
 
 # Install pip and setuptools first
 RUN python -m pip install --upgrade pip setuptools wheel
