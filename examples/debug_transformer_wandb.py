@@ -84,7 +84,7 @@ class ModelConfig:
     # Training settings
     use_noise: bool = True
     batch_size: int = 200
-    epochs: int = 75 # Updated for current experiment, increased from 25
+    epochs: int = 75
     inference_steps: int = 20
     eval_inference_steps: List[int] = field(default_factory=lambda: [20])
     reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 8, 12, 16, 20])
@@ -120,7 +120,7 @@ class ModelConfig:
     
     # Layer-specific inference LR scaling
     use_inference_lr_scaling: bool = True
-    inference_lr_scale_base: Optional[float] = 1.1 # Updated for current experiment
+    inference_lr_scale_base: Optional[float] = 1.2
 
     # grad_clip_norm: Optional[float] = 1000.0 # Max norm for gradient clipping (None to disable) # Old combined clipping
     h_grad_clip_norm: Optional[float] = 1000.0 # Max norm for H-gradient clipping
@@ -158,39 +158,65 @@ MODEL_CONFIGS = {
         validation_every_n_epochs=5, # Keep frequent validation
         reconstruction_every_n_epochs=25 # And reconstruction
     ),
-    "5block_candidate_A": ModelConfig(
-        name="5block_candidate_A",
-        num_blocks=5,
+    "5block": ModelConfig(
+        name="5block",
+        # Dataset settings
+        dataset="cifar10",
+        data_dir="../datasets/",
+        train_subset=50000,
+        test_subset=200,
+        target_class=None,
+        reconstruction_every_n_epochs=10,
+        validation_every_n_epochs=5,
+        use_corruption=False,
+        corrupt_ratio=0.25,
+        use_lower_half_mask=False,
+        inference_clamp_alpha=1.0,
+        # Visualization settings
+        num_images=2,
+        # Model architecture
         hidden_size=64,
         num_heads=1,
-        epochs=50,
+        num_blocks=5,
+        mlp_ratio=4.0,
+        patch_size=4,
+        axes_dim=[16, 16],
+        theta=100,
+        act_fn=jax.nn.swish,
+        # Status init settings
+        use_status_init_in_training=False,
+        use_status_init_in_unmasking=False,
+        # Training settings
+        use_noise=True,
+        batch_size=200,
+        epochs=75,
+        inference_steps=20,
+        eval_inference_steps=[20],
+        reconstruction_steps=[20],
         peak_lr_weights=0.001,
         peak_lr_hidden=0.1,
-        inference_lr_scale_base=1.3,
+        update_weights_during_unmasking=False,
+        hidden_lr_inference=0.1,
+        weight_decay=2e-4,
+        warmup_epochs=0,
+        use_lr_schedule=True,
+        seed=42,
+        # Layer-specific inference LR scaling
+        use_inference_lr_scaling=True,
+        inference_lr_scale_base=1.2,
+        # Grad clipping
         h_grad_clip_norm=1000.0,
         w_grad_clip_norm=500.0,
-        early_stopping_patience=7,
-        use_inference_lr_scaling=True,
-        weight_decay=2e-4,
-        use_status_init_in_training=False,
-        use_status_init_in_unmasking=False
-    ),
-    "5block_candidate_B": ModelConfig(
-        name="5block_candidate_B",
-        num_blocks=5,
-        hidden_size=64,
-        num_heads=1,
-        epochs=50,
-        peak_lr_weights=0.001,
-        peak_lr_hidden=0.07, # Difference from Candidate A
-        inference_lr_scale_base=1.3,
-        h_grad_clip_norm=1000.0,
-        w_grad_clip_norm=500.0,
-        early_stopping_patience=7,
-        use_inference_lr_scaling=True,
-        weight_decay=2e-4,
-        use_status_init_in_training=False,
-        use_status_init_in_unmasking=False
+        # iPC or classic PC
+        update_weights_every_inference_step=False,
+        # Early stopping settings
+        use_early_stopping=True,
+        early_stopping_patience=10,
+        early_stopping_min_delta=0.001,
+        save_reconstruction_images=True,
+        save_reconstruction_video=True,
+        video_fps=60,
+        reinitialize_model_for_each_epoch=False
     ),
     "debug_small": ModelConfig(
         name="debug_small",
@@ -280,26 +306,44 @@ def parse_args():
 
 def create_learning_rate_schedule(base_lr, warmup_epochs, total_epochs, steps_per_epoch):
     """Create a learning rate schedule with warmup and cosine decay to half of the peak rate."""
-    # Set minimum learning rate to half of the peak
     min_lr = base_lr * 0.5
     
     def lr_schedule(step):
-        epoch = step / steps_per_epoch
+        epoch_float = step / steps_per_epoch
+
+        # Calculate arguments for decay phase
+        # Effective start of decay phase in terms of epoch_float
+        decay_begins_at_epoch = float(warmup_epochs)
+        # Duration of the decay phase
+        decay_phase_duration = float(total_epochs - warmup_epochs)
         
-        # Linear warmup phase
-        warmup_lr = base_lr * (epoch / warmup_epochs)
+        # Ensure decay_phase_duration is at least a small positive number
+        safe_decay_phase_duration = jnp.maximum(decay_phase_duration, 1e-8)
+
+        # Progress into the decay phase (can be negative if still in warmup)
+        progress_into_decay = epoch_float - decay_begins_at_epoch
         
-        # Cosine decay phase with minimum value = min_lr
-        decay_ratio = (epoch - warmup_epochs) / (total_epochs - warmup_epochs)
-        decay_ratio = jnp.clip(decay_ratio, 0.0, 1.0)  # Ensure it's between 0 and 1
+        decay_ratio = progress_into_decay / safe_decay_phase_duration
+        decay_ratio = jnp.clip(decay_ratio, 0.0, 1.0) 
         
-        # Modified cosine decay to range from base_lr to min_lr (not zero)
         cosine_factor = 0.5 * (1.0 + jnp.cos(jnp.pi * decay_ratio))
-        decay_lr = min_lr + (base_lr - min_lr) * cosine_factor
-        
-        # Return warmup_lr during warmup, decay_lr afterward
-        return jnp.where(epoch < warmup_epochs, warmup_lr, decay_lr)
-    
+        decay_lr_value = min_lr + (base_lr - min_lr) * cosine_factor
+
+        if warmup_epochs > 0:
+            # Calculate linear warmup learning rate
+            # Progress through warmup phase, clipped to [0,1]
+            warmup_phase_progress = jnp.clip(epoch_float / float(warmup_epochs), 0.0, 1.0)
+            warmup_lr_value = base_lr * warmup_phase_progress
+            
+            # Select LR based on whether current epoch_float is in warmup or decay phase
+            current_lr = jnp.where(epoch_float < float(warmup_epochs), warmup_lr_value, decay_lr_value)
+        else:
+            # No warmup epochs, so current_lr is directly the decay_lr_value
+            # (decay_ratio was calculated assuming decay starts from epoch 0)
+            current_lr = decay_lr_value
+            
+        return current_lr
+            
     return lr_schedule
 
 
@@ -1297,19 +1341,14 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
             train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch
         )
         
-        # <<< DEBUG PRINT >>>
-        print(f"DEBUG: avg_train_mse from train() - Value: {avg_train_mse}, Type: {type(avg_train_mse)}")
-        
-        # <<< Ensure metrics are Python floats/NaN >>>
         avg_train_w_energy = float(avg_train_w_energy) if not jnp.isnan(avg_train_w_energy) else float('nan')
         avg_train_mse = float(avg_train_mse) if not jnp.isnan(avg_train_mse) else float('nan')
-        # <<< END MODIFICATION --- >>>
         
         training_nan_detected = False
         if jnp.isnan(avg_train_w_energy) or jnp.isnan(avg_train_mse):
             print(f"!!! WARNING: NaN detected in training metrics (Energy: {avg_train_w_energy}, MSE: {avg_train_mse}) at Epoch {epoch+1}. Stopping training for this run. !!!")
             early_stopped = True
-            early_stop_reason = 'NaN' # <<< Indicate reason for NaN stop
+            early_stop_reason = 'NaN'
             early_stopped_epoch = epoch
             training_nan_detected = True
             # Ensure metrics logged reflect the failure
@@ -1405,7 +1444,7 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
                 model, 
                 model_config, 
                 optim_h_inference, 
-                train_loader, 
+                val_loader, 
                 config=config, 
                 wandb_run=run,
                 epoch=epoch+1,
