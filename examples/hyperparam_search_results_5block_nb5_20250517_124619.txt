@@ -1,0 +1,27 @@
+Hyperparameter Search Log - 2025-05-17 12:46:19
+Base Config: 5block (num_blocks=5)
+Fixed Overrides (excluding searched params):
+  num_blocks: 5
+  num_heads: 1
+  hidden_size: 64
+  epochs: 75
+  batch_size: 200
+  peak_lr_weights: 0.001
+  reconstruction_every_n_epochs: 25
+  validation_every_n_epochs: 10
+  use_inference_lr_scaling: True
+  use_lr_schedule: True
+  use_vode_state_layernorm: False
+  use_vode_grad_norm: False
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Run | LR Hid | Scale   | Inf Steps | Warmup Steps | Norm Target | H Clip | W Clip | Seed | W&B Run Name                                                 | Final Train MSE | Status
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+5   | 1.00e-01 | 1.24    | 20        | 0            | 50.0        | 10000.0 | 500.0  | 42   | nb5_lrw1.00e-03_lrh1.00e-01_sb1p24_is20_ws0_nt50p0_hclip10000_wclip500_e75_seed42 | 0.01238766      | (Done)
+2   | 1.00e-01 | 1.24    | 20        | 0            | 50.0        | 2000.0 | 500.0  | 50   | nb5_lrw1.00e-03_lrh1.00e-01_sb1p24_is20_ws0_nt50p0_hclip2000_wclip500_e75_seed50 | 0.01364594      | (Done)
+6   | 1.00e-01 | 1.24    | 20        | 0            | 50.0        | 10000.0 | 500.0  | 50   | nb5_lrw1.00e-03_lrh1.00e-01_sb1p24_is20_ws0_nt50p0_hclip10000_wclip500_e75_seed50 | 0.01518008      | (Done)
+4   | 1.00e-01 | 1.24    | 20        | 0            | 50.0        | 5000.0 | 500.0  | 50   | nb5_lrw1.00e-03_lrh1.00e-01_sb1p24_is20_ws0_nt50p0_hclip5000_wclip500_e75_seed50 | 0.01686445      | (Done)
+3   | 1.00e-01 | 1.24    | 20        | 0            | 50.0        | 5000.0 | 500.0  | 42   | nb5_lrw1.00e-03_lrh1.00e-01_sb1p24_is20_ws0_nt50p0_hclip5000_wclip500_e75_seed42 | 0.07047977      | (Done)
+1   | 1.00e-01 | 1.24    | 20        | 0            | 50.0        | 2000.0 | 500.0  | 42   | nb5_lrw1.00e-03_lrh1.00e-01_sb1p24_is20_ws0_nt50p0_hclip2000_wclip500_e75_seed42 | 0.10200095      | (Done)
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Best Params: peak_lr_hidden=1.00e-01, inference_lr_scale_base=1.24, inference_steps=20, warmup_steps=0, vode_grad_norm_target=50.0, h_grad_clip_norm=10000.0, w_grad_clip_norm=500.0, seed=42 (lr_weights=1.00e-03 fixed)
+Best MSE: 0.012388

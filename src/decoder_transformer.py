@@ -86,6 +86,11 @@ class TransformerConfig:
     use_status_init_in_training: bool = True
     use_status_init_in_unmasking: bool = True
 
+    # New normalization options
+    use_vode_state_layernorm: bool = False # Apply LayerNorm to Vode hidden states (h)
+    use_vode_grad_norm: bool = False       # Normalize Vode h-gradients before optimizer step
+    vode_grad_norm_target: float = 1.0     # Target norm for h-gradient normalization
+
     def __post_init__(self):
         # Determine if we're dealing with video based on the shape of image_shape
         if len(self.image_shape) == 4:
@@ -184,6 +189,15 @@ class TransformerDecoder(pxc.EnergyModule):
             num_frames=config.num_frames if config.is_video else None,
             theta=config.theta
         )
+
+        # LayerNorms for Vode states, if enabled
+        self.vode_output_layernorms = []
+        if self.config.use_vode_state_layernorm:
+            # LayerNorm after patch projection Vode (Vode 1)
+            self.vode_output_layernorms.append(pxnn.LayerNorm(shape=(config.hidden_size,)))
+            # LayerNorms after each Transformer block Vode
+            for _ in range(config.num_blocks):
+                self.vode_output_layernorms.append(pxnn.LayerNorm(shape=(config.hidden_size,)))
     
     def __call__(self, y: jax.Array | None = None):        
         # Get the initial sequence of patch embeddings from Vode 0
@@ -197,12 +211,16 @@ class TransformerDecoder(pxc.EnergyModule):
 
         # Apply patch projection vode
         x = self.vodes[1](x)
+        if self.config.use_vode_state_layernorm and self.vode_output_layernorms:
+            x = jax.vmap(self.vode_output_layernorms[0])(x)
 
         # Process through transformer blocks
         for i, block in enumerate(self.transformer_blocks):
             # Apply residual connection
             x = x + block(x)
             x = self.vodes[i+2](x) # Apply Vode
+            if self.config.use_vode_state_layernorm and len(self.vode_output_layernorms) > (i + 1):
+                x = jax.vmap(self.vode_output_layernorms[i+1])(x)
     
         # Project back to patch_dim
         x = jax.vmap(self.output_projection)(x)
@@ -393,6 +411,45 @@ def apply_exponential_layer_scaling(model_grads, config: TransformerConfig):
     return jax.tree_util.tree_map_with_path(map_fn, model_grads)
 
 
+def normalize_vode_h_gradients(model_grads, config: TransformerConfig):
+    """
+    Applies L2 normalization to each Vode's hidden state gradients (h).
+    The gradients are scaled to have a norm of `config.vode_grad_norm_target`.
+
+    Args:
+        model_grads: The PyTree of gradients for the model's Vode hidden states.
+                     Expected to be the part of the grads relevant to Vodes, e.g., h_grad["model"].
+        config: The model configuration object.
+
+    Returns:
+        The gradient PyTree with normalized h gradients for Vodes.
+    """
+    if not config.use_vode_grad_norm: # Check if normalization is enabled
+        return model_grads
+
+    def map_fn_vode_grad_norm(path, leaf_grad_value):
+        # Check if the current leaf is a Vode's h-gradient value
+        # Path structure: ('vodes', SequenceKey(idx=i), GetAttrKey(name='h'), GetAttrKey(name='value'))
+        is_vode_h_grad_value = (
+            len(path) == 4 and
+            isinstance(path[0], jax.tree_util.GetAttrKey) and path[0].name == 'vodes' and
+            isinstance(path[1], jax.tree_util.SequenceKey) and # Index of the Vode in the list
+            isinstance(path[2], jax.tree_util.GetAttrKey) and path[2].name == 'h' and
+            isinstance(path[3], jax.tree_util.GetAttrKey) and path[3].name == 'value'
+        )
+
+        if is_vode_h_grad_value and isinstance(leaf_grad_value, jax.Array):
+            norm = jnp.linalg.norm(leaf_grad_value)
+            epsilon = 1e-8  # To prevent division by zero
+            # Normalize and scale to the target norm
+            normalized_grad = (leaf_grad_value / (norm + epsilon)) * config.vode_grad_norm_target
+            return normalized_grad
+        else:
+            return leaf_grad_value # Return other leaves unchanged
+
+    return jax.tree_util.tree_map_with_path(map_fn_vode_grad_norm, model_grads)
+
+
 @pxf.jit(static_argnums=0)
 def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.Optim, epoch=None, step=None):
     model.train()
@@ -444,8 +501,15 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
                     model_grads=model_grads_to_apply,
                     config=model_closure.config
                 )
+            
+            # New: Apply Vode h-gradient normalization if enabled
+            if model_closure.config.use_vode_grad_norm:
+                model_grads_to_apply = normalize_vode_h_gradients(
+                    model_grads=model_grads_to_apply, # Pass the potentially already scaled grads
+                    config=model_closure.config
+                )
 
-            # Update hidden states using the (potentially scaled) gradients
+            # Update hidden states using the (potentially scaled and/or normalized) gradients
             optim_h_closure.step(model_closure, model_grads_to_apply)
 
             # We need to return the full h_grad_iter structure but with potentially scaled model grads
