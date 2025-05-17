@@ -984,7 +984,6 @@ def log_vode_stats(model, h_grad, w_grad, run, epoch):
                 energy_value = float(energy)
             elif isinstance(energy, jax.Array) and energy.size > 1:
                 # Handle case where energy is a non-scalar JAX array (e.g., per-batch energies)
-                # print(f"Info: Energy for vode {i} is an array (shape: {energy.shape}). Logging mean energy.")
                 energy_value = jnp.mean(energy).item() # Calculate and log the mean
             else:
                 # Handle unexpected non-scalar or non-array case
@@ -1030,22 +1029,6 @@ def log_vode_stats(model, h_grad, w_grad, run, epoch):
 def extract_vode_gradient_norms(h_grad):
     """Extract actual gradient L2 norms from the vode gradients"""
     vode_grad_norms = []
-    
-    # # Add debug information about the structure
-    # print(f"h_grad type: {type(h_grad)}")
-    # if isinstance(h_grad, dict) and 'model' in h_grad:
-    #     print(f"model_grads type: {type(h_grad['model'])}")
-    #     if hasattr(h_grad['model'], 'vodes'):
-    #         print(f"vodes type: {type(h_grad['model'].vodes)}")
-    #         print(f"Number of vodes: {len(h_grad['model'].vodes)}")
-    #         if len(h_grad['model'].vodes) > 0:
-    #             first_vode = h_grad['model'].vodes[0]
-    #             print(f"First vode type: {type(first_vode)}")
-    #             if hasattr(first_vode, 'h'):
-    #                 print(f"First vode.h type: {type(first_vode.h)}")
-    #                 if hasattr(first_vode.h, 'value'):
-    #                     print(f"First vode.h.value type: {type(first_vode.h.value)}")
-    #                     print(f"First vode.h.value shape: {first_vode.h.value.shape}")
     
     try:
         # Access the model gradients
