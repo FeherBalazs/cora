@@ -104,6 +104,7 @@ class ModelConfig:
     # Settings without status.init: epochs=50, hidden_size=64, num_blocks=5, inference_steps=20, update_weights_every_inference_step=False, use_inference_lr_scaling=True, inference_lr_scale_base=1.2, h_grad_clip_norm=1000.0, w_grad_clip_norm=500.0, mse=0.005 => possible to hit but erratically
     peak_lr_weights: float = 0.001
     peak_lr_hidden: float = 0.1
+    hidden_momentum: float = 0.1 # New: Momentum for hidden state optimizer
 
     # # Settings without status.init: hidden_size=64, num_blocks=3, inference_steps=24
     # peak_lr_weights: float = 0.0025
@@ -114,7 +115,7 @@ class ModelConfig:
 
     hidden_lr_inference: float = peak_lr_hidden * 1
     weight_decay: float = 2e-4
-    warmup_epochs: int = 5
+    warmup_steps: int = 0 # New: Number of steps for warmup
     use_lr_schedule: bool = False
     seed: int = 42
     
@@ -138,6 +139,10 @@ class ModelConfig:
     video_fps: int = 60 # Frames per second for the reconstruction video
     reinitialize_model_for_each_epoch: bool = False # WARNING: setting this to True will get around 0.24 val loss with 100 images vs 0.15 without.
     
+    # New normalization options
+    use_vode_state_layernorm: bool = False # Apply LayerNorm to Vode hidden states (h)
+    use_vode_grad_norm: bool = False       # Normalize Vode h-gradients before optimizer step
+    vode_grad_norm_target: float = 1.0     # Target norm for h-gradient normalization
     
 
 
@@ -156,7 +161,11 @@ MODEL_CONFIGS = {
         epochs=25,
         use_inference_lr_scaling=True,
         validation_every_n_epochs=5, # Keep frequent validation
-        reconstruction_every_n_epochs=25 # And reconstruction
+        reconstruction_every_n_epochs=25, # And reconstruction
+        # New norm options
+        use_vode_state_layernorm=False,
+        use_vode_grad_norm=False,
+        vode_grad_norm_target=1.0
     ),
     "5block": ModelConfig(
         name="5block",
@@ -198,7 +207,7 @@ MODEL_CONFIGS = {
         update_weights_during_unmasking=False,
         hidden_lr_inference=0.1,
         weight_decay=2e-4,
-        warmup_epochs=0,
+        warmup_steps=0, # Explicitly set for 5block
         use_lr_schedule=True,
         seed=42,
         # Layer-specific inference LR scaling
@@ -216,7 +225,77 @@ MODEL_CONFIGS = {
         save_reconstruction_images=True,
         save_reconstruction_video=True,
         video_fps=60,
-        reinitialize_model_for_each_epoch=False
+        reinitialize_model_for_each_epoch=False,
+        # New norm options
+        use_vode_state_layernorm=False,
+        use_vode_grad_norm=False,
+        vode_grad_norm_target=1.0,
+        hidden_momentum=0.1 # Default momentum
+    ),
+    "5block_dev": ModelConfig(
+        name="5block_dev",
+        # Dataset settings
+        dataset="cifar10",
+        data_dir="../datasets/",
+        train_subset=50000,
+        test_subset=200,
+        target_class=None,
+        reconstruction_every_n_epochs=10,
+        validation_every_n_epochs=5,
+        use_corruption=False,
+        corrupt_ratio=0.25,
+        use_lower_half_mask=False,
+        inference_clamp_alpha=1.0,
+        # Visualization settings
+        num_images=2,
+        # Model architecture
+        hidden_size=64,
+        num_heads=1,
+        num_blocks=5,
+        mlp_ratio=4.0,
+        patch_size=4,
+        axes_dim=[16, 16],
+        theta=100,
+        act_fn=jax.nn.swish,
+        # Status init settings
+        use_status_init_in_training=False,
+        use_status_init_in_unmasking=False,
+        # Training settings
+        use_noise=True,
+        batch_size=200,
+        epochs=75,
+        inference_steps=20,
+        eval_inference_steps=[20],
+        reconstruction_steps=[20],
+        peak_lr_weights=0.001,
+        peak_lr_hidden=0.1,
+        update_weights_during_unmasking=False,
+        hidden_lr_inference=0.1,
+        weight_decay=2e-4,
+        warmup_steps=0, # Explicitly set for 5block
+        use_lr_schedule=True,
+        seed=42,
+        # Layer-specific inference LR scaling
+        use_inference_lr_scaling=True,
+        inference_lr_scale_base=1.2,
+        # Grad clipping
+        h_grad_clip_norm=1000.0,
+        w_grad_clip_norm=500.0,
+        # iPC or classic PC
+        update_weights_every_inference_step=False,
+        # Early stopping settings
+        use_early_stopping=True,
+        early_stopping_patience=3,
+        early_stopping_min_delta=0.001,
+        save_reconstruction_images=True,
+        save_reconstruction_video=True,
+        video_fps=60,
+        reinitialize_model_for_each_epoch=False,
+        # New norm options
+        use_vode_state_layernorm=False,
+        use_vode_grad_norm=False,
+        vode_grad_norm_target=1.0,
+        hidden_momentum=0.1 # Default momentum
     ),
     # TODO: still actively experimenting with this
     "6block": ModelConfig(
@@ -250,7 +329,7 @@ MODEL_CONFIGS = {
         # Training settings
         use_noise=True,
         batch_size=200,
-        epochs=75,
+        epochs=50,
         inference_steps=20,
         eval_inference_steps=[20],
         reconstruction_steps=[20],
@@ -259,7 +338,7 @@ MODEL_CONFIGS = {
         update_weights_during_unmasking=False,
         hidden_lr_inference=0.1,
         weight_decay=2e-4,
-        warmup_epochs=0,
+        warmup_steps=0, # Explicitly set for 6block
         use_lr_schedule=True,
         seed=42,
         # Layer-specific inference LR scaling
@@ -272,24 +351,39 @@ MODEL_CONFIGS = {
         update_weights_every_inference_step=False,
         # Early stopping settings
         use_early_stopping=True,
-        early_stopping_patience=10,
+        early_stopping_patience=3,
         early_stopping_min_delta=0.001,
         save_reconstruction_images=True,
         save_reconstruction_video=True,
         video_fps=60,
-        reinitialize_model_for_each_epoch=False
+        reinitialize_model_for_each_epoch=False,
+        # New norm options
+        use_vode_state_layernorm=False,
+        use_vode_grad_norm=False,
+        vode_grad_norm_target=1.0,
+        hidden_momentum=0.1 # Default momentum
     ),
     "debug_small": ModelConfig(
         name="debug_small",
         hidden_size=512,
         num_heads=8,
         num_blocks=6,
+        # New norm options
+        use_vode_state_layernorm=False,
+        use_vode_grad_norm=False,
+        vode_grad_norm_target=1.0,
+        hidden_momentum=0.1 # Default momentum
     ),
     "baseline": ModelConfig(
         name="baseline",
         hidden_size=128,
         num_heads=8,
         num_blocks=6,
+        # New norm options
+        use_vode_state_layernorm=False,
+        use_vode_grad_norm=False,
+        vode_grad_norm_target=1.0,
+        hidden_momentum=0.1 # Default momentum
     )
 }
 
@@ -303,7 +397,12 @@ def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
                  inference_lr_scale_base=1.1,
                  inference_clamp_alpha=1.0, update_weights_during_unmasking=False,
                  use_status_init_in_training: bool = True, use_status_init_in_unmasking: bool = True,
-                 update_weights_every_inference_step=False):
+                 update_weights_every_inference_step=False,
+                 use_vode_state_layernorm: bool = False, # New
+                 use_vode_grad_norm: bool = False,       # New
+                 vode_grad_norm_target: float = 1.0,      # New
+                 hidden_momentum: float = 0.1 # New parameter for create_config, not directly used by TransformerConfig
+                 ):
     """Create a TransformerConfig based on the dataset name and parameters."""
     axes_dim = axes_dim or [16, 16]
     
@@ -327,7 +426,10 @@ def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
             update_weights_during_unmasking=update_weights_during_unmasking,
             use_status_init_in_training=use_status_init_in_training,
             use_status_init_in_unmasking=use_status_init_in_unmasking,
-            update_weights_every_inference_step=update_weights_every_inference_step
+            update_weights_every_inference_step=update_weights_every_inference_step,
+            use_vode_state_layernorm=use_vode_state_layernorm, # New
+            use_vode_grad_norm=use_vode_grad_norm,             # New
+            vode_grad_norm_target=vode_grad_norm_target        # New
         )
     else:
         raise ValueError(f"Unsupported dataset: {dataset}")
@@ -365,42 +467,42 @@ def parse_args():
     return parser.parse_args()
 
 
-def create_learning_rate_schedule(base_lr, warmup_epochs, total_epochs, steps_per_epoch):
+def create_learning_rate_schedule(base_lr, warmup_steps, total_steps):
     """Create a learning rate schedule with warmup and cosine decay to half of the peak rate."""
     min_lr = base_lr * 0.5
     
     def lr_schedule(step):
-        epoch_float = step / steps_per_epoch
+        # Ensure step is an integer or float for calculations
+        current_step = jnp.float32(step)
 
         # Calculate arguments for decay phase
-        # Effective start of decay phase in terms of epoch_float
-        decay_begins_at_epoch = float(warmup_epochs)
-        # Duration of the decay phase
-        decay_phase_duration = float(total_epochs - warmup_epochs)
+        # Effective start of decay phase in terms of steps
+        decay_begins_at_step = jnp.float32(warmup_steps)
+        # Duration of the decay phase in steps
+        decay_phase_duration_steps = jnp.float32(total_steps - warmup_steps)
         
-        # Ensure decay_phase_duration is at least a small positive number
-        safe_decay_phase_duration = jnp.maximum(decay_phase_duration, 1e-8)
+        # Ensure decay_phase_duration_steps is at least a small positive number
+        safe_decay_phase_duration_steps = jnp.maximum(decay_phase_duration_steps, 1e-8)
 
         # Progress into the decay phase (can be negative if still in warmup)
-        progress_into_decay = epoch_float - decay_begins_at_epoch
+        progress_into_decay_steps = current_step - decay_begins_at_step
         
-        decay_ratio = progress_into_decay / safe_decay_phase_duration
+        decay_ratio = progress_into_decay_steps / safe_decay_phase_duration_steps
         decay_ratio = jnp.clip(decay_ratio, 0.0, 1.0) 
         
         cosine_factor = 0.5 * (1.0 + jnp.cos(jnp.pi * decay_ratio))
         decay_lr_value = min_lr + (base_lr - min_lr) * cosine_factor
 
-        if warmup_epochs > 0:
+        if warmup_steps > 0:
             # Calculate linear warmup learning rate
             # Progress through warmup phase, clipped to [0,1]
-            warmup_phase_progress = jnp.clip(epoch_float / float(warmup_epochs), 0.0, 1.0)
+            warmup_phase_progress = jnp.clip(current_step / jnp.float32(warmup_steps), 0.0, 1.0)
             warmup_lr_value = base_lr * warmup_phase_progress
             
-            # Select LR based on whether current epoch_float is in warmup or decay phase
-            current_lr = jnp.where(epoch_float < float(warmup_epochs), warmup_lr_value, decay_lr_value)
+            # Select LR based on whether current_step is in warmup or decay phase
+            current_lr = jnp.where(current_step < decay_begins_at_step, warmup_lr_value, decay_lr_value)
         else:
-            # No warmup epochs, so current_lr is directly the decay_lr_value
-            # (decay_ratio was calculated assuming decay starts from epoch 0)
+            # No warmup steps, so current_lr is directly the decay_lr_value
             current_lr = decay_lr_value
             
         return current_lr
@@ -1260,7 +1362,10 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         update_weights_during_unmasking=config.update_weights_during_unmasking,
         use_status_init_in_training=config.use_status_init_in_training,
         use_status_init_in_unmasking=config.use_status_init_in_unmasking,
-        update_weights_every_inference_step=config.update_weights_every_inference_step
+        update_weights_every_inference_step=config.update_weights_every_inference_step,
+        use_vode_state_layernorm=config.use_vode_state_layernorm, # Pass through
+        use_vode_grad_norm=config.use_vode_grad_norm,             # Pass through
+        vode_grad_norm_target=config.vode_grad_norm_target        # Pass through
     )
     
     print(f"Creating debug dataloaders for CIFAR-10...")
@@ -1281,24 +1386,23 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     
     # Calculate steps per epoch for learning rate schedule
     steps_per_epoch = len(train_loader)
+    total_train_steps = config.epochs * steps_per_epoch # Total steps for the entire training
     
     # Create learning rate functions based on config
     if config.use_lr_schedule:
         # Use schedule with warmup and decay
         weights_lr_fn = create_learning_rate_schedule(
             config.peak_lr_weights, 
-            config.warmup_epochs, 
-            config.epochs, 
-            steps_per_epoch
+            config.warmup_steps, # Use warmup_steps
+            total_train_steps    # Use total_train_steps
         )
         
         hidden_lr_fn = create_learning_rate_schedule(
             config.peak_lr_hidden, 
-            config.warmup_epochs, 
-            config.epochs, 
-            steps_per_epoch
+            config.warmup_steps,  # Use warmup_steps
+            total_train_steps     # Use total_train_steps
         )
-        print(f"Using learning rate schedule - Peak weights LR: {config.peak_lr_weights}, Peak hidden LR: {config.peak_lr_hidden}")
+        print(f"Using learning rate schedule - Peak weights LR: {config.peak_lr_weights}, Peak hidden LR: {config.peak_lr_hidden}, Warmup steps: {config.warmup_steps}, Total steps: {total_train_steps}")
     else:
         # Use constant learning rates
         weights_lr_fn = config.peak_lr_weights
@@ -1306,8 +1410,8 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         print(f"Using constant learning rates - Weights: {weights_lr_fn}, Hidden: {hidden_lr_fn}")
     
     # --- Create base optimizers --- 
-    base_optim_h_train = optax.sgd(hidden_lr_fn, momentum=0.1)
-    base_optim_h_inference = optax.sgd(config.hidden_lr_inference, momentum=0.1)
+    base_optim_h_train = optax.sgd(hidden_lr_fn, momentum=config.hidden_momentum)
+    base_optim_h_inference = optax.sgd(config.hidden_lr_inference, momentum=config.hidden_momentum)
     base_optim_w = optax.adamw(weights_lr_fn, weight_decay=config.weight_decay)
     
     # --- Apply gradient clipping if configured ---
@@ -1365,6 +1469,9 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     
     print(f"Training for {config.epochs} epochs with W&B logging...")
 
+    # Initialize best_train_mse_this_run to track the minimum training MSE for the current run
+    best_train_mse_this_run = float('inf')
+
     # Initialize the model (set h values of the Vodes) using a dummy batch shape
     # Determine expected input shape: (batch_size, channels, height, width)
     init_shape = (config.batch_size, *model_config.image_shape)
@@ -1383,8 +1490,12 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         
         # Get current learning rates - handle both scheduled and constant LR cases
         if config.use_lr_schedule:
-            current_w_lr = weights_lr_fn(epoch * steps_per_epoch)
-            current_h_lr = hidden_lr_fn(epoch * steps_per_epoch)
+            # Calculate current_step based on epoch and steps_per_epoch
+            # For logging, we might show the LR at the start of the epoch.
+            # The actual LR will vary per step if schedule is used.
+            current_global_step = epoch * steps_per_epoch
+            current_w_lr = weights_lr_fn(current_global_step)
+            current_h_lr = hidden_lr_fn(current_global_step)
         else:
             current_w_lr = weights_lr_fn
             current_h_lr = hidden_lr_fn
@@ -1415,7 +1526,10 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
             # Ensure metrics logged reflect the failure
             avg_train_w_energy = float('nan')
             avg_train_mse = float('nan') 
-
+        else:
+            # Update best_train_mse_this_run if current epoch's avg_train_mse is better and valid
+            if not np.isnan(avg_train_mse) and avg_train_mse < best_train_mse_this_run:
+                best_train_mse_this_run = avg_train_mse
         
         # Initialize epoch_metrics here to store training metrics
         epoch_metrics = {
@@ -1573,7 +1687,20 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     
     # <<< DEBUG PRINT >>>
     print(f"DEBUG: Returning from run_experiment - final_mse: {final_avg_train_mse}, Type: {type(final_avg_train_mse)}, Reason: {early_stop_reason}")
-    return final_avg_train_mse, early_stop_reason
+    # Ensure best_val_loss is defined even if validation never runs or fails
+    if 'best_val_loss' not in locals():
+        best_val_loss = float('inf')
+    # Ensure best_train_mse_this_run is defined even if training loop doesn't run (e.g. epochs=0)
+    if 'best_train_mse_this_run' not in locals():
+        best_train_mse_this_run = float('inf')
+        
+    # Ensure best_val_loss is a Python float before returning
+    if hasattr(best_val_loss, 'item'): # Check if it's a JAX scalar or 0-dim array
+        best_val_loss = float(best_val_loss.item())
+    else:
+        best_val_loss = float(best_val_loss) # Ensure it's a float otherwise
+
+    return best_val_loss, best_train_mse_this_run, final_avg_train_mse, early_stop_reason
 
 if __name__ == "__main__":
     cli_args = parse_args()

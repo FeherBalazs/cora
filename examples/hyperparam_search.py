@@ -11,272 +11,389 @@ from debug_transformer_wandb import run_experiment, MODEL_CONFIGS
 def perform_hyperparameter_search():
     print("Starting hyperparameter search...")
 
-    base_config_to_use = "debug_tiny" # Base config already has num_blocks=5
+    base_config_to_use = "5block_dev" 
 
-    # Fixed parameters for this new focused search (50 epochs)
     fixed_overrides = {
         "num_blocks": 5, 
         "num_heads": 1,
         "hidden_size": 64,
-        "epochs": 50, # Longer epochs for focused search
+        "epochs": 75,
+        "batch_size": 200, 
         "peak_lr_weights": 0.001, 
-        "peak_lr_hidden": 0.1, # Best found hidden LR
-        "reconstruction_every_n_epochs": 25, # Adjust for longer runs
-        "validation_every_n_epochs": 1,    
+        # peak_lr_hidden will be set by candidates
+        "reconstruction_every_n_epochs": 25, 
+        "validation_every_n_epochs": 10,    
         "use_inference_lr_scaling": True,
-        "h_grad_clip_norm": 1000.0, 
-        "w_grad_clip_norm": 500.0,   
-        "use_status_init_in_training": False, 
-        "use_status_init_in_unmasking": False 
+        "use_lr_schedule": True,
+        # inference_steps will be set by candidates
+        # warmup_steps will be set by candidates
+        # w_grad_clip_norm will be set by candidates
+        "use_vode_state_layernorm": False, 
+        "use_vode_grad_norm": False, # Ensuring this is True for the search
+        # vode_grad_norm_target will be set by candidates
     }
 
-    # Parameter candidates for the new focused grid search (50 epochs)
-    lr_hidden_candidates = [0.1, 1.1, 1.2] # Fixed to best found
-    inference_lr_scale_base_candidates = [1.15, 1.20] # Best performing scales
-    h_grad_clip_norm_candidates = [fixed_overrides["h_grad_clip_norm"]] # Fixed
-    w_grad_clip_norm_candidates = [fixed_overrides["w_grad_clip_norm"]] # Fixed
-    seed_candidates = [42, 123, 1024] # Seeds for robustness check
+    lr_hidden_candidates = [0.095, 0.085]
+    inference_lr_scale_base_candidates = [1.21, 1.23, 1.25]
+    hidden_momentum_candidates = [0.4, 0.3]
+    h_grad_clip_norm_candidates = [5000]
+    seed_candidates = [50, 42] 
+
+    inference_steps_candidates = [20] 
+    warmup_steps_candidates = [0]
+    w_grad_clip_norm_candidates = [500.0] 
+    # vode_grad_norm_target_candidates = [100.0, 50.0, 20.0, 10.0, 5.0, 2.0, 1.0]
+    vode_grad_norm_target_candidates = [50]
 
     # --- End Search Configuration ---
 
     best_run_info = {
-        "lr_weights": fixed_overrides["peak_lr_weights"], # Fixed
+        "lr_weights": fixed_overrides["peak_lr_weights"], 
         "lr_hidden": None, 
         "inference_lr_scale_base": None,
+        "inference_steps": None, 
+        "warmup_steps": None, 
         "h_grad_clip_norm": None,
         "w_grad_clip_norm": None,
-        "seed": None, # Added seed to best_run_info
-        "mse": float('inf'),
+        "vode_grad_norm_target": None, 
+        "hidden_momentum": None, 
+        "seed": None, 
+        "overall_best_val_mse": float('inf'), 
+        "run_best_train_mse_of_best_val_run": float('inf'), # Best train MSE of the run that got best val MSE
+        "final_train_mse_of_best_val_run": float('inf') 
     }
 
-    all_run_results = [] # To store results of all runs for logging
+    all_run_results = [] 
 
-    # <<< --- UPDATE TOTAL RUNS --- >>>
-    total_runs = len(lr_hidden_candidates) * len(inference_lr_scale_base_candidates) * \
-                 len(h_grad_clip_norm_candidates) * len(w_grad_clip_norm_candidates) * \
-                 len(seed_candidates) # Added seeds to total runs
-    # <<< --- END UPDATE --- >>>
+    total_runs = len(lr_hidden_candidates) * \
+                 len(inference_lr_scale_base_candidates) * \
+                 len(inference_steps_candidates) * \
+                 len(warmup_steps_candidates) * \
+                 len(h_grad_clip_norm_candidates) * \
+                 len(w_grad_clip_norm_candidates) * \
+                 len(vode_grad_norm_target_candidates) * \
+                 len(hidden_momentum_candidates) * \
+                 len(seed_candidates) 
     current_run = 0
 
     # --- WandB Configuration for Search ---
-    # It's good practice to group search runs under a common project
-    # Use the names-generator from docker for creative run names like "eloquent_einstein"
     try:
         from names_generator import generate_name
         creative_name = generate_name().replace('_', '-')
     except ImportError:
-        # Fallback to a simple random adjective-noun combination if library not available
         import random
         adjectives = ["vibrant", "cosmic", "elegant", "swift", "radiant", "noble", "serene", "mighty", "gentle", "bold"]
         nouns = ["voyager", "nexus", "phoenix", "horizon", "quantum", "nebula", "zenith", "atlas", "aurora", "titan"]
         creative_name = f"{random.choice(adjectives)}-{random.choice(nouns)}"
     
-    wandb_project = f"pc-search-{creative_name}-{base_config_to_use}_nb{MODEL_CONFIGS[base_config_to_use].num_blocks}"
-    # Disable W&B logging for individual runs to speed up search if desired,
-    # or use "online" to log each run.
-    # wandb_mode_for_runs = "disabled"
-    wandb_mode_for_runs = "online" # Log each run
+    # Ensure MODEL_CONFIGS[base_config_to_use] is valid before accessing num_blocks
+    if base_config_to_use not in MODEL_CONFIGS:
+        print(f"Error: base_config_to_use '{base_config_to_use}' not found in MODEL_CONFIGS.")
+        return
 
-    # <<< --- REMOVE OUTER LR_W LOOP --- >>>
-    lr_w = fixed_overrides["peak_lr_weights"] # Use fixed value
+    wandb_project = f"pc-search-{creative_name}-{base_config_to_use}_nb{MODEL_CONFIGS[base_config_to_use].num_blocks}"
+    wandb_mode_for_runs = "online" # Changed to online for active search, can be 'offline'
+
+    lr_w = fixed_overrides["peak_lr_weights"] 
     for lr_h in lr_hidden_candidates:
         for scale_base in inference_lr_scale_base_candidates:
-            # <<< --- ADD LOOP FOR CLIP NORM --- >>>
-            for h_clip in h_grad_clip_norm_candidates:
-                for w_clip in w_grad_clip_norm_candidates:
-            # <<< --- END ADD --- >>>
-                    for seed_val in seed_candidates: # New loop for seeds
-                        current_run += 1
-                        start_time = time.time()
+            for inf_steps in inference_steps_candidates: 
+                for ws_val in warmup_steps_candidates: 
+                    for h_clip in h_grad_clip_norm_candidates:
+                        for w_clip in w_grad_clip_norm_candidates:
+                            for norm_target_val in vode_grad_norm_target_candidates:
+                                for hm_val in hidden_momentum_candidates:
+                                    for seed_val in seed_candidates: 
+                                    
+                                        current_run += 1
+                                        start_time = time.time()
 
-                        print(f"\n--- Starting Run {current_run}/{total_runs} ---")
+                                        print(f"\n--- Starting Run {current_run}/{total_runs} ---")
 
-                        current_overrides = deepcopy(fixed_overrides)
-                        current_overrides["peak_lr_hidden"] = lr_h
-                        current_overrides["inference_lr_scale_base"] = scale_base
-                        # current_overrides["grad_clip_norm"] = clip_norm # Old combined
-                        current_overrides["h_grad_clip_norm"] = h_clip
-                        current_overrides["w_grad_clip_norm"] = w_clip
-                        current_overrides["seed"] = seed_val # Override seed
+                                        current_overrides = deepcopy(fixed_overrides)
+                                        current_overrides["peak_lr_hidden"] = lr_h
+                                        current_overrides["inference_lr_scale_base"] = scale_base # Will be 1.0 if use_inference_lr_scaling is False
+                                        current_overrides["inference_steps"] = inf_steps 
+                                        current_overrides["eval_inference_steps"] = [inf_steps] 
+                                        current_overrides["reconstruction_steps"] = [inf_steps] 
+                                        current_overrides["warmup_steps"] = ws_val 
+                                        current_overrides["h_grad_clip_norm"] = h_clip
+                                        current_overrides["w_grad_clip_norm"] = w_clip
+                                        current_overrides["vode_grad_norm_target"] = norm_target_val # Added
+                                        current_overrides["hidden_momentum"] = hm_val  # Added
+                                        current_overrides["seed"] = seed_val 
 
-                        # Create a unique run name for WandB if logging is enabled
-                        nb_str = f"nb{MODEL_CONFIGS[base_config_to_use].num_blocks}"
-                        h_clip_str = f"hclip{h_clip:.0f}" if h_clip is not None else "hclipNone"
-                        w_clip_str = f"wclip{w_clip:.0f}" if w_clip is not None else "wclipNone"
-                        # Corrected formatting for scale_base: .2f and replace . with p
-                        scale_base_str = f"sb{scale_base:.2f}".replace('.', 'p')
-                        wandb_run_name = f"{nb_str}_lrw{lr_w:.0e}_lrh{lr_h:.0e}_{scale_base_str}_{h_clip_str}_{w_clip_str}_e{fixed_overrides['epochs']}_seed{seed_val}"
+                                        # Ensure num_blocks from fixed_overrides is used for consistency in run name
+                                        nb_str = f"nb{fixed_overrides['num_blocks']}" 
+                                        h_clip_str = f"hclip{h_clip:.0f}" if h_clip is not None else "hclipNone"
+                                        w_clip_str = f"wclip{w_clip:.0f}" if w_clip is not None else "wclipNone"
+                                        scale_base_str = f"sb{scale_base:.2f}".replace('.', 'p') if fixed_overrides.get("use_inference_lr_scaling", False) else "sbOFF"
+                                        inf_steps_str = f"is{inf_steps}" 
+                                        ws_str = f"ws{ws_val}" 
+                                        norm_target_str = f"nt{norm_target_val:.1f}".replace('.', 'p') # Added
+                                        hm_str = f"hm{hm_val:.2f}".replace('.', 'p') # Added
+                                        lr_w_str = f"lrw{lr_w:.2e}"  
+                                        lr_h_str = f"lrh{lr_h:.2e}"  
+                                        wandb_run_name = f"{nb_str}_{lr_w_str}_{lr_h_str}_{scale_base_str}_{inf_steps_str}_{ws_str}_{norm_target_str}_{hm_str}_{h_clip_str}_{w_clip_str}_e{current_overrides['epochs']}_seed{seed_val}"
 
-                        print(f"Parameters: lr_h={lr_h}, scale={scale_base}, h_clip={h_clip}, w_clip={w_clip}, epochs={fixed_overrides['epochs']}, seed={seed_val}")
+                                        print(f"Parameters: lr_h={lr_h}, scale={scale_base if fixed_overrides.get('use_inference_lr_scaling', False) else 'OFF'}, inf_steps={inf_steps}, warmup_steps={ws_val}, norm_target={norm_target_val}, hidden_momentum={hm_val}, h_clip={h_clip}, w_clip={w_clip}, epochs={current_overrides['epochs']}, seed={seed_val}")
 
-                        try:
-                            final_mse, early_stop_reason = run_experiment(
-                                base_config_name=base_config_to_use,
-                                config_overrides=current_overrides,
-                                wandb_project_name=wandb_project,
-                                wandb_run_name=wandb_run_name,
-                                wandb_mode=wandb_mode_for_runs
-                            )
-                            print(f"Run {current_run} Result: final_train_mse = {final_mse:.8f}, Stop Reason: {early_stop_reason}")
-                            
-                            # <<< DEBUG PRINT >>>
-                            print(f"DEBUG: Received from run_experiment - final_mse: {final_mse}, Type: {type(final_mse)}, Reason: {early_stop_reason}")
+                                        try:
+                                            achieved_best_val_mse, run_best_train_mse, final_train_mse, early_stop_reason = run_experiment(
+                                                base_config_name=base_config_to_use,
+                                                config_overrides=current_overrides,
+                                                wandb_project_name=wandb_project,
+                                                wandb_run_name=wandb_run_name,
+                                                wandb_mode=wandb_mode_for_runs
+                                            )
+                                            print(f"Run {current_run} Result: Best Val MSE = {achieved_best_val_mse:.8f}, Run Best Train MSE = {run_best_train_mse:.8f}, Final Train MSE = {final_train_mse:.8f}, Stop Reason: {early_stop_reason}")
+                                            
+                                            is_valid_val_mse = isinstance(achieved_best_val_mse, (int, float)) and not np.isnan(achieved_best_val_mse) and achieved_best_val_mse != float('inf')
+                                            is_valid_run_best_train_mse = isinstance(run_best_train_mse, (int, float)) and not np.isnan(run_best_train_mse) and run_best_train_mse != float('inf')
+                                            is_valid_final_train_mse = isinstance(final_train_mse, (int, float)) and not np.isnan(final_train_mse) and final_train_mse != float('inf')
 
-                            # Ensure final_mse is a number before comparison
-                            is_valid_mse = isinstance(final_mse, (int, float)) and not np.isnan(final_mse) and final_mse != float('inf')
+                                            run_result_data = {
+                                                "run_number": current_run,
+                                                "lr_weights": lr_w,
+                                                "lr_hidden": lr_h,
+                                                "inference_lr_scale_base": scale_base if fixed_overrides.get("use_inference_lr_scaling", False) else "N/A",
+                                                "inference_steps": inf_steps, 
+                                                "warmup_steps": ws_val, 
+                                                "h_grad_clip_norm": h_clip,
+                                                "w_grad_clip_norm": w_clip,
+                                                "vode_grad_norm_target": norm_target_val, 
+                                                "hidden_momentum": hm_val, 
+                                                "seed": seed_val, 
+                                                "best_val_mse": achieved_best_val_mse if is_valid_val_mse else "Failed or Invalid",
+                                                "run_best_train_mse": run_best_train_mse if is_valid_run_best_train_mse else "Failed or Invalid",
+                                                "final_train_mse": final_train_mse if is_valid_final_train_mse else "Failed or Invalid",
+                                                "early_stop_reason": early_stop_reason,
+                                                "wandb_run_name": wandb_run_name
+                                            }
+                                            all_run_results.append(run_result_data)
 
-                            run_result_data = {
-                                "run_number": current_run,
-                                "lr_weights": lr_w,
-                                "lr_hidden": lr_h,
-                                "inference_lr_scale_base": scale_base,
-                                # "grad_clip_norm": clip_norm, # Old combined
-                                "h_grad_clip_norm": h_clip,
-                                "w_grad_clip_norm": w_clip,
-                                "seed": seed_val, # Log seed
-                                "mse": final_mse if is_valid_mse else "Failed or Invalid",
-                                "early_stop_reason": early_stop_reason,
-                                "wandb_run_name": wandb_run_name
-                            }
-                            all_run_results.append(run_result_data)
+                                            if is_valid_val_mse: 
+                                                if achieved_best_val_mse < best_run_info["overall_best_val_mse"]:
+                                                    best_run_info["lr_weights"] = lr_w
+                                                    best_run_info["lr_hidden"] = lr_h
+                                                    best_run_info["inference_lr_scale_base"] = scale_base if fixed_overrides.get("use_inference_lr_scaling", False) else "N/A"
+                                                    best_run_info["inference_steps"] = inf_steps 
+                                                    best_run_info["warmup_steps"] = ws_val 
+                                                    best_run_info["h_grad_clip_norm"] = h_clip
+                                                    best_run_info["w_grad_clip_norm"] = w_clip
+                                                    best_run_info["vode_grad_norm_target"] = norm_target_val 
+                                                    best_run_info["hidden_momentum"] = hm_val 
+                                                    best_run_info["seed"] = seed_val 
+                                                    best_run_info["overall_best_val_mse"] = achieved_best_val_mse
+                                                    best_run_info["run_best_train_mse_of_best_val_run"] = run_best_train_mse if is_valid_run_best_train_mse else "N/A"
+                                                    best_run_info["final_train_mse_of_best_val_run"] = final_train_mse if is_valid_final_train_mse else "N/A"
+                                                    print(f"*** New best overall_best_val_mse: {achieved_best_val_mse:.6f} (Run Best Train MSE: {best_run_info['run_best_train_mse_of_best_val_run'] if isinstance(best_run_info['run_best_train_mse_of_best_val_run'], float) else 'N/A'}, Final Train MSE: {best_run_info['final_train_mse_of_best_val_run'] if isinstance(best_run_info['final_train_mse_of_best_val_run'], float) else 'N/A'}) with Params: lr_h={lr_h}, scale={scale_base if fixed_overrides.get('use_inference_lr_scaling', False) else 'OFF'}, inf_steps={inf_steps}, warmup_steps={ws_val}, norm_target={norm_target_val}, hidden_momentum={hm_val}, h_clip={h_clip}, w_clip={w_clip}, seed={seed_val} ***")
+                                            # Fallback logic if no valid val_mse has been found yet, but we have a valid run_best_train_mse
+                                            elif is_valid_run_best_train_mse and best_run_info["overall_best_val_mse"] == float('inf'):
+                                                if run_best_train_mse < best_run_info["run_best_train_mse_of_best_val_run"]: # Compare with existing best train mse as a fallback
+                                                    best_run_info["lr_weights"] = lr_w
+                                                    best_run_info["lr_hidden"] = lr_h
+                                                    best_run_info["inference_lr_scale_base"] = scale_base if fixed_overrides.get("use_inference_lr_scaling", False) else "N/A"
+                                                    best_run_info["inference_steps"] = inf_steps 
+                                                    best_run_info["warmup_steps"] = ws_val 
+                                                    best_run_info["h_grad_clip_norm"] = h_clip
+                                                    best_run_info["w_grad_clip_norm"] = w_clip
+                                                    best_run_info["vode_grad_norm_target"] = norm_target_val 
+                                                    best_run_info["hidden_momentum"] = hm_val 
+                                                    best_run_info["seed"] = seed_val 
+                                                    best_run_info["run_best_train_mse_of_best_val_run"] = run_best_train_mse
+                                                    best_run_info["final_train_mse_of_best_val_run"] = final_train_mse if is_valid_final_train_mse else "N/A"
+                                                    print(f"*** No valid validation MSEs yet. New best run_best_train_mse: {run_best_train_mse:.6f} (Final Train MSE: {best_run_info['final_train_mse_of_best_val_run'] if isinstance(best_run_info['final_train_mse_of_best_val_run'], float) else 'N/A'}) with Params: lr_h={lr_h}, scale={scale_base if fixed_overrides.get('use_inference_lr_scaling', False) else 'OFF'}, inf_steps={inf_steps}, warmup_steps={ws_val}, norm_target={norm_target_val}, hidden_momentum={hm_val}, h_clip={h_clip}, w_clip={w_clip}, seed={seed_val} ***")
 
-                            # <<< DEBUG PRINT: Check validity check >>>
-                            print(f"DEBUG: is_valid_mse = {is_valid_mse}")
+                                        except Exception as e:
+                                            print(f"!!!! Run {current_run} failed with Params: lr_h={lr_h}, scale={scale_base if fixed_overrides.get('use_inference_lr_scaling', False) else 'OFF'}, inf_steps={inf_steps}, warmup_steps={ws_val}, norm_target={norm_target_val}, hidden_momentum={hm_val}, h_clip={h_clip}, w_clip={w_clip}, seed={seed_val}. Error: {e} !!!!")
+                                            import traceback
+                                            traceback.print_exc()
+                                            all_run_results.append({
+                                                "run_number": current_run,
+                                                "lr_weights": lr_w,
+                                                "lr_hidden": lr_h,
+                                                "inference_lr_scale_base": scale_base if fixed_overrides.get('use_inference_lr_scaling', False) else "N/A",
+                                                "inference_steps": inf_steps, 
+                                                "warmup_steps": ws_val, 
+                                                "h_grad_clip_norm": h_clip,
+                                                "w_grad_clip_norm": w_clip,
+                                                "vode_grad_norm_target": norm_target_val, # Added
+                                                "hidden_momentum": hm_val, # Added
+                                                "seed": seed_val, 
+                                                "best_val_mse": "Exception",
+                                                "run_best_train_mse": "Exception",
+                                                "final_train_mse": "Exception", 
+                                                "early_stop_reason": "Exception", 
+                                                "wandb_run_name": wandb_run_name
+                                            })
 
-                            if is_valid_mse:
-                                if final_mse < best_run_info["mse"]:
-                                    best_run_info["lr_weights"] = lr_w
-                                    best_run_info["lr_hidden"] = lr_h
-                                    best_run_info["inference_lr_scale_base"] = scale_base
-                                    # best_run_info["grad_clip_norm"] = clip_norm # Old combined
-                                    best_run_info["h_grad_clip_norm"] = h_clip
-                                    best_run_info["w_grad_clip_norm"] = w_clip
-                                    best_run_info["seed"] = seed_val # Store best seed
-                                    best_run_info["mse"] = final_mse
-                                    print(f"*** New best MSE: {final_mse:.6f} with Params: lr_h={lr_h}, scale={scale_base}, h_clip={h_clip}, w_clip={w_clip}, seed={seed_val} ***")
-                            # else: # Already handled by mse value assignment above
-                            #     print(f"Run {current_run} did not return a valid MSE.")
-
-                            # <<< DEBUG PRINT: Check log formatting >>>
-                            mse_val_debug = run_result_data['mse']
-                            stop_reason_debug = run_result_data.get('early_stop_reason')
-                            status_str_debug = ""
-                            if isinstance(mse_val_debug, (int, float)) and not np.isnan(mse_val_debug) and mse_val_debug != float('inf'):
-                                mse_str_debug = f"{mse_val_debug:.8f}"
-                                if stop_reason_debug == 'Validation': status_str_debug = "(ES)"
-                                elif stop_reason_debug is None: status_str_debug = "(Done)"
-                            elif stop_reason_debug == 'NaN': mse_str_debug = "NaN"; status_str_debug = "(ES)"
-                            elif stop_reason_debug == 'Exception': mse_str_debug = "Exception"; status_str_debug = "(Fail)"
-                            else: mse_str_debug = str(mse_val_debug); status_str_debug = "(Fail)"
-                            print(f"DEBUG: For log file - mse_str: '{mse_str_debug}', status_str: '{status_str_debug}'")
-
-                        except Exception as e:
-                            # <<< --- UPDATE PRINT STATEMENT --- >>>
-                            print(f"!!!! Run {current_run} failed with Params: lr_h={lr_h}, scale={scale_base}, h_clip={h_clip}, w_clip={w_clip}, seed={seed_val}. Error: {e} !!!!")
-                            # <<< --- END UPDATE --- >>>
-                            import traceback
-                            traceback.print_exc()
-                            # Log failure in results
-                            all_run_results.append({
-                                "run_number": current_run,
-                                "lr_weights": lr_w,
-                                "lr_hidden": lr_h,
-                                "inference_lr_scale_base": scale_base,
-                                # "grad_clip_norm": clip_norm, # Old combined
-                                "h_grad_clip_norm": h_clip,
-                                "w_grad_clip_norm": w_clip,
-                                "seed": seed_val, # Log seed for failed run
-                                "mse": "Exception",
-                                "early_stop_reason": "Exception", # Indicate exception caused stop
-                                "wandb_run_name": wandb_run_name
-                            })
-
-                        end_time = time.time()
-                        print(f"Run {current_run} took {end_time - start_time:.2f} seconds.")
-    # <<< --- END INNER LOOPS --- >>>
-
+                                        end_time = time.time()
+                                        print(f"Run {current_run} took {end_time - start_time:.2f} seconds.")
 
     print("\n--- Hyperparameter Search Complete ---")
-    if best_run_info["lr_hidden"] is not None: # Check a searched param
+    if best_run_info["lr_hidden"] is not None: 
         print(f"Best overall parameters found for minimum MSE:")
         print(f"  peak_lr_weights: {best_run_info['lr_weights']} (Fixed)")
         print(f"  peak_lr_hidden: {best_run_info['lr_hidden']}")
         print(f"  inference_lr_scale_base: {best_run_info['inference_lr_scale_base']}")
-        # print(f"  grad_clip_norm: {best_run_info['grad_clip_norm']}") # Old combined
+        print(f"  inference_steps: {best_run_info['inference_steps']}") 
+        print(f"  warmup_steps: {best_run_info['warmup_steps']}") 
+        print(f"  vode_grad_norm_target: {best_run_info['vode_grad_norm_target']}") # Added
+        print(f"  hidden_momentum: {best_run_info['hidden_momentum']}") # Added
         print(f"  h_grad_clip_norm: {best_run_info['h_grad_clip_norm']}")
         print(f"  w_grad_clip_norm: {best_run_info['w_grad_clip_norm']}")
-        print(f"  seed: {best_run_info['seed']}") # Print best seed
-        print(f"  Achieved Minimum MSE: {best_run_info['mse']:.6f}")
+        print(f"  seed: {best_run_info['seed']}") 
+        print(f"  Achieved Overall Best Validation MSE: {best_run_info['overall_best_val_mse']:.6f}")
+        print(f"  Run Best Train MSE of Best Val Run: {best_run_info['run_best_train_mse_of_best_val_run'] if isinstance(best_run_info['run_best_train_mse_of_best_val_run'], float) else 'N/A'}")
+        print(f"  Final Train MSE of Best Val Run: {best_run_info['final_train_mse_of_best_val_run'] if isinstance(best_run_info['final_train_mse_of_best_val_run'], float) else 'N/A'}")
     else:
         print(f"No successful runs completed or no runs achieved a valid MSE.")
 
-    # Log all results to a text file
-    log_file_path = f"hyperparam_search_results_{base_config_to_use}_nb{MODEL_CONFIGS[base_config_to_use].num_blocks}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-    # Ensure results directory exists if you want to place it there, e.g., ../results/
-    # For simplicity, saving in the current directory (examples/)
-    # log_file_path = os.path.join("..", "results", f"hyperparam_search_results_{base_config_to_use}_nb{fixed_overrides['num_blocks']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
-    # os.makedirs(os.path.dirname(log_file_path), exist_ok=True) # If saving to a subdirectory
+    # Use num_blocks from fixed_overrides for log file name consistency
+    log_file_nb_str = fixed_overrides['num_blocks']
+    log_file_path = f"hyperparam_search_results_{base_config_to_use}_nb{log_file_nb_str}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
 
     with open(log_file_path, 'w') as f:
         f.write(f"Hyperparameter Search Log - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"Base Config: {base_config_to_use} (num_blocks={MODEL_CONFIGS[base_config_to_use].num_blocks})\n")
+        f.write(f"Base Config: {base_config_to_use} (num_blocks={log_file_nb_str})\n") # Use fixed num_blocks
         f.write(f"Fixed Overrides (excluding searched params):\n")
-        # Print fixed overrides neatly, excluding searched ones
-        fixed_to_print = {k: v for k, v in fixed_overrides.items() if k not in [
-            'peak_lr_hidden', 
-            'inference_lr_scale_base', 
-            'h_grad_clip_norm', 
-            'w_grad_clip_norm',
-            'seed' # Exclude seed from fixed if it's part of the search
-            # 'grad_clip_norm' # Old combined
-        ]}
+        
+        # Define keys that are part of the search space
+        searched_keys = [
+            'peak_lr_hidden', 'inference_lr_scale_base', 'inference_steps', 
+            'eval_inference_steps', 'reconstruction_steps', 'warmup_steps', 
+            'h_grad_clip_norm', 'w_grad_clip_norm', 'vode_grad_norm_target', 'hidden_momentum', 'seed'
+        ]
+        # Add keys that are dependent on other fixed_overrides for printing
+        # For example, if use_inference_lr_scaling is False, inference_lr_scale_base is effectively fixed
+        # but it's simpler to just exclude all searched_keys from the fixed_to_print.
+
+        fixed_to_print = {k: v for k, v in fixed_overrides.items() if k not in searched_keys}
+        # Special handling for use_inference_lr_scaling to show its fixed value if it is fixed
+        if 'use_inference_lr_scaling' in fixed_overrides:
+             fixed_to_print['use_inference_lr_scaling'] = fixed_overrides['use_inference_lr_scaling']
+
+
         for key, value in fixed_to_print.items():
             f.write(f"  {key}: {value}\n")
-        f.write("-------------------------------------------------------------------------------------------------\n")
-        # <<< --- UPDATE LOG HEADER --- >>>
-        f.write("Run | LR Hid | Scale | H Clip | W Clip | Seed | W&B Run Name                                 | Final Train MSE | Status\n")
-        # <<< --- END UPDATE --- >>>
-        f.write("-------------------------------------------------------------------------------------------------\n")
-        # Sort results for clarity (e.g., by MSE then run number)
-        all_run_results.sort(key=lambda x: (x['mse'] if isinstance(x['mse'], (int, float)) and not np.isnan(x['mse']) else float('inf'), x['run_number']))
+        f.write("--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------\n")
+        
+        # Adjusted header_parts and col_widths to include Vode Grad Norm Target
+        header_parts = [
+            "Run", "LR Hid", "Scale", "Inf Steps", "Warmup Steps", "Norm Target", "Hid Mom", "H Clip", "W Clip", "Seed", 
+            "Best Val MSE", "Run Best Train MSE", "Final Train MSE", "Status", "W&B Run Name"
+        ]
+        col_widths = {
+            "Run": 3, "LR Hid": 6, "Scale": 7, "Inf Steps": 9, "Warmup Steps": 12, 
+            "Norm Target": 11, "Hid Mom": 7, "H Clip": 6, "W Clip": 6, "Seed": 4, 
+            "Best Val MSE": 14, "Run Best Train MSE": 18 , "Final Train MSE": 15, "Status": 8, "W&B Run Name": 40
+        }
+        
+        # Filter out keys from fixed_overrides that are part of the new normalization params but not explicitly searched
+        # (use_vode_state_layernorm is fixed False, use_vode_grad_norm is fixed True)
+        # These are already in fixed_to_print if they are not in searched_keys.
+        
+        header_str = " | ".join([f"{h:<{col_widths[h]}}" for h in header_parts])
+        f.write(header_str + "\n")
+        f.write("-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------\n") # Adjusted separator length
+        
+        all_run_results.sort(key=lambda x: (x['best_val_mse'] if isinstance(x['best_val_mse'], (int, float)) and not np.isnan(x['best_val_mse']) else float('inf'), 
+                                          x['run_best_train_mse'] if isinstance(x['run_best_train_mse'], (int, float)) and not np.isnan(x['run_best_train_mse']) else float('inf'),
+                                          x['final_train_mse'] if isinstance(x['final_train_mse'], (int, float)) and not np.isnan(x['final_train_mse']) else float('inf'), 
+                                          x['run_number']))
+        
         for result in all_run_results:
-            # Format MSE string based on validity and early stopping
-            mse_val = result['mse']
+            best_val_mse_val = result['best_val_mse']
+            run_best_train_mse_val = result['run_best_train_mse']
+            final_train_mse_val = result['final_train_mse']
             stop_reason = result.get('early_stop_reason')
             status_str = ""
-            if isinstance(mse_val, (int, float)) and not np.isnan(mse_val) and mse_val != float('inf'):
-                mse_str = f"{mse_val:.8f}"
-                if stop_reason == 'Validation':
-                    status_str = "(ES)"
-                elif stop_reason is None:
-                    status_str = "(Done)" # Indicate normal completion
-                # Keep status_str empty if NaN triggered stop but MSE is somehow valid (unlikely)
-            elif stop_reason == 'NaN':
-                mse_str = "NaN"
-                status_str = "(ES)"
-            elif stop_reason == 'Exception':
-                mse_str = "Exception"
-                status_str = "(Fail)"
-            else:
-                mse_str = str(mse_val) # Handle other "Failed or Invalid" cases
-                status_str = "(Fail)"
+
+            if isinstance(best_val_mse_val, (int, float)) and not np.isnan(best_val_mse_val) and best_val_mse_val != float('inf'):
+                best_val_mse_str = f"{best_val_mse_val:.8f}"
+                if stop_reason == 'Validation': status_str = "(ES-Val)" # More specific ES
+                elif stop_reason is None: status_str = "(Done)"
+            elif stop_reason == 'NaN' and result['best_val_mse'] == 'Failed or Invalid': # Check if specifically val mse was NaN
+                best_val_mse_str = "NaN-Val"; status_str = "(ES-NaN)"
+            elif stop_reason == 'Exception': best_val_mse_str = "Exception"; status_str = "(Fail)"
+            else: best_val_mse_str = str(best_val_mse_val); status_str = "(ValFail)"
+
+            if isinstance(run_best_train_mse_val, (int, float)) and not np.isnan(run_best_train_mse_val) and run_best_train_mse_val != float('inf'):
+                run_best_train_mse_str = f"{run_best_train_mse_val:.8f}"
+            else: run_best_train_mse_str = str(run_best_train_mse_val)
+
+            if isinstance(final_train_mse_val, (int, float)) and not np.isnan(final_train_mse_val) and final_train_mse_val != float('inf'):
+                final_train_mse_str = f"{final_train_mse_val:.8f}"
+                # Status string might already be set by best_val_mse logic, append if necessary or make it more specific
+                if not status_str: # If status not set by val_mse (e.g. val_mse was inf but train_mse is valid)
+                    if stop_reason == 'Validation': status_str = "(ES)" # Should not happen if val_mse was inf
+                    elif stop_reason is None: status_str = "(Done)"
+                elif stop_reason == 'NaN' and not status_str.endswith("(ES-NaN)"): # If final_train_mse is NaN and not already marked
+                     final_train_mse_str = "NaN"; 
+                     if status_str: 
+                         status_str += "/TrNaN"
+                     else: 
+                         status_str = "(TrNaN)"
+                elif result.get('early_stop_reason') == 'Exception' and not status_str.endswith("(Fail)") : # check 'result' directly as final_train_mse_val might be 'Exception' string
+                    final_train_mse_str = "Exception"
+                    if status_str: 
+                        status_str += "/TrFail"
+                    else: 
+                        status_str = "(TrFail)"
+                else:
+                    final_train_mse_str = str(final_train_mse_val)
+                    if not status_str: status_str = "(TrFail)"
+
 
             run_name_str = result.get('wandb_run_name', 'N/A')
-            # <<< --- UPDATE LOG LINE --- >>>
             h_clip_str = f"{result['h_grad_clip_norm']:.1f}" if result['h_grad_clip_norm'] is not None else "None"
             w_clip_str = f"{result['w_grad_clip_norm']:.1f}" if result['w_grad_clip_norm'] is not None else "None"
-            seed_str = str(result.get('seed', 'N/A')) # Get seed string
-            f.write(f"{result['run_number']:<3} | {result['lr_hidden']:<6} | {result['inference_lr_scale_base']:<5} | {h_clip_str:<6} | {w_clip_str:<6} | {seed_str:<4} | {run_name_str:<51} | {mse_str:<15} | {status_str:<6}\n") # Added seed to log line
-            # <<< --- END UPDATE --- >>>
-        f.write("-------------------------------------------------------------------------------------------------\n")
+            inf_steps_log_str = str(result.get('inference_steps', 'N/A')) 
+            warmup_steps_log_str = str(result.get('warmup_steps', 'N/A')) 
+            norm_target_log_str = f"{result.get('vode_grad_norm_target', 'N/A'):.1f}" # Added
+            hm_log_str = f"{result.get('hidden_momentum', 'N/A'):.2f}" # Added
+            seed_str = str(result.get('seed', 'N/A')) 
+            
+            scale_log_str = result.get('inference_lr_scale_base', 'N/A')
+            if isinstance(scale_log_str, float): scale_log_str = f"{scale_log_str:.2f}"
+
+
+            log_line_parts = {
+                "Run": result['run_number'],
+                "LR Hid": f"{result['lr_hidden']:.2e}", # Format LR for consistency
+                "Scale": scale_log_str,
+                "Inf Steps": inf_steps_log_str,
+                "Warmup Steps": warmup_steps_log_str,
+                "Norm Target": norm_target_log_str, # Added
+                "Hid Mom": hm_log_str, # Added
+                "H Clip": h_clip_str,
+                "W Clip": w_clip_str,
+                "Seed": seed_str,
+                "Best Val MSE": best_val_mse_str,
+                "Run Best Train MSE": run_best_train_mse_str,
+                "Final Train MSE": final_train_mse_str,
+                "Status": status_str,
+                "W&B Run Name": run_name_str
+            }
+            log_line_str = " | ".join([f"{str(log_line_parts[h]):<{col_widths[h]}}" for h in header_parts])
+            f.write(log_line_str + "\n") 
+        f.write("-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------\n") # Adjusted separator length
         if best_run_info["lr_hidden"] is not None:
-            # <<< --- UPDATE BEST RUN SUMMARY --- >>>
             h_clip_best_str = f"{best_run_info['h_grad_clip_norm']:.1f}" if best_run_info['h_grad_clip_norm'] is not None else "None"
             w_clip_best_str = f"{best_run_info['w_grad_clip_norm']:.1f}" if best_run_info['w_grad_clip_norm'] is not None else "None"
-            f.write(f"Best Params: peak_lr_hidden={best_run_info['lr_hidden']}, inference_lr_scale_base={best_run_info['inference_lr_scale_base']}, h_grad_clip_norm={h_clip_best_str}, w_grad_clip_norm={w_clip_best_str}, seed={best_run_info['seed']} (lr_weights={best_run_info['lr_weights']} fixed)\n")
-            f.write(f"Best MSE: {best_run_info['mse']:.6f}\n")
-        else:
-            f.write("No best run found.\n")
+            norm_target_best_str = f"{best_run_info['vode_grad_norm_target']:.1f}" if best_run_info['vode_grad_norm_target'] is not None else "None" 
+            hm_best_str = f"{best_run_info['hidden_momentum']:.2f}" if best_run_info['hidden_momentum'] is not None else "None" 
+            
+            best_scale_str = best_run_info['inference_lr_scale_base']
+            if isinstance(best_scale_str, float): best_scale_str = f"{best_scale_str:.2f}"
+
+
+            f.write(f"Best Params: peak_lr_hidden={best_run_info['lr_hidden']:.2e}, inference_lr_scale_base={best_scale_str}, inference_steps={best_run_info['inference_steps']}, warmup_steps={best_run_info['warmup_steps']}, vode_grad_norm_target={norm_target_best_str}, hidden_momentum={hm_best_str}, h_grad_clip_norm={h_clip_best_str}, w_grad_clip_norm={w_clip_best_str}, seed={best_run_info['seed']}\n")
+            f.write(f"Achieved Overall Best Validation MSE: {best_run_info['overall_best_val_mse']:.6f}\n")
+            f.write(f"Run Best Train MSE of Best Val Run: {best_run_info['run_best_train_mse_of_best_val_run'] if isinstance(best_run_info['run_best_train_mse_of_best_val_run'], float) else 'N/A'}\n")
+            f.write(f"Final Train MSE of Best Val Run: {best_run_info['final_train_mse_of_best_val_run'] if isinstance(best_run_info['final_train_mse_of_best_val_run'], float) else 'N/A'}\n")
+            f.write(f" (lr_weights={best_run_info['lr_weights']:.2e} fixed)\n") 
     print(f"Search results logged to: {log_file_path}")
 
 if __name__ == "__main__":
