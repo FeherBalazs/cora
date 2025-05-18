@@ -329,7 +329,7 @@ MODEL_CONFIGS = {
         # Training settings
         use_noise=True,
         batch_size=200,
-        epochs=50,
+        epochs=75,
         inference_steps=20,
         eval_inference_steps=[20],
         reconstruction_steps=[20],
