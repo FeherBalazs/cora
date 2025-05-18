@@ -175,8 +175,8 @@ MODEL_CONFIGS = {
         train_subset=50000,
         test_subset=200,
         target_class=None,
-        reconstruction_every_n_epochs=10,
-        validation_every_n_epochs=5,
+        reconstruction_every_n_epochs=25,
+        validation_every_n_epochs=10,
         use_corruption=False,
         corrupt_ratio=0.25,
         use_lower_half_mask=False,
@@ -203,7 +203,7 @@ MODEL_CONFIGS = {
         eval_inference_steps=[20],
         reconstruction_steps=[20],
         peak_lr_weights=0.001,
-        peak_lr_hidden=0.1,
+        peak_lr_hidden=0.095,
         update_weights_during_unmasking=False,
         hidden_lr_inference=0.1,
         weight_decay=2e-4,
@@ -212,74 +212,9 @@ MODEL_CONFIGS = {
         seed=42,
         # Layer-specific inference LR scaling
         use_inference_lr_scaling=True,
-        inference_lr_scale_base=1.2,
+        inference_lr_scale_base=1.25,
         # Grad clipping
-        h_grad_clip_norm=1000.0,
-        w_grad_clip_norm=500.0,
-        # iPC or classic PC
-        update_weights_every_inference_step=False,
-        # Early stopping settings
-        use_early_stopping=True,
-        early_stopping_patience=10,
-        early_stopping_min_delta=0.001,
-        save_reconstruction_images=True,
-        save_reconstruction_video=True,
-        video_fps=60,
-        reinitialize_model_for_each_epoch=False,
-        # New norm options
-        use_vode_state_layernorm=False,
-        use_vode_grad_norm=False,
-        vode_grad_norm_target=1.0,
-        hidden_momentum=0.1 # Default momentum
-    ),
-    "5block_dev": ModelConfig(
-        name="5block_dev",
-        # Dataset settings
-        dataset="cifar10",
-        data_dir="../datasets/",
-        train_subset=50000,
-        test_subset=200,
-        target_class=None,
-        reconstruction_every_n_epochs=10,
-        validation_every_n_epochs=5,
-        use_corruption=False,
-        corrupt_ratio=0.25,
-        use_lower_half_mask=False,
-        inference_clamp_alpha=1.0,
-        # Visualization settings
-        num_images=2,
-        # Model architecture
-        hidden_size=64,
-        num_heads=1,
-        num_blocks=5,
-        mlp_ratio=4.0,
-        patch_size=4,
-        axes_dim=[16, 16],
-        theta=100,
-        act_fn=jax.nn.swish,
-        # Status init settings
-        use_status_init_in_training=False,
-        use_status_init_in_unmasking=False,
-        # Training settings
-        use_noise=True,
-        batch_size=200,
-        epochs=75,
-        inference_steps=20,
-        eval_inference_steps=[20],
-        reconstruction_steps=[20],
-        peak_lr_weights=0.001,
-        peak_lr_hidden=0.1,
-        update_weights_during_unmasking=False,
-        hidden_lr_inference=0.1,
-        weight_decay=2e-4,
-        warmup_steps=0, # Explicitly set for 5block
-        use_lr_schedule=True,
-        seed=42,
-        # Layer-specific inference LR scaling
-        use_inference_lr_scaling=True,
-        inference_lr_scale_base=1.2,
-        # Grad clipping
-        h_grad_clip_norm=1000.0,
+        h_grad_clip_norm=5000.0,
         w_grad_clip_norm=500.0,
         # iPC or classic PC
         update_weights_every_inference_step=False,
@@ -295,7 +230,7 @@ MODEL_CONFIGS = {
         use_vode_state_layernorm=False,
         use_vode_grad_norm=False,
         vode_grad_norm_target=1.0,
-        hidden_momentum=0.1 # Default momentum
+        hidden_momentum=0.3
     ),
     # TODO: still actively experimenting with this
     "6block": ModelConfig(
