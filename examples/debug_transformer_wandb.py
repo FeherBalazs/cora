@@ -121,10 +121,9 @@ class ModelConfig:
     
     # Layer-specific inference LR scaling
     use_inference_lr_scaling: bool = True
-    inference_lr_scale_base: Optional[float] = 1.2
+    inference_lr_scale_base: Optional[float] = 1.25
 
-    # grad_clip_norm: Optional[float] = 1000.0 # Max norm for gradient clipping (None to disable) # Old combined clipping
-    h_grad_clip_norm: Optional[float] = 1000.0 # Max norm for H-gradient clipping
+    h_grad_clip_norm: Optional[float] = 2000.0 # Max norm for H-gradient clipping
     w_grad_clip_norm: Optional[float] = 500.0  # Max norm for W-gradient clipping
 
     # iPC or classic PC
@@ -269,7 +268,7 @@ MODEL_CONFIGS = {
         eval_inference_steps=[20],
         reconstruction_steps=[20],
         peak_lr_weights=0.001,
-        peak_lr_hidden=0.1,
+        peak_lr_hidden=0.095,
         update_weights_during_unmasking=False,
         hidden_lr_inference=0.1,
         weight_decay=2e-4,
@@ -278,9 +277,9 @@ MODEL_CONFIGS = {
         seed=42,
         # Layer-specific inference LR scaling
         use_inference_lr_scaling=True,
-        inference_lr_scale_base=1.2,
+        inference_lr_scale_base=1.25,
         # Grad clipping
-        h_grad_clip_norm=1000.0,
+        h_grad_clip_norm=2000.0,
         w_grad_clip_norm=500.0,
         # iPC or classic PC
         update_weights_every_inference_step=False,
@@ -296,7 +295,7 @@ MODEL_CONFIGS = {
         use_vode_state_layernorm=False,
         use_vode_grad_norm=False,
         vode_grad_norm_target=1.0,
-        hidden_momentum=0.1 # Default momentum
+        hidden_momentum=0.4
     ),
     "debug_small": ModelConfig(
         name="debug_small",
