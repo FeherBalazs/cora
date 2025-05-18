@@ -11,10 +11,10 @@ from debug_transformer_wandb import run_experiment, MODEL_CONFIGS
 def perform_hyperparameter_search():
     print("Starting hyperparameter search...")
 
-    base_config_to_use = "5block_dev" 
+    base_config_to_use = "6block" 
 
     fixed_overrides = {
-        "num_blocks": 5, 
+        "num_blocks": 6, 
         "num_heads": 1,
         "hidden_size": 64,
         "epochs": 75,
@@ -33,16 +33,21 @@ def perform_hyperparameter_search():
         # vode_grad_norm_target will be set by candidates
     }
 
-    lr_hidden_candidates = [0.095, 0.085]
-    inference_lr_scale_base_candidates = [1.21, 1.23, 1.25]
-    hidden_momentum_candidates = [0.4, 0.3]
-    h_grad_clip_norm_candidates = [5000]
-    seed_candidates = [50, 42] 
+    # lr_hidden_candidates = [0.095, 0.085]
+    # inference_lr_scale_base_candidates = [1.21, 1.23, 1.25]
+    # hidden_momentum_candidates = [0.4, 0.3]
+    # h_grad_clip_norm_candidates = [5000]
+    # seed_candidates = [50, 42] 
 
-    inference_steps_candidates = [20] 
+    lr_hidden_candidates = [0.095]
+    inference_lr_scale_base_candidates = [1.25]
+    hidden_momentum_candidates = [0.4]
+    h_grad_clip_norm_candidates = [500, 1000, 2000]
+    seed_candidates = [50, 42]
+    inference_steps_candidates = [20]
     warmup_steps_candidates = [0]
+
     w_grad_clip_norm_candidates = [500.0] 
-    # vode_grad_norm_target_candidates = [100.0, 50.0, 20.0, 10.0, 5.0, 2.0, 1.0]
     vode_grad_norm_target_candidates = [50]
 
     # --- End Search Configuration ---
