@@ -924,8 +924,15 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
     with pxu.step(model, initial_status_unmask, clear_params=pxc.VodeParam.Cache):
         forward(x_init, model=model)
 
-    # Ensure sensory h is NOT frozen for inference
-    model.vodes[-1].h.frozen = False
+    # Control sensory layer frozen status based on corruption
+    if use_corruption:
+        # For corruption/inpainting, sensory h needs to be dynamic for clamping and updates.
+        model.vodes[-1].h.frozen = False
+    else:
+        # For standard reconstruction visualization (matching training target setup),
+        # sensory h should be fixed to the input image.
+        # It was already set by forward(x_init, model=model).
+        model.vodes[-1].h.frozen = True
 
     # Inference iterations
     # Wrap the range with tqdm for a progress bar
