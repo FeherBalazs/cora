@@ -1,0 +1,31 @@
+Hyperparameter Search Log - 2025-05-18 20:40:23
+Base Config: 6block (num_blocks=6)
+Fixed Overrides (excluding searched params):
+  num_blocks: 6
+  num_heads: 1
+  hidden_size: 64
+  epochs: 75
+  batch_size: 200
+  peak_lr_weights: 0.001
+  reconstruction_every_n_epochs: 25
+  validation_every_n_epochs: 10
+  use_inference_lr_scaling: True
+  use_lr_schedule: True
+  use_vode_state_layernorm: False
+  use_vode_grad_norm: False
+  use_adamw_for_hidden_optimizer: False
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Run | LR Hid | Scale   | Inf Steps | Warmup Steps | Norm Target | Hid Mom | H Clip | W Clip | Seed | Best Val MSE   | Run Best Train MSE | Final Train MSE | Status   | W&B Run Name                            
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+6   | 9.50e-02 | 1.25    | 20        | 0            | 50.0        | 0.40    | 2000.0 | 500.0  | 42   | 0.00374537     | 0.00457832         | 0.006249865051358938 | (Done)   | nb6_lrw1.00e-03_lrh9.50e-02_sb1p25_is20_ws0_nt50p0_hm0p40_hclip2000_wclip500_e75_seed42
+5   | 9.50e-02 | 1.25    | 20        | 0            | 50.0        | 0.40    | 2000.0 | 500.0  | 50   | 0.00551398     | 0.00603751         | 0.006229851394891739 | (Done)   | nb6_lrw1.00e-03_lrh9.50e-02_sb1p25_is20_ws0_nt50p0_hm0p40_hclip2000_wclip500_e75_seed50
+3   | 9.50e-02 | 1.25    | 20        | 0            | 50.0        | 0.40    | 1000.0 | 500.0  | 50   | 0.00645664     | 0.00659671         | 0.006596713792532682 | (ES-Val) | nb6_lrw1.00e-03_lrh9.50e-02_sb1p25_is20_ws0_nt50p0_hm0p40_hclip1000_wclip500_e75_seed50
+4   | 9.50e-02 | 1.25    | 20        | 0            | 50.0        | 0.40    | 1000.0 | 500.0  | 42   | 0.00870862     | 0.00877595         | 0.0642138421535492 | (ES-Val) | nb6_lrw1.00e-03_lrh9.50e-02_sb1p25_is20_ws0_nt50p0_hm0p40_hclip1000_wclip500_e75_seed42
+2   | 9.50e-02 | 1.25    | 20        | 0            | 50.0        | 0.40    | 500.0  | 500.0  | 42   | 0.01728058     | 0.01749301         | 0.4143579304218292 | (ES-Val) | nb6_lrw1.00e-03_lrh9.50e-02_sb1p25_is20_ws0_nt50p0_hm0p40_hclip500_wclip500_e75_seed42
+1   | 9.50e-02 | 1.25    | 20        | 0            | 50.0        | 0.40    | 500.0  | 500.0  | 50   | 0.01975545     | 0.02071446         | 0.3812950849533081 | (ES-Val) | nb6_lrw1.00e-03_lrh9.50e-02_sb1p25_is20_ws0_nt50p0_hm0p40_hclip500_wclip500_e75_seed50
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Best Params: peak_lr_hidden=9.50e-02, inference_lr_scale_base=1.25, inference_steps=20, warmup_steps=0, vode_grad_norm_target=50.0, hidden_momentum=0.40, h_grad_clip_norm=2000.0, w_grad_clip_norm=500.0, seed=42
+Achieved Overall Best Validation MSE: 0.003745
+Run Best Train MSE of Best Val Run: 0.004578320775181055
+Final Train MSE of Best Val Run: 0.006249865051358938
+ (lr_weights=1.00e-03 fixed)
