@@ -652,7 +652,11 @@ def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.
     batch_w_energies = []
     batch_train_mses = []
     step = 0
-    for x, y in dl:
+    
+    # Add tqdm progress bar
+    pbar = tqdm(dl, desc=f"Epoch {epoch+1 if epoch is not None else 'N/A'}", leave=True)
+    
+    for x, y in pbar:
         # Now returns train_mse as the 5th element
         h_energy, w_energy, h_grad, w_grad, train_mse = train_on_batch(
             T, jnp.array(x), model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch, step=step
@@ -668,6 +672,15 @@ def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.
         else:
              print(f"Warning: train_mse is None for batch {step}")
 
+        # Update progress bar with current metrics
+        if batch_train_mses:
+            current_mse = batch_train_mses[-1]
+            current_energy = batch_w_energies[-1] if batch_w_energies else 0.0
+            pbar.set_postfix({
+                'MSE': f'{current_mse:.4f}',
+                'Energy': f'{current_energy:.4f}'
+            })
+
         step += 1
 
     avg_train_w_energy = jnp.mean(jnp.array(batch_w_energies)) if batch_w_energies else 0.0
@@ -677,7 +690,7 @@ def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.
     print(f"Epoch {epoch+1} Average Training MSE: {avg_train_mse}")
     
     # Return average w_energy, average mse, last gradients
-    return avg_train_w_energy, avg_train_mse, h_grad, w_grad 
+    return avg_train_w_energy, avg_train_mse, h_grad, w_grad
 
 
 # @pxf.jit(static_argnums=0)
@@ -939,7 +952,6 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
     for t in tqdm(range(max_T), desc="Inference Steps"):
         # Always save reconstruction at each step (before clamping)
         with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
-        # with pxu.step(model, clear_params=pxc.VodeParam.Cache):
             current_recon = forward(None, model=model)
             all_reconstructions.append(current_recon)
 
