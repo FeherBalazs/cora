@@ -1,0 +1,24 @@
+Hyperparameter Search Log - 2025-05-17 13:43:29
+Base Config: 5block (num_blocks=5)
+Fixed Overrides (excluding searched params):
+  num_blocks: 5
+  num_heads: 1
+  hidden_size: 64
+  epochs: 10
+  batch_size: 200
+  peak_lr_weights: 0.001
+  reconstruction_every_n_epochs: 25
+  validation_every_n_epochs: 5
+  use_inference_lr_scaling: True
+  use_lr_schedule: True
+  use_vode_state_layernorm: False
+  use_vode_grad_norm: False
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Run | LR Hid | Scale   | Inf Steps | Warmup Steps | Norm Target | Hid Mom | H Clip | W Clip | Seed | W&B Run Name                                       | Best Val MSE   | Final Train MSE | Status
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+1   | 1.00e-01 | 1.24    | 20        | 0            | 50.0        | 0.95    | 5000.0 | 500.0  | 42   | nb5_lrw1.00e-03_lrh1.00e-01_sb1p24_is20_ws0_nt50p0_hm0p95_hclip5000_wclip500_e10_seed42 | Failed or Invalid | 0.4105619788169861 | (Fail)
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Best Params: peak_lr_hidden=1.00e-01, inference_lr_scale_base=1.24, inference_steps=20, warmup_steps=0, vode_grad_norm_target=50.0, hidden_momentum=0.95, h_grad_clip_norm=5000.0, w_grad_clip_norm=500.0, seed=42
+Achieved Overall Best Validation MSE: inf
+Final Train MSE of Best Run: 0.4105619788169861
+ (lr_weights=1.00e-03 fixed)

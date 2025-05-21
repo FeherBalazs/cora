@@ -1,0 +1,27 @@
+Hyperparameter Search Log - 2025-05-18 10:13:14
+Base Config: 5block_dev (num_blocks=5)
+Fixed Overrides (excluding searched params):
+  num_blocks: 5
+  num_heads: 1
+  hidden_size: 64
+  epochs: 75
+  batch_size: 200
+  peak_lr_weights: 0.001
+  reconstruction_every_n_epochs: 25
+  validation_every_n_epochs: 10
+  use_inference_lr_scaling: True
+  use_lr_schedule: True
+  use_vode_state_layernorm: False
+  use_vode_grad_norm: False
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Run | LR Hid | Scale   | Inf Steps | Warmup Steps | Norm Target | Hid Mom | H Clip | W Clip | Seed | Best Val MSE   | Run Best Train MSE | Final Train MSE | Status   | W&B Run Name                            
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+1   | 9.50e-02 | 1.25    | 20        | 0            | 50.0        | 0.30    | 5000.0 | 500.0  | 20   | 0.00680030     | 0.00602291         | 0.00785275548696518 | (ES-Val) | nb5_lrw1.00e-03_lrh9.50e-02_sb1p25_is20_ws0_nt50p0_hm0p30_hclip5000_wclip500_e75_seed20
+3   | 9.50e-02 | 1.25    | 20        | 0            | 50.0        | 0.30    | 5000.0 | 500.0  | 1000 | 0.00893386     | 0.00632278         | 0.006946888752281666 | (ES-Val) | nb5_lrw1.00e-03_lrh9.50e-02_sb1p25_is20_ws0_nt50p0_hm0p30_hclip5000_wclip500_e75_seed1000
+2   | 9.50e-02 | 1.25    | 20        | 0            | 50.0        | 0.30    | 5000.0 | 500.0  | 400  | 0.01028129     | 0.00407794         | 0.004724273923784494 | (ES-Val) | nb5_lrw1.00e-03_lrh9.50e-02_sb1p25_is20_ws0_nt50p0_hm0p30_hclip5000_wclip500_e75_seed400
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Best Params: peak_lr_hidden=9.50e-02, inference_lr_scale_base=1.25, inference_steps=20, warmup_steps=0, vode_grad_norm_target=50.0, hidden_momentum=0.30, h_grad_clip_norm=5000.0, w_grad_clip_norm=500.0, seed=20
+Achieved Overall Best Validation MSE: 0.006800
+Run Best Train MSE of Best Val Run: 0.0060229115188121796
+Final Train MSE of Best Val Run: 0.00785275548696518
+ (lr_weights=1.00e-03 fixed)

@@ -1,0 +1,27 @@
+Hyperparameter Search Log - 2025-05-16 19:00:28
+Base Config: 5block_dev (num_blocks=5)
+Fixed Overrides (excluding searched params):
+  num_blocks: 5
+  num_heads: 1
+  hidden_size: 64
+  epochs: 10
+  batch_size: 200
+  peak_lr_weights: 0.001
+  reconstruction_every_n_epochs: 25
+  validation_every_n_epochs: 10
+  use_inference_lr_scaling: False
+  use_status_init_in_training: False
+  use_status_init_in_unmasking: False
+  use_lr_schedule: True
+  use_vode_state_layernorm: False
+  use_vode_grad_norm: True
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Run | LR Hid | Scale   | Inf Steps | Warmup Steps | Norm Target | H Clip | W Clip | Seed | W&B Run Name                                                 | Final Train MSE | Status
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+1   | 1.00e-01 | N/A     | 20        | 0            | 50.0        | 1000.0 | 500.0  | 42   | nb5_lrw1.00e-03_lrh1.00e-01_sbOFF_is20_ws0_nt50p0_hclip1000_wclip500_e10_seed42 | 0.05614727      | (Done)
+4   | 1.00e-01 | N/A     | 20        | 0            | 20.0        | 1000.0 | 500.0  | 42   | nb5_lrw1.00e-03_lrh1.00e-01_sbOFF_is20_ws0_nt20p0_hclip1000_wclip500_e10_seed42 | 0.09755158      | (Done)
+3   | 1.00e-01 | N/A     | 20        | 0            | 30.0        | 1000.0 | 500.0  | 42   | nb5_lrw1.00e-03_lrh1.00e-01_sbOFF_is20_ws0_nt30p0_hclip1000_wclip500_e10_seed42 | 0.11308964      | (Done)
+2   | 1.00e-01 | N/A     | 20        | 0            | 40.0        | 1000.0 | 500.0  | 42   | nb5_lrw1.00e-03_lrh1.00e-01_sbOFF_is20_ws0_nt40p0_hclip1000_wclip500_e10_seed42 | 0.11821917      | (Done)
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Best Params: peak_lr_hidden=1.00e-01, inference_lr_scale_base=N/A, inference_steps=20, warmup_steps=0, vode_grad_norm_target=50.0, h_grad_clip_norm=1000.0, w_grad_clip_norm=500.0, seed=42 (lr_weights=1.00e-03 fixed)
+Best MSE: 0.056147
