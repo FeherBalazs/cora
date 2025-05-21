@@ -653,10 +653,11 @@ def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.
     batch_train_mses = []
     step = 0
     
-    # Add tqdm progress bar
-    pbar = tqdm(dl, desc=f"Epoch {epoch+1 if epoch is not None else 'N/A'}", leave=True)
+    # # Add tqdm progress bar
+    # pbar = tqdm(dl, desc=f"Epoch {epoch+1 if epoch is not None else 'N/A'}", leave=True)
     
-    for x, y in pbar:
+    # for x, y in pbar:
+    for x, y in dl:
         # Now returns train_mse as the 5th element
         h_energy, w_energy, h_grad, w_grad, train_mse = train_on_batch(
             T, jnp.array(x), model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch, step=step
@@ -672,14 +673,14 @@ def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.
         else:
              print(f"Warning: train_mse is None for batch {step}")
 
-        # Update progress bar with current metrics
-        if batch_train_mses:
-            current_mse = batch_train_mses[-1]
-            current_energy = batch_w_energies[-1] if batch_w_energies else 0.0
-            pbar.set_postfix({
-                'MSE': f'{current_mse:.4f}',
-                'Energy': f'{current_energy:.4f}'
-            })
+        # # Update progress bar with current metrics
+        # if batch_train_mses:
+        #     current_mse = batch_train_mses[-1]
+        #     current_energy = batch_w_energies[-1] if batch_w_energies else 0.0
+        #     pbar.set_postfix({
+        #         'MSE': f'{current_mse:.4f}',
+        #         'Energy': f'{current_energy:.4f}'
+        #     })
 
         step += 1
 
