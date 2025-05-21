@@ -142,6 +142,7 @@ class ModelConfig:
     use_vode_state_layernorm: bool = False # Apply LayerNorm to Vode hidden states (h)
     use_vode_grad_norm: bool = False       # Normalize Vode h-gradients before optimizer step
     vode_grad_norm_target: float = 1.0     # Target norm for h-gradient normalization
+    use_adamw_for_hidden_optimizer: bool = False # New: Use AdamW for hidden state optimizer
     
 
 
@@ -1327,8 +1328,18 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         print(f"Using constant learning rates - Weights: {weights_lr_fn}, Hidden: {hidden_lr_fn}")
     
     # --- Create base optimizers --- 
-    base_optim_h_train = optax.sgd(hidden_lr_fn, momentum=config.hidden_momentum)
-    base_optim_h_inference = optax.sgd(config.hidden_lr_inference, momentum=config.hidden_momentum)
+    if config.use_adamw_for_hidden_optimizer:
+        print("Using AdamW for hidden state optimizer.")
+        # AdamW for hidden states typically does not use weight decay.
+        # Learning rate is provided by hidden_lr_fn (for training) or config.hidden_lr_inference (for inference).
+        # Standard beta values for AdamW are b1=0.9, b2=0.999. Epsilon is 1e-8.
+        base_optim_h_train = optax.adamw(learning_rate=hidden_lr_fn, b1=0.9, b2=0.999, eps=1e-8)
+        base_optim_h_inference = optax.adamw(learning_rate=config.hidden_lr_inference, b1=0.9, b2=0.999, eps=1e-8)
+    else:
+        print("Using SGD for hidden state optimizer.")
+        base_optim_h_train = optax.sgd(hidden_lr_fn, momentum=config.hidden_momentum)
+        base_optim_h_inference = optax.sgd(config.hidden_lr_inference, momentum=config.hidden_momentum)
+    
     base_optim_w = optax.adamw(weights_lr_fn, weight_decay=config.weight_decay)
     
     # --- Apply gradient clipping if configured ---
