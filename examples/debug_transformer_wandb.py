@@ -565,8 +565,9 @@ def create_reconstruction_images(intermediate_recons, T_values, orig_images, mas
     
     epoch_str = f"_epoch{epoch}" if epoch is not None else ""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    os.makedirs("../results", exist_ok=True)
-    reconstruction_path = f"../results/reconstruction_images{epoch_str}_{timestamp}.png"
+    image_dir = "../results/images" # New directory
+    os.makedirs(image_dir, exist_ok=True) # Ensure directory exists
+    reconstruction_path = f"{image_dir}/reconstruction_images{epoch_str}_{timestamp}.png" # Updated path
     plt.savefig(reconstruction_path)
     plt.close(fig)
     print(f"Saved reconstruction image grid to {reconstruction_path}")
@@ -863,8 +864,9 @@ def create_reconstruction_video(all_reconstruction_frames, orig_images, masked_i
     # Save video
     epoch_str = f"_epoch{epoch}" if epoch is not None else ""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    os.makedirs("../results", exist_ok=True)
-    video_path = f"../results/reconstruction_video{epoch_str}_{timestamp}.mp4" # Save as MP4
+    video_dir = "../results/videos" # New directory
+    os.makedirs(video_dir, exist_ok=True) # Ensure directory exists
+    video_path = f"{video_dir}/reconstruction_video{epoch_str}_{timestamp}.mp4" # Updated path, save as MP4
     imageio.mimsave(video_path, video_frames, fps=fps)
     print(f"Saved reconstruction video to {video_path}")
 
