@@ -29,6 +29,7 @@ sudo docker image build -t cora:latest -f ./DockerfileGH200 ..
 
 # Run the Docker container with the detected directory using sudo, and capture its ID
 CONTAINER_ID=$(sudo docker run --gpus all -d --restart unless-stopped \
+  --shm-size=16G \
   -v "$HOST_CORA_DIR:/home/cora/workspace" \
   cora:latest /bin/bash -c "sleep infinity")
 
