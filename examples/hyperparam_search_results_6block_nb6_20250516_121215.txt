@@ -1,0 +1,23 @@
+Hyperparameter Search Log - 2025-05-16 12:12:15
+Base Config: 6block (num_blocks=6)
+Fixed Overrides (excluding searched params):
+  num_blocks: 6
+  num_heads: 1
+  hidden_size: 64
+  epochs: 50
+  peak_lr_weights: 0.001
+  reconstruction_every_n_epochs: 25
+  validation_every_n_epochs: 5
+  use_inference_lr_scaling: True
+  use_status_init_in_training: False
+  use_status_init_in_unmasking: False
+  use_lr_schedule: True
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Run | LR Hid | Scale | Inf Steps | Warmup Steps | H Clip | W Clip | Seed | LN Vode State | Norm Vode Grad | Norm Target | W&B Run Name                                        | Final Train MSE | Status
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+3   | 0.1    | 1.35  | 20        | 20           | 1000.0 | 500.0  | 42   | N/A           | N/A            | N/A         | nb6_lrw1.00e-03_lrh1.00e-01_sb1p35_is20_ws20_hclip1000_wclip500_e50_seed42 | 0.10378700      | (ES)  
+1   | 0.1    | 1.25  | 20        | 20           | 1000.0 | 500.0  | 42   | N/A           | N/A            | N/A         | nb6_lrw1.00e-03_lrh1.00e-01_sb1p25_is20_ws20_hclip1000_wclip500_e50_seed42 | 0.12884679      | (ES)  
+2   | 0.1    | 1.3   | 20        | 20           | 1000.0 | 500.0  | 42   | N/A           | N/A            | N/A         | nb6_lrw1.00e-03_lrh1.00e-01_sb1p30_is20_ws20_hclip1000_wclip500_e50_seed42 | 0.13227296      | (ES)  
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Best Params: peak_lr_hidden=0.1, inference_lr_scale_base=1.35, inference_steps=20, warmup_steps=20, h_grad_clip_norm=1000.0, w_grad_clip_norm=500.0, seed=42, use_vode_state_layernorm=N/A, use_vode_grad_norm=N/A, vode_grad_norm_target=N/A (lr_weights=0.001 fixed)
+Best MSE: 0.103787

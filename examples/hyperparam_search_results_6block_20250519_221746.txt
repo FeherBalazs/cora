@@ -1,0 +1,57 @@
+Hyperparameter Search Log - 2025-05-19 22:17:46
+Base Config for non-searched params: 6block
+Fixed Overrides (excluding searched params):
+  epochs: 75
+  peak_lr_weights: 0.001
+  reconstruction_every_n_epochs: 5
+  validation_every_n_epochs: 5
+  use_inference_lr_scaling: True
+  use_lr_schedule: True
+  weight_decay: 0.0002
+  mlp_ratio: 4.0
+  patch_size: 4
+  use_noise: True
+  update_weights_every_inference_step: False
+  use_early_stopping: True
+  early_stopping_patience: 3
+  early_stopping_min_delta: 0.001
+  use_vode_state_layernorm: False
+  use_vode_grad_norm: False
+  use_adamw_for_hidden_optimizer: False
+  corrupt_ratio: 0.25
+  use_lower_half_mask: False
+  inference_clamp_alpha: 1.0
+  save_reconstruction_images: True
+  save_reconstruction_video: True
+  video_fps: 5
+  reinitialize_model_for_each_epoch: False
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Run | NB | BS   | HS   | NH | LR Hid    | Scale   | Inf Steps | Warmup | Hid Mom | H Clip | W Clip | Seed | Best Val MSE   | Run Best Train MSE | Final Train MSE | Status   | W&B Run Name                                      
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+3   | 0  | 200  | 64   | 1  | 9.500e-02 | 1.25    | 20        | 0      | 0.40    | 2000.0 | 500.0  | 100  | 0.00033166     | 0.00004568         | 0.00004568      | (ES-Val) | nb0_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_e75_sd100
+2   | 0  | 200  | 64   | 1  | 9.500e-02 | 1.25    | 20        | 0      | 0.40    | 2000.0 | 500.0  | 42   | 0.00035342     | 0.00004555         | 0.00004555      | (ES-Val) | nb0_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_e75_sd42
+1   | 0  | 200  | 64   | 1  | 9.500e-02 | 1.25    | 20        | 0      | 0.40    | 2000.0 | 500.0  | 50   | 0.00036621     | 0.00005106         | 0.00005106      | (ES-Val) | nb0_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_e75_sd50
+6   | 1  | 200  | 64   | 1  | 9.500e-02 | 1.25    | 20        | 0      | 0.40    | 2000.0 | 500.0  | 100  | 0.00066144     | 0.00039488         | 0.00051930      | (ES-Val) | nb1_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_e75_sd100
+5   | 1  | 200  | 64   | 1  | 9.500e-02 | 1.25    | 20        | 0      | 0.40    | 2000.0 | 500.0  | 42   | 0.00083959     | 0.00042797         | 0.00042797      | (ES-Val) | nb1_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_e75_sd42
+4   | 1  | 200  | 64   | 1  | 9.500e-02 | 1.25    | 20        | 0      | 0.40    | 2000.0 | 500.0  | 50   | 0.00089358     | 0.00039453         | 0.00039453      | (ES-Val) | nb1_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_e75_sd50
+7   | 2  | 200  | 64   | 1  | 9.500e-02 | 1.25    | 20        | 0      | 0.40    | 2000.0 | 500.0  | 50   | 0.00211129     | 0.00179583         | 0.00179583      | (ES-Val) | nb2_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_e75_sd50
+10  | 3  | 200  | 64   | 1  | 9.500e-02 | 1.25    | 20        | 0      | 0.40    | 2000.0 | 500.0  | 50   | 0.00239755     | 0.00154585         | 0.00163261      | (ES-Val) | nb3_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_e75_sd50
+8   | 2  | 200  | 64   | 1  | 9.500e-02 | 1.25    | 20        | 0      | 0.40    | 2000.0 | 500.0  | 42   | 0.00247668     | 0.00199072         | 0.00220767      | (ES-Val) | nb2_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_e75_sd42
+12  | 3  | 200  | 64   | 1  | 9.500e-02 | 1.25    | 20        | 0      | 0.40    | 2000.0 | 500.0  | 100  | 0.00254848     | 0.00261124         | 0.00286991      | (ES-Val) | nb3_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_e75_sd100
+11  | 3  | 200  | 64   | 1  | 9.500e-02 | 1.25    | 20        | 0      | 0.40    | 2000.0 | 500.0  | 42   | 0.00263211     | 0.00299677         | 0.00313368      | (ES-Val) | nb3_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_e75_sd42
+9   | 2  | 200  | 64   | 1  | 9.500e-02 | 1.25    | 20        | 0      | 0.40    | 2000.0 | 500.0  | 100  | 0.00281262     | 0.00205519         | 0.00206933      | (ES-Val) | nb2_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_e75_sd100
+14  | 4  | 200  | 64   | 1  | 9.500e-02 | 1.25    | 20        | 0      | 0.40    | 2000.0 | 500.0  | 42   | 0.00288927     | 0.00289946         | 0.00316111      | (ES-Val) | nb4_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_e75_sd42
+17  | 5  | 200  | 64   | 1  | 9.500e-02 | 1.25    | 20        | 0      | 0.40    | 2000.0 | 500.0  | 42   | 0.00305630     | 0.00659465         | 0.01182895      | (ES-Val) | nb5_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_e75_sd42
+13  | 4  | 200  | 64   | 1  | 9.500e-02 | 1.25    | 20        | 0      | 0.40    | 2000.0 | 500.0  | 50   | 0.00308548     | 0.00451875         | 0.00523879      | (ES-Val) | nb4_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_e75_sd50
+16  | 5  | 200  | 64   | 1  | 9.500e-02 | 1.25    | 20        | 0      | 0.40    | 2000.0 | 500.0  | 50   | 0.00480036     | 0.00508319         | 0.00934071      | (ES-Val) | nb5_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_e75_sd50
+15  | 4  | 200  | 64   | 1  | 9.500e-02 | 1.25    | 20        | 0      | 0.40    | 2000.0 | 500.0  | 100  | 0.00667747     | 0.00615802         | 0.00615802      | (ES-Val) | nb4_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_e75_sd100
+18  | 5  | 200  | 64   | 1  | 9.500e-02 | 1.25    | 20        | 0      | 0.40    | 2000.0 | 500.0  | 100  | 0.00777827     | 0.00754636         | 0.00800141      | (ES-Val) | nb5_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_e75_sd100
+19  | 6  | 200  | 64   | 1  | 9.500e-02 | 1.25    | 20        | 0      | 0.40    | 2000.0 | 500.0  | 50   | 0.00863295     | 0.01038888         | 0.02627543      | (ES-Val) | nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_e75_sd50
+20  | 6  | 200  | 64   | 1  | 9.500e-02 | 1.25    | 20        | 0      | 0.40    | 2000.0 | 500.0  | 42   | 0.01297488     | 0.01069837         | 0.01986382      | (ES-Val) | nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_e75_sd42
+21  | 6  | 200  | 64   | 1  | 9.500e-02 | 1.25    | 20        | 0      | 0.40    | 2000.0 | 500.0  | 100  | 0.01399537     | 0.01534434         | 0.02511108      | (ES-Val) | nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_e75_sd100
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Best Params: num_blocks=0, batch_size=200, hidden_size=64, num_heads=1, peak_lr_hidden=9.500e-02, inference_lr_scale_base=1.25, inference_steps=20, warmup_steps=0, hidden_momentum=0.40, h_grad_clip_norm=2000.0, w_grad_clip_norm=500.0, seed=100
+Achieved Overall Best Validation MSE: 0.000332
+Run Best Train MSE of Best Val Run: 4.5681441406486556e-05
+Final Train MSE of Best Val Run: 4.5681441406486556e-05
+ (lr_weights=1.000e-03 fixed)
