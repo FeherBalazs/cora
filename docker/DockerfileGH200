@@ -23,8 +23,12 @@ RUN groupadd -g 1000 cora \
     && useradd -m -u 1000 -g cora cora \
     # Allow the user to install packages
     && chmod -R a+rwx /usr/local /usr/include/python3.11
-USER cora:cora
+
+# Set the working directory and ensure the cora user owns it
 WORKDIR /home/cora/workspace
+RUN chown cora:cora /home/cora/workspace
+
+USER cora:cora
 
 # Install pip and setuptools first
 RUN python -m pip install --upgrade pip setuptools wheel
@@ -70,7 +74,7 @@ RUN python -m uv pip uninstall -y jax jaxlib || true
 # Install other specific dependencies
 RUN python -m uv pip install matplotlib==3.8.2 \
     && python -m uv pip install flax==0.9.0 einops==0.8.1 \
-    && python -m uv pip install equinox==0.11.7 optax==0.2.3 wandb==0.19.8 imageio==2.37.0 imageio-ffmpeg==0.6.0
+    && python -m uv pip install equinox==0.11.7 optax==0.2.3 wandb==0.19.8 imageio==2.37.0 imageio-ffmpeg==0.6.0 tqdm==4.67.1
 
 # Install specific JAX versions for CUDA
 RUN python -m uv pip install "jax[cuda12]==0.4.33" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html

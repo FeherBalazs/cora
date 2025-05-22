@@ -1,0 +1,57 @@
+Hyperparameter Search Log - 2025-05-12 17:26:13
+Base Config: debug_tiny
+Fixed Overrides:
+  num_blocks: 4
+  num_heads: 1
+  hidden_size: 64
+  epochs: 10
+  reconstruction_every_n_epochs: 10
+  validation_every_n_epochs: 10
+  save_reconstruction_images: False
+  save_reconstruction_video: False
+  use_status_init_in_training: False
+  use_status_init_in_unmasking: False
+  reconstruction_steps: [1]
+  dataset: cifar10
+  data_dir: ../datasets/
+  train_subset: 50000
+  test_subset: 200
+  target_class: None
+  use_corruption: False
+  corrupt_ratio: 0.25
+  use_lower_half_mask: False
+  inference_clamp_alpha: 0.5
+  num_images: 1
+  mlp_ratio: 4.0
+  patch_size: 4
+  axes_dim: [16, 16]
+  theta: 100
+  use_noise: True
+  batch_size: 200
+  inference_steps: 20
+  eval_inference_steps: [1]
+  update_weights_during_unmasking: False
+  weight_decay: 0.0002
+  warmup_epochs: 5
+  use_lr_schedule: False
+  seed: 42
+  use_inference_lr_scaling: True
+  grad_clip_norm: 10.0
+  use_early_stopping: True
+  early_stopping_patience: 2
+  early_stopping_min_delta: 0.001
+  video_fps: 60
+  reinitialize_model_for_each_epoch: False
+  update_weights_every_inference_step: False
+--------------------------------------------------------------------------------
+Run | LR Weights | LR Hidden  | Scale Base | W&B Run Name                   | Final Train MSE
+--------------------------------------------------------------------------------
+1   | 0.001      | 0.01       | 1.0        | nb4_lrw1e-03_lrh1e-02_sb1.0    | 0.10802043
+2   | 0.001      | 0.01       | 1.5        | nb4_lrw1e-03_lrh1e-02_sb1.5    | 0.10802851
+3   | 0.001      | 0.01       | 2.0        | nb4_lrw1e-03_lrh1e-02_sb2.0    | 0.108139165
+4   | 0.001      | 0.1        | 1.0        | nb4_lrw1e-03_lrh1e-01_sb1.0    | 0.107661575
+5   | 0.001      | 0.1        | 1.5        | nb4_lrw1e-03_lrh1e-01_sb1.5    | 0.107390724
+6   | 0.001      | 0.1        | 2.0        | nb4_lrw1e-03_lrh1e-01_sb2.0    | 0.107840024
+--------------------------------------------------------------------------------
+Best Params: peak_lr_weights=0.001, peak_lr_hidden=0.1, inference_lr_scale_base=1.5
+Best MSE: 0.107391

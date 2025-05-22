@@ -1,0 +1,22 @@
+Hyperparameter Search Log - 2025-05-14 09:55:47
+Base Config: debug_tiny (num_blocks=5)
+Fixed Overrides (excluding searched params):
+  num_blocks: 5
+  num_heads: 1
+  hidden_size: 64
+  epochs: 50
+  peak_lr_weights: 0.001
+  reconstruction_every_n_epochs: 25
+  validation_every_n_epochs: 5
+  use_inference_lr_scaling: True
+  use_status_init_in_training: False
+  use_status_init_in_unmasking: False
+-------------------------------------------------------------------------------------------------
+Run | LR Hid | Scale | H Clip | W Clip | W&B Run Name                                 | Final Train MSE | Status
+-------------------------------------------------------------------------------------------------
+2   | 0.1    | 1.2   | 1000.0 | 500.0  | nb5_lrw1e-03_lrh1e-01_sb1p20_hclip1000_wclip500_e50 | 0.01421586      | (Done)
+3   | 0.1    | 1.25  | 1000.0 | 500.0  | nb5_lrw1e-03_lrh1e-01_sb1p25_hclip1000_wclip500_e50 | 0.07261217      | (Done)
+1   | 0.1    | 1.15  | 1000.0 | 500.0  | nb5_lrw1e-03_lrh1e-01_sb1p15_hclip1000_wclip500_e50 | 0.34120491      | (Done)
+-------------------------------------------------------------------------------------------------
+Best Params: peak_lr_hidden=0.1, inference_lr_scale_base=1.2, h_grad_clip_norm=1000.0, w_grad_clip_norm=500.0 (lr_weights=0.001 fixed)
+Best MSE: 0.014216

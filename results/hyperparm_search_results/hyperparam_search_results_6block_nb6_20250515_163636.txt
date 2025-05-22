@@ -1,0 +1,26 @@
+Hyperparameter Search Log - 2025-05-15 16:36:36
+Base Config: 6block (num_blocks=6)
+Fixed Overrides (excluding searched params):
+  num_blocks: 6
+  num_heads: 1
+  hidden_size: 64
+  epochs: 50
+  peak_lr_weights: 0.001
+  reconstruction_every_n_epochs: 25
+  validation_every_n_epochs: 5
+  use_inference_lr_scaling: True
+  use_status_init_in_training: False
+  use_status_init_in_unmasking: False
+  use_lr_schedule: False
+-------------------------------------------------------------------------------------------------
+Run | LR Hid | Scale | Inf Steps | H Clip | W Clip | Seed | W&B Run Name                                 | Final Train MSE | Status
+-------------------------------------------------------------------------------------------------
+6   | 0.1    | 1.2   | 26        | 1000.0 | 500.0  | 42   | nb6_lrw1.00e-03_lrh1.00e-01_sb1p20_is26_hclip1000_wclip500_e50_seed42 | 0.32507491      | (ES)  
+4   | 0.1    | 1.2   | 20        | 1000.0 | 500.0  | 42   | nb6_lrw1.00e-03_lrh1.00e-01_sb1p20_is20_hclip1000_wclip500_e50_seed42 | 0.38316283      | (ES)  
+3   | 0.1    | 1.15  | 26        | 1000.0 | 500.0  | 42   | nb6_lrw1.00e-03_lrh1.00e-01_sb1p15_is26_hclip1000_wclip500_e50_seed42 | 0.38423100      | (Done)
+5   | 0.1    | 1.2   | 23        | 1000.0 | 500.0  | 42   | nb6_lrw1.00e-03_lrh1.00e-01_sb1p20_is23_hclip1000_wclip500_e50_seed42 | 0.39055404      | (ES)  
+1   | 0.1    | 1.15  | 20        | 1000.0 | 500.0  | 42   | nb6_lrw1.00e-03_lrh1.00e-01_sb1p15_is20_hclip1000_wclip500_e50_seed42 | 0.39066866      | (ES)  
+2   | 0.1    | 1.15  | 23        | 1000.0 | 500.0  | 42   | nb6_lrw1.00e-03_lrh1.00e-01_sb1p15_is23_hclip1000_wclip500_e50_seed42 | 0.41110200      | (ES)  
+-------------------------------------------------------------------------------------------------
+Best Params: peak_lr_hidden=0.1, inference_lr_scale_base=1.2, inference_steps=26, h_grad_clip_norm=1000.0, w_grad_clip_norm=500.0, seed=42 (lr_weights=0.001 fixed)
+Best MSE: 0.325075

@@ -1,0 +1,76 @@
+Hyperparameter Search Log - 2025-05-13 14:09:39
+Base Config: debug_tiny (num_blocks=4)
+Fixed Overrides (excluding searched params):
+  num_blocks: 4
+  num_heads: 1
+  hidden_size: 64
+  epochs: 10
+  peak_lr_weights: 0.001
+  reconstruction_every_n_epochs: 10
+  validation_every_n_epochs: 5
+  save_reconstruction_images: False
+  save_reconstruction_video: False
+  use_status_init_in_training: False
+  use_status_init_in_unmasking: False
+  reconstruction_steps: [1]
+  dataset: cifar10
+  data_dir: ../datasets/
+  train_subset: 50000
+  test_subset: 200
+  target_class: None
+  use_corruption: False
+  corrupt_ratio: 0.25
+  use_lower_half_mask: False
+  inference_clamp_alpha: 0.5
+  num_images: 1
+  mlp_ratio: 4.0
+  patch_size: 4
+  axes_dim: [16, 16]
+  theta: 100
+  use_noise: True
+  batch_size: 200
+  inference_steps: 20
+  eval_inference_steps: [20]
+  update_weights_during_unmasking: False
+  weight_decay: 0.0002
+  warmup_epochs: 5
+  use_lr_schedule: False
+  seed: 42
+  use_inference_lr_scaling: True
+  use_early_stopping: True
+  early_stopping_patience: 2
+  early_stopping_min_delta: 0.001
+  video_fps: 60
+  reinitialize_model_for_each_epoch: False
+  update_weights_every_inference_step: False
+-------------------------------------------------------------------------------------------------
+Run | LR Hid | Scale | H Clip | W Clip | W&B Run Name                                 | Final Train MSE | Status
+-------------------------------------------------------------------------------------------------
+17  | 0.1    | 1.3   | 1000.0 | 100.0  | nb4_lrw1e-03_lrh1e-01_sb1.3_hclip1000_wclip100 | 0.00631255      | (Done)
+23  | 0.1    | 1.3   | 2000.0 | 500.0  | nb4_lrw1e-03_lrh1e-01_sb1.3_hclip2000_wclip500 | 0.00644393      | (Done)
+3   | 0.1    | 1.3   | None   | 500.0  | nb4_lrw1e-03_lrh1e-01_sb1.3_hclipNone_wclip500 | 0.00761848      | (Done)
+20  | 0.1    | 1.3   | 1000.0 | 2000.0 | nb4_lrw1e-03_lrh1e-01_sb1.3_hclip1000_wclip2000 | 0.00778211      | (Done)
+18  | 0.1    | 1.3   | 1000.0 | 500.0  | nb4_lrw1e-03_lrh1e-01_sb1.3_hclip1000_wclip500 | 0.00789652      | (Done)
+19  | 0.1    | 1.3   | 1000.0 | 1000.0 | nb4_lrw1e-03_lrh1e-01_sb1.3_hclip1000_wclip1000 | 0.00797555      | (ES)  
+25  | 0.1    | 1.3   | 2000.0 | 2000.0 | nb4_lrw1e-03_lrh1e-01_sb1.3_hclip2000_wclip2000 | 0.00865674      | (ES)  
+24  | 0.1    | 1.3   | 2000.0 | 1000.0 | nb4_lrw1e-03_lrh1e-01_sb1.3_hclip2000_wclip1000 | 0.01121004      | (Done)
+5   | 0.1    | 1.3   | None   | 2000.0 | nb4_lrw1e-03_lrh1e-01_sb1.3_hclipNone_wclip2000 | 0.01165118      | (Done)
+2   | 0.1    | 1.3   | None   | 100.0  | nb4_lrw1e-03_lrh1e-01_sb1.3_hclipNone_wclip100 | 0.01394832      | (Done)
+22  | 0.1    | 1.3   | 2000.0 | 100.0  | nb4_lrw1e-03_lrh1e-01_sb1.3_hclip2000_wclip100 | 0.01446775      | (Done)
+21  | 0.1    | 1.3   | 2000.0 | None   | nb4_lrw1e-03_lrh1e-01_sb1.3_hclip2000_wclipNone | 0.01481073      | (Done)
+16  | 0.1    | 1.3   | 1000.0 | None   | nb4_lrw1e-03_lrh1e-01_sb1.3_hclip1000_wclipNone | 0.01563478      | (Done)
+4   | 0.1    | 1.3   | None   | 1000.0 | nb4_lrw1e-03_lrh1e-01_sb1.3_hclipNone_wclip1000 | 0.01622164      | (ES)  
+1   | 0.1    | 1.3   | None   | None   | nb5_lrw1e-03_lrh1e-01_sb1.3_hclipNone_wclipNone | 0.02034383      | (Done)
+7   | 0.1    | 1.3   | 100.0  | 100.0  | nb4_lrw1e-03_lrh1e-01_sb1.3_hclip100_wclip100  | 0.04545499      | (Done)
+6   | 0.1    | 1.3   | 100.0  | None   | nb4_lrw1e-03_lrh1e-01_sb1.3_hclip100_wclipNone | 0.11672064      | (Done)
+10  | 0.1    | 1.3   | 100.0  | 2000.0 | nb4_lrw1e-03_lrh1e-01_sb1.3_hclip100_wclip2000 | 0.20671462      | (ES)  
+11  | 0.1    | 1.3   | 500.0  | None   | nb4_lrw1e-03_lrh1e-01_sb1.3_hclip500_wclipNone | 0.30732158      | (ES)  
+9   | 0.1    | 1.3   | 100.0  | 1000.0 | nb4_lrw1e-03_lrh1e-01_sb1.3_hclip100_wclip1000 | 0.30740559      | (Done)
+14  | 0.1    | 1.3   | 500.0  | 1000.0 | nb4_lrw1e-03_lrh1e-01_sb1.3_hclip500_wclip1000 | 0.31551495      | (ES)  
+15  | 0.1    | 1.3   | 500.0  | 2000.0 | nb4_lrw1e-03_lrh1e-01_sb1.3_hclip500_wclip2000 | 0.34431404      | (Done)
+13  | 0.1    | 1.3   | 500.0  | 500.0  | nb4_lrw1e-03_lrh1e-01_sb1.3_hclip500_wclip500  | 0.36696991      | (ES)  
+8   | 0.1    | 1.3   | 100.0  | 500.0  | nb4_lrw1e-03_lrh1e-01_sb1.3_hclip100_wclip500  | 0.43172756      | (ES)  
+12  | 0.1    | 1.3   | 500.0  | 100.0  | nb4_lrw1e-03_lrh1e-01_sb1.3_hclip500_wclip100  | 0.44005874      | (ES)  
+-------------------------------------------------------------------------------------------------
+Best Params: peak_lr_hidden=0.1, inference_lr_scale_base=1.3, h_grad_clip_norm=1000.0, w_grad_clip_norm=100.0 (lr_weights=0.001 fixed)
+Best MSE: 0.006313

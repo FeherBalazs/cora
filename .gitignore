@@ -3,7 +3,8 @@
 
 .vscode
 **/data
-**/results
+**/results/videos
+**/results/images
 **/wandb
 
 # Specific directories to ignore
