@@ -3,14 +3,14 @@
 <p align="center">
       <img src="assets/videos/cifar10_reconstruction_demo_v0.3.0.gif" alt="PC-ViT reconstruction demo" width="80%">
       <br/>
-      <em>Masked image reconstruction (CIFAR-10) using PC-ViT inference (v0.3.0). Lower 50% of the original images were masked (pixels set to black).</em>
+      <em>Image reconstruction (CIFAR-10) using PC-ViT inference (v0.3.0).</em>
 </p>
 
 ## Introduction
 
 Cora is a JAX-based library that integrates predictive coding with transformer architectures, initially focusing on image reconstruction and generation, with a long-term goal of video prediction. It is built on top of the [PCX library](https://github.com/liukidar/pcax), which provides a highly configurable framework for developing predictive coding networks. Cora aims to explore the potential advantages of predictive coding with transformer architectures, particularly in terms of generative capabilities derived from energy minimization and local updates.
 
-**Current Status (v0.3.0):** The library now includes a functional Predictive Coding Vision Transformer (PC-ViT) model that demonstrates successful masked image reconstruction (inpainting) on CIFAR-10 subsets, validating the core energy-based generative inference mechanism.
+**Current Status (v0.4.0):** The library now includes a functional Predictive Coding Vision Transformer (PC-ViT) model. Key achievements include successful image reconstruction on CIFAR-10 subsets and scaling unsupervised training to the full CIFAR-10 dataset with a 6-block model achieving ~0.008 MSE. These results validate the core energy-based generative inference mechanism and demonstrate the model's capability to learn from larger datasets.
 
 ## Installation
 
@@ -59,7 +59,7 @@ Cora is an active research project. My planned roadmap includes:
 **Short-Term Goals:**
 
 *   [x] Implement and validate PC-ViT for masked image reconstruction (CIFAR-10 subset). *(v0.3.0)*
-*   [ ] Scale unsupervised training to the full CIFAR-10 dataset.
+*   [x] Scale unsupervised training to the full CIFAR-10 dataset. *(v0.4.0 - Successfully trained a 6-block model on the full dataset, achieving ~0.008 MSE)*
 *   [ ] Evaluate learned representations using linear probing on CIFAR-10 classification.
 *   [ ] Implement label conditioning mechanisms within the PC-ViT architecture.
 *   [ ] Demonstrate label-conditioned image generation on CIFAR-10.
