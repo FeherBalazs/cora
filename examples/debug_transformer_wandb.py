@@ -116,7 +116,8 @@ class ModelConfig:
     hidden_lr_inference: float = peak_lr_hidden * 1
     weight_decay: float = 2e-4
     warmup_steps: int = 0 # New: Number of steps for warmup
-    use_lr_schedule: bool = False
+    use_lr_schedule_w: bool = True # New: Use LR schedule for weights
+    use_lr_schedule_h: bool = True  # New: Use LR schedule for hidden states
     seed: int = 42
     
     # Layer-specific inference LR scaling
@@ -143,6 +144,7 @@ class ModelConfig:
     use_vode_grad_norm: bool = False       # Normalize Vode h-gradients before optimizer step
     vode_grad_norm_target: float = 1.0     # Target norm for h-gradient normalization
     use_adamw_for_hidden_optimizer: bool = False # New: Use AdamW for hidden state optimizer
+    lr_schedule_min_lr_factor: float = 0.5 # New: Factor to determine min_lr in schedule (min_lr = base_lr * factor)
     
 
 
@@ -165,7 +167,11 @@ MODEL_CONFIGS = {
         # New norm options
         use_vode_state_layernorm=False,
         use_vode_grad_norm=False,
-        vode_grad_norm_target=1.0
+        vode_grad_norm_target=1.0,
+        use_adamw_for_hidden_optimizer=False, # Default to SGD
+        lr_schedule_min_lr_factor=0.5, # Default factor
+        use_lr_schedule_w=False, # Example: Fixed for weights
+        use_lr_schedule_h=True   # Example: Scheduled for hidden
     ),
     "5block": ModelConfig(
         name="5block",
@@ -208,7 +214,6 @@ MODEL_CONFIGS = {
         hidden_lr_inference=0.1,
         weight_decay=2e-4,
         warmup_steps=0, # Explicitly set for 5block
-        use_lr_schedule=True,
         seed=42,
         # Layer-specific inference LR scaling
         use_inference_lr_scaling=True,
@@ -230,7 +235,12 @@ MODEL_CONFIGS = {
         use_vode_state_layernorm=False,
         use_vode_grad_norm=False,
         vode_grad_norm_target=1.0,
-        hidden_momentum=0.3
+        hidden_momentum=0.3,
+        use_adamw_for_hidden_optimizer=False, # Default to SGD
+        lr_schedule_min_lr_factor=0.5, # Default factor
+        # use_lr_schedule was True, translating to:
+        use_lr_schedule_w=False, # Weights fixed (as per recent changes)
+        use_lr_schedule_h=True   # Hidden scheduled
     ),
     # TODO: still actively experimenting with this
     "6block": ModelConfig(
@@ -271,10 +281,9 @@ MODEL_CONFIGS = {
         peak_lr_weights=0.001,
         peak_lr_hidden=0.095,
         update_weights_during_unmasking=False,
-        hidden_lr_inference=0.1,
+        hidden_lr_inference=0.095,
         weight_decay=2e-4,
         warmup_steps=0, # Explicitly set for 6block
-        use_lr_schedule=True,
         seed=42,
         # Layer-specific inference LR scaling
         use_inference_lr_scaling=True,
@@ -296,7 +305,12 @@ MODEL_CONFIGS = {
         use_vode_state_layernorm=False,
         use_vode_grad_norm=False,
         vode_grad_norm_target=1.0,
-        hidden_momentum=0.4
+        hidden_momentum=0.4,
+        use_adamw_for_hidden_optimizer=False, # Default to SGD
+        lr_schedule_min_lr_factor=0.5, # Default factor
+        # use_lr_schedule was True, translating to:
+        use_lr_schedule_w=False, # Weights fixed
+        use_lr_schedule_h=True   # Hidden scheduled
     ),
     "debug_small": ModelConfig(
         name="debug_small",
@@ -307,7 +321,11 @@ MODEL_CONFIGS = {
         use_vode_state_layernorm=False,
         use_vode_grad_norm=False,
         vode_grad_norm_target=1.0,
-        hidden_momentum=0.1 # Default momentum
+        hidden_momentum=0.1, # Default momentum
+        use_adamw_for_hidden_optimizer=False, # Default to SGD
+        lr_schedule_min_lr_factor=0.5, # Default factor
+        use_lr_schedule_w=False, # Assuming fixed by default for new configs
+        use_lr_schedule_h=False  # Assuming fixed by default for new configs
     ),
     "baseline": ModelConfig(
         name="baseline",
@@ -318,7 +336,11 @@ MODEL_CONFIGS = {
         use_vode_state_layernorm=False,
         use_vode_grad_norm=False,
         vode_grad_norm_target=1.0,
-        hidden_momentum=0.1 # Default momentum
+        hidden_momentum=0.1, # Default momentum
+        use_adamw_for_hidden_optimizer=False, # Default to SGD
+        lr_schedule_min_lr_factor=0.5, # Default factor
+        use_lr_schedule_w=False, # Assuming fixed by default
+        use_lr_schedule_h=False  # Assuming fixed by default
     )
 }
 
@@ -402,9 +424,9 @@ def parse_args():
     return parser.parse_args()
 
 
-def create_learning_rate_schedule(base_lr, warmup_steps, total_steps):
-    """Create a learning rate schedule with warmup and cosine decay to half of the peak rate."""
-    min_lr = base_lr * 0.5
+def create_learning_rate_schedule(base_lr, warmup_steps, total_steps, min_lr_factor):
+    """Create a learning rate schedule with warmup and cosine decay to a factor of the peak rate."""
+    min_lr = base_lr * min_lr_factor
     
     def lr_schedule(step):
         # Ensure step is an integer or float for calculations
@@ -583,7 +605,7 @@ def create_reconstruction_images(intermediate_recons, T_values, orig_images, mas
     return reconstruction_path, log_dict
 
 
-def visualize_reconstruction(model, model_config, optim_h, dataloader, config, wandb_run=None, epoch=None, step=None, optim_w=None):
+def visualize_reconstruction(model, model_config, optim_h_inference, dataloader, config, wandb_run=None, epoch=None, step=None, optim_w=None):
     
     # Extract static info from config
     image_shape = model.config.image_shape
@@ -623,7 +645,7 @@ def visualize_reconstruction(model, model_config, optim_h, dataloader, config, w
                 target_T_values=T_values, # Determines max_T internally
                 x=single_x,               
                 model=model, 
-                optim_h=optim_h, # Use optim_h_inference if defined/desired
+                optim_h=optim_h_inference, # Use optim_h_inference if defined/desired
                 optim_w=optim_w, # <<< Pass optim_w
                 log_inference_grads=True # Set the flag
             )
@@ -1257,6 +1279,14 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
             else:
                 print(f"Warning: Could not find decoder_transformer.py at {decoder_transformer_path}")
             
+            # Add the hyperparam_search.py file
+            hyperparam_search_path = os.path.join(script_dir, "hyperparam_search.py")
+            hyperparam_search_path = os.path.abspath(hyperparam_search_path)
+            if os.path.exists(hyperparam_search_path):
+                code_artifact.add_file(hyperparam_search_path, name="examples/hyperparam_search.py") # Explicitly name it
+            else:
+                print(f"Warning: Could not find hyperparam_search.py at {hyperparam_search_path}")
+            
             wandb.run.log_artifact(code_artifact)
             print("Logged source code artifact to W&B.")
         except Exception as e:
@@ -1309,26 +1339,30 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     total_train_steps = config.epochs * steps_per_epoch # Total steps for the entire training
     
     # Create learning rate functions based on config
-    if config.use_lr_schedule:
-        # Use schedule with warmup and decay
+    if config.use_lr_schedule_w:
         weights_lr_fn = create_learning_rate_schedule(
-            config.peak_lr_weights, 
-            config.warmup_steps, # Use warmup_steps
-            total_train_steps    # Use total_train_steps
+            config.peak_lr_weights,
+            config.warmup_steps,
+            total_train_steps,
+            config.lr_schedule_min_lr_factor
         )
-        
-        hidden_lr_fn = create_learning_rate_schedule(
-            config.peak_lr_hidden, 
-            config.warmup_steps,  # Use warmup_steps
-            total_train_steps     # Use total_train_steps
-        )
-        print(f"Using learning rate schedule - Peak weights LR: {config.peak_lr_weights}, Peak hidden LR: {config.peak_lr_hidden}, Warmup steps: {config.warmup_steps}, Total steps: {total_train_steps}")
+        print(f"Using LR schedule for weights: Peak {config.peak_lr_weights}, Warmup {config.warmup_steps}, Total {total_train_steps}, MinFactor {config.lr_schedule_min_lr_factor}")
     else:
-        # Use constant learning rates
-        weights_lr_fn = config.peak_lr_weights
-        hidden_lr_fn = config.peak_lr_hidden
-        print(f"Using constant learning rates - Weights: {weights_lr_fn}, Hidden: {hidden_lr_fn}")
-    
+        weights_lr_fn = config.peak_lr_weights # Fixed LR for weights
+        print(f"Using FIXED learning rate for weights: {weights_lr_fn:.0e}")
+
+    if config.use_lr_schedule_h:
+        hidden_lr_fn = create_learning_rate_schedule(
+            config.peak_lr_hidden,
+            config.warmup_steps,  # Assuming shared warmup steps for now
+            total_train_steps,
+            config.lr_schedule_min_lr_factor # Assuming shared min factor
+        )
+        print(f"Using LR schedule for hidden: Peak {config.peak_lr_hidden}, Warmup {config.warmup_steps}, Total {total_train_steps}, MinFactor {config.lr_schedule_min_lr_factor}")
+    else:
+        hidden_lr_fn = config.peak_lr_hidden # Fixed LR for hidden
+        print(f"Using FIXED learning rate for hidden: {hidden_lr_fn}")
+
     # --- Create base optimizers --- 
     if config.use_adamw_for_hidden_optimizer:
         print("Using AdamW for hidden state optimizer.")
@@ -1419,16 +1453,17 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         print(f"Epoch {epoch+1}/{config.epochs}")
         
         # Get current learning rates - handle both scheduled and constant LR cases
-        if config.use_lr_schedule:
-            # Calculate current_step based on epoch and steps_per_epoch
-            # For logging, we might show the LR at the start of the epoch.
-            # The actual LR will vary per step if schedule is used.
-            current_global_step = epoch * steps_per_epoch
+        current_global_step = epoch * steps_per_epoch # Calculate once here
+        
+        if config.use_lr_schedule_w:
             current_w_lr = weights_lr_fn(current_global_step)
+        else:
+            current_w_lr = weights_lr_fn # This is just the fixed LR value
+            
+        if config.use_lr_schedule_h:
             current_h_lr = hidden_lr_fn(current_global_step)
         else:
-            current_w_lr = weights_lr_fn
-            current_h_lr = hidden_lr_fn
+            current_h_lr = hidden_lr_fn # This is just the fixed LR value
             
         print(f"Current learning rates - Weights: {current_w_lr:.6f}, Hidden: {current_h_lr:.6f}")
 
@@ -1480,7 +1515,7 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
                 use_corruption=config.use_corruption, 
                 corrupt_ratio=config.corrupt_ratio,
                 model=model, 
-                optim_h=optim_h,
+                optim_h=optim_h, # <<< Use inference optimizer
                 optim_w=optim_w # <<< Pass optim_w
             )
             print(f"Validation Pretext Metrics: {pretext_metrics}")
@@ -1548,7 +1583,7 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
             vis_path, vis_logs = visualize_reconstruction(
                 model, 
                 model_config, 
-                optim_h_inference, 
+                optim_h, 
                 val_loader, 
                 config=config, 
                 wandb_run=run,
