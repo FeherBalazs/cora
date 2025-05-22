@@ -16,19 +16,22 @@ def perform_hyperparameter_search():
     # Fixed overrides: Non-searched parameters, taking cues from the "6block" base
     fixed_overrides = {
         "epochs": 75,
+        "theta": 100,
         "test_subset": 200,
         "peak_lr_weights": 0.001,
+        "hidden_lr_inference": 0.095,
         "reconstruction_every_n_epochs": 25, 
         "validation_every_n_epochs": 10,
-        "use_inference_lr_scaling": True,
-        "use_lr_schedule": True,
+        "use_inference_lr_scaling": True, # This controls layer-wise scaling during inference
+        "use_lr_schedule_w": True, # Weights LR is fixed
+        "use_lr_schedule_h": True,  # Hidden LR uses schedule
         "weight_decay": 2e-4,
         "mlp_ratio": 4.0,
         "patch_size": 4,
         "use_noise": True,
         "update_weights_every_inference_step": False,
         "use_early_stopping": True,
-        "early_stopping_patience": 3,
+        "early_stopping_patience": 7,
         "early_stopping_min_delta": 0.001,
 
         # use_vode_state_layernorm will be searched
@@ -42,6 +45,9 @@ def perform_hyperparameter_search():
         "save_reconstruction_video": True,
         "video_fps": 5,
         "reinitialize_model_for_each_epoch": False,
+        "use_status_init_in_training": False,
+        "use_status_init_in_unmasking": False,
+        "lr_schedule_min_lr_factor": 0.5 # New: Factor for min_lr in schedule
     }
 
     # --- Architectural Search Space ---\
@@ -55,11 +61,11 @@ def perform_hyperparameter_search():
     inference_lr_scale_base_candidates = [1.25]
     hidden_momentum_candidates = [0.4]
     h_grad_clip_norm_candidates = [2000]
-    seed_candidates = [50, 42]
+    seed_candidates = [42, 100, 20, 30, 40, 50, 60, 70, 80, 90]
     inference_steps_candidates = [20]
     warmup_steps_candidates = [0]
     w_grad_clip_norm_candidates = [500.0]
-    use_vode_state_layernorm_candidates = [False] # New search parameter
+    use_vode_state_layernorm_candidates = [False]
 
     best_run_info = {
         "num_blocks": None,
