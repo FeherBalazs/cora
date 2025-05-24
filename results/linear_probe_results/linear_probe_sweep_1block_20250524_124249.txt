@@ -1,0 +1,8 @@
+Linear Probe Sweep Results - Model: ../results/models/nb1_bs500_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd80_epoch69_trainmse0.003560_20250524_120732.npz, Config: 1block
+Probe LR: 0.001, Probe WD: 0.0001, Probe Epochs: 100
+Feature Extraction H LR: 0.095, Feature Extraction Steps: 20
+Global Average Pooling: True
+
+Vode Index/Combination | Test Accuracy | Num Features
+----------------------------------------------------
+0                        | 0.1840        | 48
