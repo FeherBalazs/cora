@@ -1,0 +1,8 @@
+Linear Probe Sweep Results - Model: ../results/models/model.npz, Config: 6block
+Probe LR: 0.001, Probe WD: 0.0001, Probe Epochs: 100
+Feature Extraction H LR: 0.055, Feature Extraction Steps: 100
+Global Average Pooling: True
+
+Vode Index | Test Accuracy
+--------------------------
+0          | 0.1664
