@@ -461,6 +461,17 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
     initial_status_train = pxc.STATUS.INIT if model.config.use_status_init_in_training else None
     with pxu.step(model, initial_status_train, clear_params=pxc.VodeParam.Cache):
         forward(x, model=model)
+
+    # Ensure model status and individual Vode statuses are not INIT before entering scan
+    # if they were set by the above block. This makes the input carry to scan have status=None
+    # for both the model and its vodes.
+    # Inner pxu.step calls (with status=None implicitly) will then also result in status=None,
+    # preventing a change in the static part of the carry.
+    if initial_status_train == pxc.STATUS.INIT:
+        model.status = None
+        for vode in model.vodes:
+            vode.status = None
+
     optim_h.init(pxu.M_hasnot(pxc.VodeParam, frozen=True)(model))
 
     dummy_carry_init = None
