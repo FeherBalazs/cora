@@ -164,7 +164,11 @@ def create_reconstruction_video(all_reconstruction_frames, orig_images, masked_i
 
     epoch_str = f"_epoch{epoch}" if epoch is not None else "_probe"
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    video_dir = "./extracted_features" # Save in the same dir as other probe outputs
+    
+    # Define the video directory path relative to the project root
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # Go up two levels for examples/linear_probe.py
+    video_dir = os.path.join(project_root, "results", "linear_probe_results", "videos")
+    # video_dir = "./extracted_features" # Old path
     os.makedirs(video_dir, exist_ok=True)
     video_path = f"{video_dir}/reconstruction_video{epoch_str}_{timestamp}.mp4"
     imageio.mimsave(video_path, video_frames, fps=fps)
@@ -612,9 +616,15 @@ def main():
         print(f"Shape of extracted '{set_name}' labels: {final_labels_np.shape}")
 
         # Save features and labels
-        os.makedirs("./extracted_features", exist_ok=True)
+        # Define the features directory path relative to the project root
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # Go up two levels for examples/linear_probe.py
+        features_base_dir = os.path.join(project_root, "results", "linear_probe_results", "extracted_features")
+        # os.makedirs("./extracted_features", exist_ok=True) # Old path
+        os.makedirs(features_base_dir, exist_ok=True)
+        
         vode_indices_str_part = "_concat_" + "_".join(map(str, target_vode_indices_local_list)) if concatenate_flag and len(target_vode_indices_local_list) > 1 else "_vode_" + "_".join(map(str, target_vode_indices_local_list))
-        features_path = f"./extracted_features/features{vode_indices_str_part}_{set_name}.npz"
+        # features_path = f"./extracted_features/features{vode_indices_str_part}_{set_name}.npz" # Old path
+        features_path = os.path.join(features_base_dir, f"features{vode_indices_str_part}_{set_name}.npz")
         np.savez_compressed(features_path, features=final_features_np, labels=final_labels_np)
         print(f"Saved '{set_name}' features and labels to {features_path}")
         return features_path
@@ -782,8 +792,12 @@ def main():
 
     # 9. Log all results
     print("\n===== Linear Probe Sweep Results =====")
-    results_log_path = os.path.join("./results", f"linear_probe_sweep_{args.config_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
-    os.makedirs("./results", exist_ok=True)
+    # Define the new results directory path relative to the project root
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    results_base_dir = os.path.join(project_root, "results", "linear_probe_results")
+    
+    results_log_path = os.path.join(results_base_dir, f"linear_probe_sweep_{args.config_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
+    os.makedirs(results_base_dir, exist_ok=True)
 
     with open(results_log_path, 'w') as f:
         f.write(f"Linear Probe Sweep Results - Model: {args.model_path}, Config: {args.config_name}\n")
