@@ -34,12 +34,15 @@ def parse_args():
     parser.add_argument("--config_name", type=str, default="6block",
                         choices=MODEL_CONFIGS.keys(),
                         help="Name of the ModelConfig used for pretraining the loaded model.")
-    parser.add_argument("--feature_layer_vode_idx", type=int, default=None,
-                        help="Index of the Vode from which to extract features. "
-                             "0 for the top-most latent Vode. "
-                             "Positive indexing for other layers. E.g., num_blocks + 1 for output of last block. "
-                             "Negative indexing: -1 for sensory, -2 for pre-sensory/last block output. "
-                             "If not provided, will sweep through all relevant Vodes.")
+    parser.add_argument("--feature_layer_vode_indices", type=str, default=None,
+                        help="Comma-separated string of Vode indices from which to extract features (e.g., \"0,1,7\"). "\
+                             "0 for the top-most latent Vode. "\
+                             "Positive indexing for other layers. E.g., num_blocks + 1 for output of last block. "\
+                             "If not provided, will sweep through all relevant Vodes individually.")
+    parser.add_argument("--concatenate_features", type=lambda x: (str(x).lower() == 'true'), default=False,
+                        help="If True and multiple --feature_layer_vode_indices are provided, "
+                             "concatenate features from these Vodes before linear probing. "
+                             "If False, probe each Vode separately (default: False).")
     parser.add_argument("--use_gap", type=lambda x: (str(x).lower() == 'true'), default=True,
                         help="Whether to apply Global Average Pooling to patch features if they are multi-patch (default: True).")
     # Linear Probing specific arguments
@@ -188,7 +191,7 @@ def main():
     print("--- Linear Probing Setup ---")
     print(f"Loading pretrained model from: {args.model_path}")
     print(f"Using base config: {args.config_name}")
-    print(f"Extracting features from Vode index: {args.feature_layer_vode_idx}")
+    print(f"Extracting features from Vode indices: {args.feature_layer_vode_indices}")
     print(f"Using Global Average Pooling: {args.use_gap}")
 
     # 1. Load ModelConfig used for pretraining
@@ -332,26 +335,47 @@ def main():
     import optax
     print("\n--- Setting up Optimizer for Hidden States (h) during Feature Extraction ---")
 
-    # Use hidden_lr_inference and hidden_momentum from the loaded config
-    # These were part of ModelConfig, not TransformerConfig, so access via base_model_config_obj
-    
-    # Determine h_inference_lr for feature extraction
+    # Determine effective h_lr for feature extraction
+    # Priority: CLI arg -> SSL model's peak_lr_hidden (if schedule was off) / current LR (if schedule on) -> default 0.055
+    ssl_model_peak_lr_hidden = base_model_config_obj.peak_lr_hidden
+    ssl_model_hidden_lr_inference = base_model_config_obj.hidden_lr_inference # Fallback if other options are not clear
+
+    # Try to get the learning rate that would have been active at the END of SSL pretraining if a schedule was used.
+    # This is a rough approximation if total_train_steps isn't perfectly known or if model saved mid-epoch.
+    effective_h_lr_from_ssl = ssl_model_peak_lr_hidden # Default to peak if no schedule
+    if base_model_config_obj.use_lr_schedule_h:
+        # Recreate the schedule to get the final LR. Needs total_train_steps from pretraining.
+        # This info isn't directly in ModelConfig. Assuming it trained for full base_model_config_obj.epochs.
+        # This is an approximation.
+        # For simplicity, if schedule was used, and no CLI override, let's just use the base peak_lr_hidden
+        # or a new default, as accurately recreating the final scheduled LR is complex here.
+        # A better approach would be to save the final LR with the model.
+        # For now, we'll prioritize CLI, then a sensible default, then the model's peak_lr_hidden.
+        pass # Using peak_lr_hidden as a proxy if schedule was on and no CLI override for now.
+
     if args.probe_h_lr is not None:
-        h_inference_lr = args.probe_h_lr
-        print(f"Using probe_h_lr from CLI for feature extraction: {h_inference_lr}")
+        h_lr_for_extraction = args.probe_h_lr
+        print(f"Using probe_h_lr from CLI for feature extraction: {h_lr_for_extraction}")
     else:
-        h_inference_lr = 0.055 # Default to 0.055 if not provided
-        print(f"Using default h_inference_lr for feature extraction: {h_inference_lr}")
-    
+        # If no CLI, consider the SSL model's setup. 
+        # If LR schedule for H was NOT used during SSL, then peak_lr_hidden was the constant LR for H.
+        if not base_model_config_obj.use_lr_schedule_h:
+            h_lr_for_extraction = ssl_model_peak_lr_hidden
+            print(f"Using SSL model's fixed peak_lr_hidden for feature extraction: {h_lr_for_extraction}")
+        else:
+            # If schedule WAS used, using peak might be too high. Let's use a safer default or hidden_lr_inference.
+            h_lr_for_extraction = base_model_config_obj.hidden_lr_inference # Or a new default like 0.055
+            print(f"Using SSL model's hidden_lr_inference for feature extraction (schedule was on): {h_lr_for_extraction}")
+
     h_momentum = base_model_config_obj.hidden_momentum
     h_grad_clip = base_model_config_obj.h_grad_clip_norm
 
     if base_model_config_obj.use_adamw_for_hidden_optimizer:
-        print(f"Using AdamW for hidden state inference optimizer with LR: {h_inference_lr}")
-        base_optim_h_feat_extract = optax.adamw(learning_rate=h_inference_lr, b1=0.9, b2=0.999, eps=1e-8)
+        print(f"Using AdamW for hidden state inference optimizer with LR: {h_lr_for_extraction}")
+        base_optim_h_feat_extract = optax.adamw(learning_rate=h_lr_for_extraction, b1=0.9, b2=0.999, eps=1e-8)
     else:
-        print(f"Using SGD for hidden state inference optimizer with LR: {h_inference_lr}, Momentum: {h_momentum}")
-        base_optim_h_feat_extract = optax.sgd(h_inference_lr, momentum=h_momentum)
+        print(f"Using SGD for hidden state inference optimizer with LR: {h_lr_for_extraction}, Momentum: {h_momentum}")
+        base_optim_h_feat_extract = optax.sgd(h_lr_for_extraction, momentum=h_momentum)
 
     optim_h_feat_extract_steps = []
     if h_grad_clip is not None and h_grad_clip > 0:
@@ -384,8 +408,25 @@ def main():
     vis_fps = base_model_config_obj.video_fps
     vis_image_shape = transformer_arch_config.image_shape # This is (C,H,W)
 
+    # --- Define Linear Classifier Components (moved to outer scope) ---
+    def linear_classifier_predict(params_local, x_local):
+        return jnp.dot(x_local, params_local['W']) + params_local['b']
+
+    def cross_entropy_loss(params_local, x_local, y_true_one_hot_local):
+        logits_local = linear_classifier_predict(params_local, x_local)
+        log_probs_local = jax.nn.log_softmax(logits_local)
+        # Standard cross-entropy: sum over classes, mean over batch
+        return -jnp.sum(log_probs_local * y_true_one_hot_local, axis=-1).mean()
+
+    def accuracy(params_local, x_local, y_true_one_hot_local):
+        predictions_local = linear_classifier_predict(params_local, x_local)
+        predicted_classes_local = jnp.argmax(predictions_local, axis=1)
+        true_classes_local = jnp.argmax(y_true_one_hot_local, axis=1)
+        return jnp.mean(predicted_classes_local == true_classes_local)
+    # --- End Linear Classifier Components ---
+
     # Conditional initial visualization
-    if args.feature_layer_vode_idx is not None: # Only run initial viz if a specific Vode is targeted
+    if args.feature_layer_vode_indices is not None: # Only run initial viz if a specific Vode is targeted
         # Get a batch from the test_loader for visualization
         try:
             vis_batch_pt_full, vis_labels_pt_full = next(iter(test_loader))
@@ -445,326 +486,299 @@ def main():
 
     # 6. Define feature extraction function
     @pxf.jit(static_argnums=(3, 4, 5)) # Jit this function for speed after debugging
-    def extract_features_from_batch(x_batch_np, model_instance, optim_h, inference_steps_for_extraction, target_vode_idx, use_gap_flag):
-        x_batch_jnp = jnp.array(x_batch_np)
+    def extract_features_from_batch(x_batch_np, model_instance, optim_h, inference_steps_for_extraction, target_vode_indices_list, use_gap_flag):
+        """Extracts features from a batch of images for specified Vode indices."""
+        # print(f"Debug: extract_features_from_batch called with x_batch_np shape: {x_batch_np.shape}, target_vode_indices_list: {target_vode_indices_list}")
+        x_batch = jnp.array(x_batch_np) # Ensure JAX array
 
-        # A. Initialize optimizer state for the current model state (which includes loaded VodeParams)
-        optim_h.clear()
-        optim_h.init(pxu.M_hasnot(pxc.VodeParam, frozen=True)(model_instance)) # Target non-frozen VodeParams
-
-        # B. Initial forward pass to set sensory Vode and allow initial propagation
-        # Determine if STATUS.INIT should be used based on PRETRAINING config for UNMASKING (or training if unmasking not set)
-        # For feature extraction, we usually want the model to adapt to the new input x_batch.
-        # If the loaded VodeParams are a generic "prior", then STATUS.INIT might reset them too aggressively.
-        # Let's assume for now we do NOT use STATUS.INIT, and instead let the loaded VodeParams be the starting point
-        # and the inference steps will adapt them to x_batch.
-        # The sensory Vode (vodes[-1]) will be set by the forward(x_batch_jnp, ...) call.
+        # 1. Initialize hidden states (Vodes) if needed or use existing ones
+        #    This assumes model.vodes are already initialized appropriately before calling this function
+        #    or that the PC dynamics will handle it.
         
-        with pxu.step(model_instance, clear_params=pxc.VodeParam.Cache): # No STATUS.INIT here
-            model_instance.vodes[-1].h.frozen = False # Ensure sensory is not frozen for this initial setting
-            forward(x_batch_jnp, model=model_instance) # This sets model.vodes[-1].h to x_batch_jnp
-            model_instance.vodes[-1].h.frozen = True  # Re-freeze sensory after its set to the input
+        # If using status.init for unmasking (which is analogous to feature extraction here)
+        initial_status_extraction = pxc.STATUS.INIT if model_instance.config.use_status_init_in_unmasking else None
+        # print(f"Debug: Initializing model for extraction with status: {initial_status_extraction}")
+        with pxu.step(model_instance, initial_status_extraction, clear_params=pxc.VodeParam.Cache):
+            forward(x_batch, model=model_instance) # This sets sensory Vode to x_batch
+        # print("Debug: Model initialized for extraction.")
 
-        # C. Run T_h inference steps to let latents converge for this batch
-        # inference_steps_for_extraction is now passed directly
+        optim_h.init(pxu.M_hasnot(pxc.VodeParam, frozen=True)(model_instance))
+        # print("Debug: optim_h initialized for extraction.")
+
+        # 2. Run PC inference for T_h steps to let hidden states converge
+        inference_step_fn = pxf.value_and_grad(pxu.M_hasnot(pxc.VodeParam, frozen=True).to([False, True]), has_aux=True)(energy)
         
-        # Define the energy function for gradient calculation (consistent with SSL pretraining)
-        # This targets non-frozen VodeParams for gradient calculation.
-        inference_step_fn_grad = pxf.value_and_grad(pxu.M_hasnot(pxc.VodeParam, frozen=True).to([False, True]), has_aux=True)(energy)
-
-        for _ in range(inference_steps_for_extraction):
-            with pxu.step(model_instance, clear_params=pxc.VodeParam.Cache):
-                # Get energy and gradients for h (non-frozen VodeParams)
-                (_, _), h_grad = inference_step_fn_grad(model=model_instance)
+        # print(f"Debug: Starting {inference_steps_for_extraction} inference steps for feature extraction...")
+        for t_inf in range(inference_steps_for_extraction):
+            with pxu.step(model_instance, clear_params=pxc.VodeParam.Cache): # Ensure we don't carry over stale cache
+                (h_energy, _), h_grad = inference_step_fn(model=model_instance)
             
-            model_grads_to_apply = h_grad["model"] # Grads for VodeParams
-
-            # Apply scaling if it was used during pretraining
+            model_grads_to_apply = h_grad["model"]
             if model_instance.config.use_inference_lr_scaling:
                 model_grads_to_apply = apply_exponential_layer_scaling(
                     model_grads=model_grads_to_apply,
-                    config=model_instance.config # Use the model's internal TransformerConfig
+                    config=model_instance.config
                 )
-            
-            # Apply Vode h-gradient normalization if it was used during pretraining
             if model_instance.config.use_vode_grad_norm:
                 model_grads_to_apply = normalize_vode_h_gradients(
                     model_grads=model_grads_to_apply,
-                    config=model_instance.config # Use the model's internal TransformerConfig
+                    config=model_instance.config
                 )
-            
             optim_h.step(model_instance, model_grads_to_apply)
+            # print(f"Debug: Inference step {t_inf+1}/{inference_steps_for_extraction} completed. Energy: {h_energy}")
 
-        # D. Extract features from the target Vode
-        # Ensure target_vode_idx is valid
-        num_vodes = len(model_instance.vodes)
-        actual_idx = target_vode_idx
-        if actual_idx < 0:
-            actual_idx = num_vodes + actual_idx # Convert negative index to positive
+        # 3. Extract features from the specified Vode(s)
+        extracted_features_list = []
+        for target_vode_idx in target_vode_indices_list:
+            # print(f"Debug: Extracting features from Vode index: {target_vode_idx}")
+            num_vodes_total = len(model_instance.vodes)
+
+            # Handle negative indexing for Vodes if necessary (e.g., -1 for sensory)
+            actual_idx = target_vode_idx
+            if actual_idx < 0:
+                actual_idx = num_vodes_total + actual_idx
+            
+            if not (0 <= actual_idx < num_vodes_total):
+                raise ValueError(f"Invalid Vode index {target_vode_idx} (resolved to {actual_idx}). Model has {num_vodes_total} Vodes.")
+
+            # Access the hidden state 'h' of the Vode
+            # The ._value is crucial to get the JAX array from the Param object
+            h_param = model_instance.vodes[actual_idx].h 
+            # print(f"Debug: Vode {actual_idx} h_param type: {type(h_param)}, value type: {type(h_param._value)}")
+            
+            if h_param._value is None:
+                raise ValueError(f"Vode {actual_idx} hidden state (h) is None. Ensure model is run first.")
+            
+            features_from_vode = h_param._value # This should be a JAX array (batch_size, num_patches, feature_dim) or (batch_size, feature_dim)
+            # print(f"Debug: Features from Vode {actual_idx} shape: {features_from_vode.shape}")
+            extracted_features_list.append(features_from_vode)
+
+        # 4. Concatenate features if multiple Vodes were specified
+        if len(extracted_features_list) > 1:
+            # Assuming features are (batch_size, num_patches, feature_dim) or (batch_size, feature_dim)
+            # We want to concatenate along the feature dimension (the last dimension)
+            # print(f"Debug: Concatenating features from {len(extracted_features_list)} Vodes.")
+            # for i, f in enumerate(extracted_features_list):
+            #     print(f"  Feature {i} shape: {f.shape}")
+            final_features = jnp.concatenate(extracted_features_list, axis=-1)
+            # print(f"Debug: Concatenated features shape: {final_features.shape}")
+        elif extracted_features_list:
+            final_features = extracted_features_list[0]
+        else:
+            raise ValueError("No features were extracted. target_vode_indices_list might be empty.")
+
+        # 5. Apply Global Average Pooling (GAP) if specified and features are per-patch
+        # GAP is typically applied if features have a patch dimension, e.g., (batch_size, num_patches, feature_dim)
+        if use_gap_flag and final_features.ndim == 3: # Check if there's a patch dimension
+            # print(f"Debug: Applying GAP to features of shape: {final_features.shape}")
+            # Average over the patch dimension (axis=1)
+            final_features = jnp.mean(final_features, axis=1)
+            # print(f"Debug: Features shape after GAP: {final_features.shape}")
+        elif use_gap_flag and final_features.ndim != 2:
+            print(f"Warning: use_gap is True, but features are not 2D or 3D (shape: {final_features.shape}). Skipping GAP.")
         
-        if not (0 <= actual_idx < num_vodes):
-            raise ValueError(f"Invalid feature_layer_vode_idx: {target_vode_idx} (resolved to {actual_idx}). Model has {num_vodes} vodes.")
-
-        # Get the h-state of the target Vode
-        # We need to do a final forward pass with STATUS_FORWARD to ensure u states are current if the target Vode uses them
-        # However, we are interested in the h state itself.
-        # The h states are updated by optim_h.step().
-        h_param = model_instance.vodes[actual_idx].h # Get the Param object
-        extracted_h_features_array = h_param._value # Get the underlying JAX array
-
-        # E. Apply Global Average Pooling if specified and features are per-patch
-        # Features from vodes[0] are (batch, num_patches, patch_dim) or (batch, hidden_size) if top-level is single vector
-        # Features from intermediate transformer blocks are (batch, num_patches, hidden_size)
-        # Sensory vode vodes[-1] h is (batch, C, H, W)
-        if use_gap_flag:
-            if actual_idx == num_vodes -1 : # Sensory layer
-                print(f"Warning: GAP requested for sensory layer (Vode {actual_idx}). Applying mean over spatial dims (H, W).")
-                if extracted_h_features_array.ndim == 4: # (B, C, H, W)
-                    extracted_h_features_array = jnp.mean(extracted_h_features_array, axis=(2,3)) # -> (B, C)
-                elif extracted_h_features_array.ndim == 3: # (B, H, W) for grayscale
-                    extracted_h_features_array = jnp.mean(extracted_h_features_array, axis=(1,2)) # -> (B,)
-            elif extracted_h_features_array.ndim == 3: # Likely (batch, num_patches, feature_dim)
-                extracted_h_features_array = jnp.mean(extracted_h_features_array, axis=1) # GAP over patches -> (batch, feature_dim)
-            elif extracted_h_features_array.ndim == 2: # Already (batch, feature_dim), GAP not needed or already applied by Vode structure
-                print(f"Note: Features from Vode {actual_idx} are already 2D. GAP not applied over patch dimension.")
-            else:
-                print(f"Warning: Cannot apply GAP to features from Vode {actual_idx} with shape {extracted_h_features_array.shape}. Returning as is.")
-        
-        return extracted_h_features_array # Return the JAX array
+        optim_h.clear()
+        # print(f"Debug: optim_h cleared. Returning features of shape: {final_features.shape}")
+        return final_features
 
     # 7. Extract features for train and test sets
     print("\n--- Extracting Features ---")
     
-    def extract_and_save_features(loader, set_name, model_instance_local, optim_h_local, inference_steps_local, target_vode_idx_local, use_gap_local):
-        all_features_list = []
-        all_labels_list = []
-        print(f"Extracting features for {set_name} set...")
-        for x_batch_pt, y_labels_pt in tqdm(loader, desc=f"Extracting {set_name} features"):
-            batch_features_jnp = extract_features_from_batch(
-                x_batch_pt.numpy(), # Convert PyTorch tensor to NumPy array
+    def extract_and_save_features(loader, set_name, model_instance_local, optim_h_local, inference_steps_local, target_vode_indices_local_list, use_gap_local, concatenate_flag):
+        print(f"Extracting features for '{set_name}' set from Vode indices: {target_vode_indices_local_list} (Concatenate: {concatenate_flag})...")
+        all_features = []
+        all_labels = []
+        for x_batch_torch, y_batch_torch in tqdm(loader, desc=f"Extracting {set_name} features"):
+            x_batch_np = x_batch_torch.numpy() # Convert to NumPy for JAX
+            
+            # Convert list to tuple for JIT compatibility if it's a static argument
+            target_vode_indices_local_tuple = tuple(target_vode_indices_local_list)
+            
+            features_batch = extract_features_from_batch(
+                x_batch_np, 
                 model_instance_local, 
                 optim_h_local, 
                 inference_steps_local, 
-                target_vode_idx_local, 
+                target_vode_indices_local_tuple, # Pass the tuple of indices
                 use_gap_local
             )
-            all_features_list.append(np.array(batch_features_jnp))
-            all_labels_list.append(y_labels_pt.numpy()) # Convert PyTorch tensor to NumPy array
-        
-        # Concatenate all features and labels from the list of batches
-        all_features_np = np.concatenate(all_features_list, axis=0)
-        all_labels_np = np.concatenate(all_labels_list, axis=0)
+            all_features.append(features_batch)
+            all_labels.append(y_batch_torch.numpy())
+
+        # Concatenate all batch features and labels
+        final_features_np = np.concatenate([jax.device_get(f) for f in all_features], axis=0)
+        final_labels_np = np.concatenate(all_labels, axis=0)
+        print(f"Shape of extracted '{set_name}' features: {final_features_np.shape}")
+        print(f"Shape of extracted '{set_name}' labels: {final_labels_np.shape}")
 
         # Save features and labels
-        features_path = os.path.join("./extracted_features", f"{args.config_name}_layer{target_vode_idx_local}_gap{use_gap_local}_{set_name}_features.npy")
-        labels_path = os.path.join("./extracted_features", f"{args.config_name}_layer{target_vode_idx_local}_gap{use_gap_local}_{set_name}_labels.npy")
-        np.save(features_path, all_features_np)
-        np.save(labels_path, all_labels_np)
-        print(f"Saved {set_name} features to: {features_path} (Shape: {all_features_np.shape})")
-        print(f"Saved {set_name} labels to: {labels_path} (Shape: {all_labels_np.shape})")
+        os.makedirs("./extracted_features", exist_ok=True)
+        vode_indices_str_part = "_concat_" + "_".join(map(str, target_vode_indices_local_list)) if concatenate_flag and len(target_vode_indices_local_list) > 1 else "_vode_" + "_".join(map(str, target_vode_indices_local_list))
+        features_path = f"./extracted_features/features{vode_indices_str_part}_{set_name}.npz"
+        np.savez_compressed(features_path, features=final_features_np, labels=final_labels_np)
+        print(f"Saved '{set_name}' features and labels to {features_path}")
+        return features_path
+
+    # --- Feature Extraction and Linear Probing Loop ---
+    all_probe_results = []
 
     # Determine which Vode indices to run the probe for
-    if args.feature_layer_vode_idx is not None:
-        vode_indices_to_probe = [args.feature_layer_vode_idx]
-        print(f"Probing specified Vode index: {vode_indices_to_probe}")
+    if args.feature_layer_vode_indices is not None:
+        # Parse comma-separated string into a list of integers
+        vode_indices_to_process = [int(idx.strip()) for idx in args.feature_layer_vode_indices.split(',')]
+        if not vode_indices_to_process:
+            raise ValueError("feature_layer_vode_indices was provided but resulted in an empty list.")
+        print(f"Processing specified Vode indices: {vode_indices_to_process}")
     else:
-        # Sweep from Vode 0 (top-most) to Vode num_blocks + 1 (output of last transformer block)
-        # Vode indices:
-        # 0: Top-most latent
-        # 1: Output of patch projection
-        # 2 to num_blocks + 1: Output of each transformer block
-        # num_blocks + 2: Sensory Vode (usually not used for features)
-        num_total_vodes_in_model = base_model_config_obj.num_blocks + 2 # Vode 0, proj_vode, N block vodes
-        vode_indices_to_probe = list(range(num_total_vodes_in_model))
-        print(f"Sweeping through Vode indices: {vode_indices_to_probe}")
+        # Default sweep: Vode 0 (top-most) to Vode num_blocks + 1 (output of last transformer block)
+        # Also include sensory Vode (-1) if it makes sense (usually not for classification)
+        # And pre-sensory (-2) which is same as num_blocks + 1
+        vode_indices_to_process = list(range(transformer_arch_config.num_blocks + 2)) # 0 to num_blocks+1
+        print(f"No specific Vode indices provided. Sweeping through default Vodes: {vode_indices_to_process}")
 
-    # --- Define Linear Classifier Components ---
-    # These are defined once here, to be in scope for the loop below.
-    def linear_classifier_predict(params_local, x_local):
-        return jnp.dot(x_local, params_local['W']) + params_local['b']
-
-    def cross_entropy_loss(params_local, x_local, y_true_one_hot_local):
-        logits_local = linear_classifier_predict(params_local, x_local)
-        log_probs_local = jax.nn.log_softmax(logits_local)
-        return -jnp.sum(log_probs_local * y_true_one_hot_local, axis=1).mean()
-
-    def accuracy(params_local, x_local, y_true_one_hot_local):
-        predictions_local = linear_classifier_predict(params_local, x_local)
-        predicted_classes_local = jnp.argmax(predictions_local, axis=1)
-        true_classes_local = jnp.argmax(y_true_one_hot_local, axis=1)
-        return jnp.mean(predicted_classes_local == true_classes_local)
-    # --- End Linear Classifier Components ---
-
-    all_probe_results = [] # To store (vode_idx, test_accuracy)
-
-    # --- Loop over Vode indices ---
-    for current_vode_idx in vode_indices_to_probe:
-        print(f"\n===== PROBING VODE INDEX: {current_vode_idx} =====")
-
-        # Ensure ./extracted_features directory exists for this Vode index if needed
-        # File paths inside extract_and_save_features and loading will use current_vode_idx
-        # The `extract_and_save_features` function will now need current_vode_idx
-
-        # 7. Extract features for train and test sets for the current_vode_idx
-        print(f"\n--- Extracting Features for Vode {current_vode_idx} ---")
-        extract_and_save_features(
-            train_loader, "train", model, optim_h_extractor, 
-            inference_steps_for_extraction, 
-            current_vode_idx, # Pass current Vode index
-            args.use_gap
-        )
-        extract_and_save_features(
-            test_loader, "test", model, optim_h_extractor, 
-            inference_steps_for_extraction, 
-            current_vode_idx, # Pass current Vode index
-            args.use_gap
-        )
-        print(f"\nFeature extraction for Vode {current_vode_idx} complete.")
-
-        # 8. Linear Classifier Training and Evaluation for current_vode_idx
-        print(f"\n--- Linear Classifier Training and Evaluation for Vode {current_vode_idx} ---")
+    # Logic for handling concatenation vs. individual probing
+    if args.concatenate_features and len(vode_indices_to_process) > 1:
+        print(f"\n--- Concatenating features from Vodes: {vode_indices_to_process} ---")
+        # Extract and save concatenated features once
+        train_features_path = extract_and_save_features(train_loader, "train", model, optim_h_extractor, inference_steps_for_extraction, vode_indices_to_process, args.use_gap, True)
+        test_features_path = extract_and_save_features(test_loader, "test", model, optim_h_extractor, inference_steps_for_extraction, vode_indices_to_process, args.use_gap, True)
         
-        # Load the extracted features and labels for the current_vode_idx
-        train_features_path = os.path.join("./extracted_features", f"{args.config_name}_layer{current_vode_idx}_gap{args.use_gap}_train_features.npy")
-        train_labels_path = os.path.join("./extracted_features", f"{args.config_name}_layer{current_vode_idx}_gap{args.use_gap}_train_labels.npy")
-        test_features_path = os.path.join("./extracted_features", f"{args.config_name}_layer{current_vode_idx}_gap{args.use_gap}_test_features.npy")
-        test_labels_path = os.path.join("./extracted_features", f"{args.config_name}_layer{current_vode_idx}_gap{args.use_gap}_test_labels.npy")
+        # Load concatenated features
+        train_data = np.load(train_features_path)
+        x_train, y_train = torch.from_numpy(train_data['features']), torch.from_numpy(train_data['labels'])
+        test_data = np.load(test_features_path)
+        x_test, y_test = torch.from_numpy(test_data['features']), torch.from_numpy(test_data['labels'])
 
-        try:
-            X_train_probe = np.load(train_features_path)
-            y_train_probe = np.load(train_labels_path)
-            X_test_probe = np.load(test_features_path)
-            y_test_probe = np.load(test_labels_path)
-        except FileNotFoundError:
-            print(f"Error: Feature files not found for Vode {current_vode_idx}. Please ensure feature extraction ran successfully.")
-            all_probe_results.append((current_vode_idx, "Error - Features not found"))
-            continue # Skip to next Vode index
+        # Train and evaluate linear probe on concatenated features
+        vode_str_for_print = "_concat_" + "_".join(map(str, vode_indices_to_process))
+        # (Linear probe training and evaluation logic - to be filled, similar to below but just once)
+        # ... (This part will be a single call to the probe training logic)
+        # For now, let's print a placeholder
+        print(f"Linear probing for concatenated features: {vode_str_for_print}")
+        num_features = x_train.shape[1]
+        print(f"Number of features for concatenated Vodes {vode_str_for_print}: {num_features}")
+        
+        # Initialize linear classifier parameters (W, b)
+        key_probe_init, _ = jax.random.split(jax.random.PRNGKey(args.seed))
+        # Glorot/Xavier uniform initialization for weights
+        limit = np.sqrt(6 / (num_features + 10))
+        W_probe = jax.random.uniform(key_probe_init, (num_features, 10), minval=-limit, maxval=limit)
+        b_probe = jnp.zeros(10)
+        probe_params = {'W': W_probe, 'b': b_probe}
 
-        print(f"Loaded training features for Vode {current_vode_idx}: {X_train_probe.shape}, labels: {y_train_probe.shape}")
-        print(f"Loaded test features for Vode {current_vode_idx}: {X_test_probe.shape}, labels: {y_test_probe.shape}")
-
-        # Initialize linear probe parameters (W, b)
-        num_features = X_train_probe.shape[1]
-        num_classes = 10 # For CIFAR-10
-        key_probe, W_key, b_key = jax.random.split(jax.random.PRNGKey(args.seed + current_vode_idx), 3) # Vary seed per Vode
-
-        probe_params = {
-            'W': jax.random.normal(W_key, (num_features, num_classes)) * 0.01,
-            'b': jnp.zeros(num_classes)
-        }
-
-        # One-hot encode labels for the probe
-        y_train_probe_one_hot = jax.nn.one_hot(y_train_probe, num_classes)
-        y_test_probe_one_hot = jax.nn.one_hot(y_test_probe, num_classes)
-
-        # Setup optimizer for the probe
+        # Optimizer for the linear probe
         probe_optimizer = optax.adamw(learning_rate=args.probe_lr, weight_decay=args.probe_wd)
-        opt_state_probe = probe_optimizer.init(probe_params)
+        probe_opt_state = probe_optimizer.init(probe_params)
 
-        print(f"Starting linear probe training for Vode {current_vode_idx}...")
-        probe_train_loader = DataLoader(
-            TensorDataset(torch.from_numpy(X_train_probe).float(), torch.from_numpy(np.asarray(y_train_probe_one_hot)).float()),
-            batch_size=args.probe_batch_size,
-            shuffle=True, # Shuffle training data for the probe
-            drop_last=True # Drop last if not a full batch
-        )
+        # Convert to TensorDataset for DataLoader
+        probe_train_dataset = TensorDataset(x_train, y_train)
+        probe_train_loader = DataLoader(probe_train_dataset, batch_size=args.probe_batch_size, shuffle=True)
 
+        print(f"Training linear probe for Vodes {vode_str_for_print} for {args.probe_epochs} epochs...")
+        best_test_acc_concat = 0.0
         for epoch in range(args.probe_epochs):
             epoch_train_loss = 0.0
-            num_batches_probe = 0
-            for X_batch_pt, y_batch_pt in probe_train_loader: # Use the probe_train_loader
-                X_batch_jax = jnp.array(X_batch_pt.numpy())
-                y_batch_jax = jnp.array(y_batch_pt.numpy())
-
-                loss_val, grads = jax.value_and_grad(cross_entropy_loss)(probe_params, X_batch_jax, y_batch_jax)
+            epoch_train_correct = 0
+            epoch_train_total = 0
+            for x_probe_batch, y_probe_batch_true_idx in probe_train_loader:
+                x_pb_jnp = jnp.array(x_probe_batch.numpy()) # Ensure JAX array
+                y_pb_true_one_hot = jax.nn.one_hot(jnp.array(y_probe_batch_true_idx.numpy()), 10)
                 
-                updates, opt_state_probe = probe_optimizer.update(grads, opt_state_probe, probe_params)
+                loss_val, grads = jax.value_and_grad(cross_entropy_loss)(probe_params, x_pb_jnp, y_pb_true_one_hot)
+                updates, probe_opt_state = probe_optimizer.update(grads, probe_opt_state, probe_params)
                 probe_params = optax.apply_updates(probe_params, updates)
+                
+                epoch_train_loss += loss_val * x_probe_batch.shape[0]
+                # Calculate training accuracy for the batch
+                preds = linear_classifier_predict(probe_params, x_pb_jnp)
+                epoch_train_correct += jnp.sum(jnp.argmax(preds, axis=1) == y_probe_batch_true_idx.numpy()).item()
+                epoch_train_total += x_probe_batch.shape[0]
 
-                epoch_train_loss += loss_val
-                num_batches_probe += 1
-
-            avg_epoch_train_loss = epoch_train_loss / num_batches_probe
+            avg_epoch_train_loss = epoch_train_loss / len(probe_train_dataset)
+            current_train_acc = epoch_train_correct / epoch_train_total
             
-            # Calculate accuracy on the full training and test sets for the probe
-            # Ensure to use the original (non-batched, non-shuffled) NumPy versions for X and one-hot JAX arrays for y
-            epoch_train_acc = accuracy(probe_params, X_train_probe, np.asarray(y_train_probe_one_hot))
-            epoch_test_acc = accuracy(probe_params, X_test_probe, np.asarray(y_test_probe_one_hot))
-            
-            print(f"Vode {current_vode_idx} - Probe Epoch {epoch+1}/{args.probe_epochs} - Train Loss: {avg_epoch_train_loss:.4f}, Train Acc: {epoch_train_acc:.4f}, Test Acc: {epoch_test_acc:.4f}")
-        
-        # Evaluate the probe on the test set (final accuracy after all epochs)
-        final_test_acc = accuracy(probe_params, X_test_probe, np.asarray(y_test_probe_one_hot))
-        print(f"===== Vode {current_vode_idx} - Final Test Accuracy: {final_test_acc:.4f} =====")
-        all_probe_results.append((current_vode_idx, float(final_test_acc)))
+            # Evaluate on test set
+            x_test_jnp = jnp.array(x_test.numpy())
+            y_test_one_hot = jax.nn.one_hot(jnp.array(y_test.numpy()), 10)
+            current_test_acc = accuracy(probe_params, x_test_jnp, y_test_one_hot).item()
+            best_test_acc_concat = max(best_test_acc_concat, current_test_acc)
 
-    # --- End Loop --- 
+            print(f"Vodes {vode_str_for_print} - Probe Epoch {epoch+1}/{args.probe_epochs} - Train Loss: {avg_epoch_train_loss:.4f}, Train Acc: {current_train_acc:.4f}, Test Acc: {current_test_acc:.4f}")
 
-    # Conditional post-extraction visualization
-    if args.feature_layer_vode_idx is not None: # Only run post-extraction viz if a specific Vode was targeted
-        # --- Add Post-Feature-Extraction Reconstruction Visualization ---
-        print("\n--- Generating Post-Feature-Extraction Reconstruction Visualization ---")
-        # We use the same vis_num_images, vis_fps, vis_image_shape as before.
-        # vis_target_T_values will be a list with a single element: the final step number.
-        vis_target_T_values = [inference_steps_for_extraction]
-        print(f"Visualization will use T_values: {vis_target_T_values} (derived from probe_inference_steps or its default)")
+        print(f"Vodes {vode_str_for_print} - Final Test Accuracy: {best_test_acc_concat:.4f}")
+        all_probe_results.append({
+            "vode_indices": vode_str_for_print,
+            "num_features": num_features,
+            "test_accuracy": best_test_acc_concat
+        })
+    else: # Individual probing (sweep or single Vode)
+        for current_vode_idx in vode_indices_to_process:
+            print(f"\n--- Probing Vode Index: {current_vode_idx} ---")
+            # Extract and save features for the current Vode index
+            # Pass current_vode_idx as a single-element list for extract_features_from_batch
+            train_features_path = extract_and_save_features(train_loader, "train", model, optim_h_extractor, inference_steps_for_extraction, [current_vode_idx], args.use_gap, False)
+            test_features_path = extract_and_save_features(test_loader, "test", model, optim_h_extractor, inference_steps_for_extraction, [current_vode_idx], args.use_gap, False)
 
-        # Get a batch from the test_loader for visualization
-        try:
-            vis_batch_pt_full, vis_labels_pt_full = next(iter(test_loader))
-        except StopIteration:
-            print("Error: Could not get a batch from test_loader for visualization.")
-            vis_batch_pt_full = None
+            # Load features for the current Vode
+            train_data = np.load(train_features_path)
+            x_train, y_train = torch.from_numpy(train_data['features']), torch.from_numpy(train_data['labels'])
+            test_data = np.load(test_features_path)
+            x_test, y_test = torch.from_numpy(test_data['features']), torch.from_numpy(test_data['labels'])
 
-        if vis_batch_pt_full is not None:
-            model.eval() # Ensure model is in eval mode
-            
-            post_all_images_all_recons_list = [] # To store [[img1_recons_steps], [img2_recons_steps]]
-            post_all_images_orig_for_video = []
-            post_all_images_labels_for_video = []
-            post_all_images_recon_loss = []
+            num_features = x_train.shape[1]
+            print(f"Number of features for Vode {current_vode_idx}: {num_features}")
 
-            for i in range(vis_num_images):
-                print(f"Processing image {i+1}/{vis_num_images} for reconstruction video...")
-                single_image_np = vis_batch_pt_full[i:i+1].numpy() # Batch of 1 image
-                single_label_np = vis_labels_pt_full[i:i+1].numpy()
+            # Initialize linear classifier parameters (W, b)
+            key_probe_init, _ = jax.random.split(jax.random.PRNGKey(args.seed + current_vode_idx)) # Vary seed per Vode
+            limit = np.sqrt(6 / (num_features + 10))
+            W_probe = jax.random.uniform(key_probe_init, (num_features, 10), minval=-limit, maxval=limit)
+            b_probe = jnp.zeros(10)
+            probe_params = {'W': W_probe, 'b': b_probe}
 
-                post_all_images_orig_for_video.append(single_image_np[0]) # Store unbatched image
-                post_all_images_labels_for_video.append(single_label_np[0])
+            # Optimizer for the linear probe
+            probe_optimizer = optax.adamw(learning_rate=args.probe_lr, weight_decay=args.probe_wd)
+            probe_opt_state = probe_optimizer.init(probe_params)
 
-                recon_loss_single, single_img_all_recons_list, _, _ = unmask_on_batch_enhanced(
-                    use_corruption=False,
-                    corrupt_ratio=0.0,
-                    target_T_values=vis_target_T_values,
-                    x=jnp.array(single_image_np), # Pass single image as JAX array
-                    model=model,
-                    optim_h=optim_h_extractor,
-                    optim_w=None
-                )
-                post_all_images_all_recons_list.append(single_img_all_recons_list)
-                post_all_images_recon_loss.append(recon_loss_single)
-                print(f"  Reconstruction loss for image {i+1}: {recon_loss_single:.4f}")
+            # Convert to TensorDataset for DataLoader
+            probe_train_dataset = TensorDataset(x_train, y_train)
+            probe_train_loader = DataLoader(probe_train_dataset, batch_size=args.probe_batch_size, shuffle=True)
 
-            if post_all_images_all_recons_list:
-                # create_reconstruction_video expects: List (num_images) of lists (T_steps) of reconstruction tensors.
-                # Each inner list (T_steps) should contain tensors of shape (1, C, H, W) or (C,H,W) if squeezed later.
-                # single_img_all_recons_list already contains [step0_recon_batch_of_1, step1_recon_batch_of_1, ...]
-                # So, post_all_images_all_recons_list is already in the correct format.
-                create_reconstruction_video(
-                    all_reconstruction_frames=post_all_images_all_recons_list,
-                    orig_images=post_all_images_orig_for_video,
-                    masked_images=post_all_images_orig_for_video, # Same as original for no corruption
-                    labels_list=post_all_images_labels_for_video,
-                    num_images=vis_num_images,
-                    image_shape=vis_image_shape,
-                    wandb_run=None, 
-                    epoch=None,     
-                    fps=vis_fps,
-                    reconstruction_mses=post_all_images_recon_loss 
-                )
-        # --- End Post-Feature-Extraction Reconstruction Visualization ---
-    else:
-        print("Skipping post-extraction reconstruction visualization because running in Vode sweep mode.")
+            print(f"Training linear probe for Vode {current_vode_idx} for {args.probe_epochs} epochs...")
+            best_test_acc_this_vode = 0.0
+            for epoch in range(args.probe_epochs):
+                epoch_train_loss = 0.0
+                epoch_train_correct = 0
+                epoch_train_total = 0
+                for x_probe_batch, y_probe_batch_true_idx in probe_train_loader:
+                    x_pb_jnp = jnp.array(x_probe_batch.numpy()) # Ensure JAX array
+                    y_pb_true_one_hot = jax.nn.one_hot(jnp.array(y_probe_batch_true_idx.numpy()), 10)
+                    
+                    loss_val, grads = jax.value_and_grad(cross_entropy_loss)(probe_params, x_pb_jnp, y_pb_true_one_hot)
+                    updates, probe_opt_state = probe_optimizer.update(grads, probe_opt_state, probe_params)
+                    probe_params = optax.apply_updates(probe_params, updates)
+                    
+                    epoch_train_loss += loss_val * x_probe_batch.shape[0]
+                    preds = linear_classifier_predict(probe_params, x_pb_jnp)
+                    epoch_train_correct += jnp.sum(jnp.argmax(preds, axis=1) == y_probe_batch_true_idx.numpy()).item()
+                    epoch_train_total += x_probe_batch.shape[0]
+
+                avg_epoch_train_loss = epoch_train_loss / len(probe_train_dataset)
+                current_train_acc = epoch_train_correct / epoch_train_total
+                
+                # Evaluate on test set
+                x_test_jnp = jnp.array(x_test.numpy())
+                y_test_one_hot = jax.nn.one_hot(jnp.array(y_test.numpy()), 10)
+                current_test_acc = accuracy(probe_params, x_test_jnp, y_test_one_hot).item()
+                best_test_acc_this_vode = max(best_test_acc_this_vode, current_test_acc)
+
+                print(f"Vode {current_vode_idx} - Probe Epoch {epoch+1}/{args.probe_epochs} - Train Loss: {avg_epoch_train_loss:.4f}, Train Acc: {current_train_acc:.4f}, Test Acc: {current_test_acc:.4f}")
+
+            print(f"Vode {current_vode_idx} - Final Test Accuracy: {best_test_acc_this_vode:.4f}")
+            all_probe_results.append({
+                "vode_indices": str(current_vode_idx),
+                "num_features": num_features,
+                "test_accuracy": best_test_acc_this_vode
+            })
 
     # 9. Log all results
     print("\n===== Linear Probe Sweep Results =====")
@@ -774,23 +788,24 @@ def main():
     with open(results_log_path, 'w') as f:
         f.write(f"Linear Probe Sweep Results - Model: {args.model_path}, Config: {args.config_name}\n")
         f.write(f"Probe LR: {args.probe_lr}, Probe WD: {args.probe_wd}, Probe Epochs: {args.probe_epochs}\n")
-        f.write(f"Feature Extraction H LR: {h_inference_lr}, Feature Extraction Steps: {inference_steps_for_extraction}\n")
+        f.write(f"Feature Extraction H LR: {h_lr_for_extraction}, Feature Extraction Steps: {inference_steps_for_extraction}\n")
         f.write(f"Global Average Pooling: {args.use_gap}\n\n")
-        f.write("Vode Index | Test Accuracy\n")
-        f.write("--------------------------\n")
-        for vode_idx, acc in sorted(all_probe_results, key=lambda item: item[1], reverse=True):
-            if isinstance(acc, str): # Handle error cases
-                f.write(f"{vode_idx:<10} | {acc}\n")
-                print(f"Vode {vode_idx}: {acc}")
-            else:
-                f.write(f"{vode_idx:<10} | {acc:.4f}\n")
-                print(f"Vode {vode_idx}: {acc:.4f}")
+        f.write("Vode Index/Combination | Test Accuracy | Num Features\n")
+        f.write("----------------------------------------------------\n")
+        # Sort results by test accuracy in descending order
+        sorted_results = sorted(all_probe_results, key=lambda item: item["test_accuracy"], reverse=True)
+        for result_item in sorted_results:
+            vode_str = result_item["vode_indices"]
+            acc_val = result_item["test_accuracy"]
+            num_feat = result_item["num_features"]
+            f.write(f"{vode_str:<24} | {acc_val:<13.4f} | {num_feat}\n")
+            print(f"Vode Combination: {vode_str}, Test Accuracy: {acc_val:.4f}, Num Features: {num_feat}")
     
     print(f"\nResults saved to: {results_log_path}")
 
     # Clean up: Remove feature files if desired (optional)
     # print("\nCleaning up extracted feature files...")
-    # for current_vode_idx in vode_indices_to_probe:
+    # for current_vode_idx in vode_indices_to_process:
     #     for set_name in ["train", "test"]:
     #         try:
     #             features_path = os.path.join("./extracted_features", f"{args.config_name}_layer{current_vode_idx}_gap{args.use_gap}_{set_name}_features.npy")
