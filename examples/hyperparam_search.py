@@ -15,12 +15,12 @@ def perform_hyperparameter_search():
 
     # Fixed overrides: Non-searched parameters, taking cues from the "6block" base
     fixed_overrides = {
-        "epochs": 150,
-        "theta": 100,
-        "use_ssl_augmentations": False,
-        "use_cifar10_norm": False,
+        "epochs": 75,
+        "theta": 10_000,
+        "use_ssl_augmentations": True,
+        "use_cifar10_norm": True,
         "num_images": 3,
-        "test_subset": 200,
+        "test_subset": 500,
         "peak_lr_weights": 0.001,
         "hidden_lr_inference": 0.095,
         "reconstruction_every_n_epochs": 75,
@@ -35,7 +35,7 @@ def perform_hyperparameter_search():
         "update_weights_every_inference_step": False,
 
         "use_early_stopping": True,
-        "early_stopping_patience": 7,
+        "early_stopping_patience": 20,
         "early_stopping_min_delta": 0.0001,
         "early_stopping_metric": "train_mse",
         "save_model_train_mse_threshold": 0.007,
@@ -56,8 +56,8 @@ def perform_hyperparameter_search():
     }
 
     # --- Architectural Search Space ---
-    num_blocks_candidates = [1,2,3,4,5,6]
-    batch_size_candidates = [200]
+    num_blocks_candidates = [1]
+    batch_size_candidates = [500]
     hidden_size_candidates = [64]
     num_heads_candidates = [1]
 
