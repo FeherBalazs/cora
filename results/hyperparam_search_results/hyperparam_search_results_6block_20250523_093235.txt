@@ -1,0 +1,48 @@
+Hyperparameter Search Log - 2025-05-23 09:32:35
+Base Config for non-searched params: 6block
+Fixed Overrides (excluding searched params):
+  epochs: 75
+  theta: 10000
+  use_ssl_augmentations: True
+  num_images: 10
+  test_subset: 200
+  peak_lr_weights: 0.001
+  hidden_lr_inference: 0.095
+  reconstruction_every_n_epochs: 75
+  validation_every_n_epochs: 10
+  use_inference_lr_scaling: True
+  use_lr_schedule_w: True
+  use_lr_schedule_h: True
+  weight_decay: 0.0002
+  mlp_ratio: 4.0
+  patch_size: 4
+  use_noise: True
+  update_weights_every_inference_step: False
+  use_early_stopping: True
+  early_stopping_patience: 20
+  early_stopping_min_delta: 0.001
+  early_stopping_metric: train_mse
+  use_vode_grad_norm: False
+  use_adamw_for_hidden_optimizer: False
+  corrupt_ratio: 0.25
+  use_lower_half_mask: False
+  inference_clamp_alpha: 1.0
+  save_reconstruction_images: True
+  save_reconstruction_video: True
+  video_fps: 5
+  reinitialize_model_for_each_epoch: False
+  use_status_init_in_training: False
+  use_status_init_in_unmasking: False
+  lr_schedule_min_lr_factor: 0.5
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Run | NB | BS   | HS   | NH | VodeLN | LR Hid    | Scale   | Inf Steps | Warmup | Hid Mom | H Clip | W Clip | Seed | Best Val MSE   | Run Best Train MSE | Final Train MSE | Status   | W&B Run Name                                                
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+2   | 6  | 200  | 64   | 1  | OFF    | 9.500e-02 | 1.25    | 20        | 0      | 0.40    | 2000.0 | 500.0  | 80   | 0.01508223     | 0.01942340         | 0.02588100      |          | nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd80
+3   | 6  | 200  | 64   | 1  | OFF    | 9.500e-02 | 1.25    | 20        | 0      | 0.40    | 2000.0 | 500.0  | 90   | 0.03046750     | 0.03714596         | 0.03714596      |          | nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd90
+1   | 6  | 200  | 64   | 1  | OFF    | 9.500e-02 | 1.25    | 20        | 0      | 0.40    | 2000.0 | 500.0  | 100  | 0.03467868     | 0.04527521         | 0.04863636      |          | nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd100
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Best Params: num_blocks=6, batch_size=200, hidden_size=64, num_heads=1, use_vode_state_layernorm=OFF, peak_lr_hidden=9.500e-02, inference_lr_scale_base=1.25, inference_steps=20, warmup_steps=0, hidden_momentum=0.40, h_grad_clip_norm=2000.0, w_grad_clip_norm=500.0, seed=80
+Achieved Overall Best Validation MSE: 0.015082
+Run Best Train MSE of Best Val Run: 0.01942340098321438
+Final Train MSE of Best Val Run: 0.025880999863147736
+ (lr_weights=1.000e-03 fixed)
