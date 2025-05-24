@@ -286,6 +286,15 @@
   - Results:
     - I should have used more ES patience as I reduced validation from 10 to 5 epochs. With block 6 especially it lead to premature ES, but other blocks could have benefitted as well for more patience.
     - All settings reached below 0.008 MSE, so using the same settings seems fine
+
+- Experiment:
+  - Try best settings for 10 different seeds to check stability
+  - Run: [https://wandb.ai/neural-machines/pc-arch-search-recursing-meitner?nw=nwusergradientracer](https://wandb.ai/neural-machines/pc-arch-search-recursing-meitner?nw=nwusergradientracer)
+  - Results:
+    - hyperparam_search_results/hyperparam_search_results_6block_20250522_035339.txt
+    - All nicely converged
+    - Best val MSE 0.0042
+
 - Experiment: 
   - Trying to run best settings for different batch sizes to stabilise training, as well as trying layernorm for vode states
   - `batch_size = [200, 500, 1000]`
@@ -301,6 +310,7 @@
    - I have stopped the training early with the batch size 200 experiments finished as I did not see benefit of using layernorm.
   - Interpretation and next steps:
     - Just run the experiment on looking at the effect of modifying batch sizes
+
 - Experiment: 
   - Trying to run best settings for different batch sizes to stabilise training.
   - `batch_size = [200, 500, 1000]`
@@ -315,6 +325,7 @@
   - Results:
    - Batch size 200 is much better than the other setings.
    - more importantly there is no visible difference in training stability - still oscillating with higher batch size
+
 - Experiment: 
   - Just out of curiosity testing how robust are the hyperparams when we increase network size, adding more hidden_size and num_heads
   - `hidden_size_candidates = [64, 128, 256]`
