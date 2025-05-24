@@ -17,27 +17,32 @@ def perform_hyperparameter_search():
     fixed_overrides = {
         "epochs": 75,
         "theta": 100,
+        "use_ssl_augmentations": False,
+        "use_cifar10_norm": False,
+        "num_images": 10,
         "test_subset": 200,
         "peak_lr_weights": 0.001,
         "hidden_lr_inference": 0.095,
-        "reconstruction_every_n_epochs": 25, 
-        "validation_every_n_epochs": 10,
-        "use_inference_lr_scaling": True, # This controls layer-wise scaling during inference
-        "use_lr_schedule_w": True, # Weights LR is fixed
-        "use_lr_schedule_h": True,  # Hidden LR uses schedule
+        "reconstruction_every_n_epochs": 75,
+        "validation_every_n_epochs": 75,
+        "use_inference_lr_scaling": True,
+        "use_lr_schedule_w": True,
+        "use_lr_schedule_h": True,
         "weight_decay": 2e-4,
         "mlp_ratio": 4.0,
         "patch_size": 4,
         "use_noise": True,
         "update_weights_every_inference_step": False,
+
         "use_early_stopping": True,
-        "early_stopping_patience": 7,
+        "early_stopping_patience": 50,
         "early_stopping_min_delta": 0.001,
-
-        # use_vode_state_layernorm will be searched
-        "use_vode_grad_norm": False, 
+        "early_stopping_metric": "train_mse",
+        "save_model_train_mse_threshold": 0.009,
+        "model_saving_metric": "train_mse",
+        
+        "use_vode_grad_norm": False,
         "use_adamw_for_hidden_optimizer": False,
-
         "corrupt_ratio": 0.25,
         "use_lower_half_mask": False,
         "inference_clamp_alpha": 1.0,
@@ -47,21 +52,21 @@ def perform_hyperparameter_search():
         "reinitialize_model_for_each_epoch": False,
         "use_status_init_in_training": False,
         "use_status_init_in_unmasking": False,
-        "lr_schedule_min_lr_factor": 0.5 # New: Factor for min_lr in schedule
+        "lr_schedule_min_lr_factor": 0.5
     }
 
-    # --- Architectural Search Space ---\
+    # --- Architectural Search Space ---
     num_blocks_candidates = [6]
     batch_size_candidates = [200]
     hidden_size_candidates = [64]
     num_heads_candidates = [1]
 
-    # --- Hyperparameter Search Space ---\
+    # --- Hyperparameter Search Space ---
     lr_hidden_candidates = [0.095]
     inference_lr_scale_base_candidates = [1.25]
     hidden_momentum_candidates = [0.4]
     h_grad_clip_norm_candidates = [2000]
-    seed_candidates = [42, 100, 20, 30, 40, 50, 60, 70, 80, 90]
+    seed_candidates = [80]
     inference_steps_candidates = [20]
     warmup_steps_candidates = [0]
     w_grad_clip_norm_candidates = [500.0]
@@ -145,8 +150,8 @@ def perform_hyperparameter_search():
                                                         current_overrides["peak_lr_hidden"] = lr_h
                                                         current_overrides["inference_lr_scale_base"] = scale_base
                                                         current_overrides["inference_steps"] = inf_steps
-                                                        current_overrides["eval_inference_steps"] = [inf_steps]
-                                                        current_overrides["reconstruction_steps"] = [inf_steps]
+                                                        # current_overrides["eval_inference_steps"] = [inf_steps]
+                                                        # current_overrides["reconstruction_steps"] = [inf_steps]
                                                         current_overrides["warmup_steps"] = ws_val
                                                         current_overrides["h_grad_clip_norm"] = h_clip
                                                         current_overrides["w_grad_clip_norm"] = w_clip
@@ -318,7 +323,7 @@ def perform_hyperparameter_search():
             'num_blocks', 'batch_size', 'hidden_size', 'num_heads', 
             'use_vode_state_layernorm', # New
             'peak_lr_hidden', 'inference_lr_scale_base', 'inference_steps',
-            'eval_inference_steps', 'reconstruction_steps', 'warmup_steps',
+            'warmup_steps',
             'h_grad_clip_norm', 'w_grad_clip_norm', 'hidden_momentum', 'seed'
         ]
         

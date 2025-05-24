@@ -5,11 +5,16 @@
 **/data
 **/results/videos
 **/results/images
+**/results/models
 **/wandb
 
 # Specific directories to ignore
 examples/experiment_results
 examples/datacifar10
+examples/CIFAR
+examples/extracted_features
+results/linear_probe_results/extracted_features
+results/linear_probe_results/videos
 datasets
 debug_logs
 

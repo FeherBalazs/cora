@@ -48,7 +48,7 @@ Predictive coding is a computational framework inspired by the brain's way of pr
 
 Recent works like I-JEPA and V-JEPA (by Meta) aim to improve unsupervised learning by predicting not pixel-level data, but higher-level latent representations. This aligns with the philosophy of predictive coding, where predictions are made in a compressed latent space at multiple levels of abstraction rather than the raw input. I-JEPA and V-JEPA provide compelling evidence that latent-space predictions can lead to more efficient learning, a direction that this proposal seeks to push further.
 
-This research proposal aims to explore the integration of predictive coding with transformer architectures, particularly focusing on parallel local updates and the potential advantages in video prediction and general learning efficiency. By building on recent trends like I-JEPA and V-JEPA, we seek to push the boundaries of how deep learning models can be made more efficient and biologically plausible, potentially offering a new paradigm for training spatiotemporal models.
+This research proposal aims to explore the integration of predictive coding with transformer architectures, particularly focusing on parallel local updates and the potential advantages in video prediction and general learning efficiency. By building on recent trends like I-JEPA and V-JEPA, this research seeks to push the boundaries of how deep learning models can be made more efficient and biologically plausible, potentially offering a new paradigm for training spatiotemporal models.
 
 By proposing a shift from sequential updates to parallel weight updates at each layer, we hypothesize that this method can outperform traditional transformers in both training speed and memory efficiency. Moreover, we aim to investigate how predictive coding can enhance video prediction models, where traditional transformers struggle with minute pixel-level details. This proposal seeks to implement and test these ideas, contributing to the broader field of generative models, unsupervised learning, and spatiotemporal reasoning.
 
@@ -60,7 +60,8 @@ Cora is an active research project. My planned roadmap includes:
 
 *   [x] Implement and validate PC-ViT for masked image reconstruction (CIFAR-10 subset). *(v0.3.0)*
 *   [x] Scale unsupervised training to the full CIFAR-10 dataset. *(v0.4.0 - Successfully trained a 6-block model on the full dataset, achieving ~0.008 MSE)*
-*   [ ] Evaluate learned representations using linear probing on CIFAR-10 classification.
+*   [x] Evaluate learned representations using linear probing on CIFAR-10 classification. *(v0.5.0)
+*   [ ] Experiment with methods for creating more meaningful abstract features, informed by linear probing results.
 *   [ ] Implement label conditioning mechanisms within the PC-ViT architecture.
 *   [ ] Demonstrate label-conditioned image generation on CIFAR-10.
 
@@ -76,6 +77,10 @@ Cora is an active research project. My planned roadmap includes:
 *   [ ] Develop robust PC-Transformer models for video prediction and generation.
 *   [ ] Investigate the efficiency (computational, sample) of PC training compared to standard backpropagation for large transformer models.
 *   [ ] Explore more advanced predictive coding objectives and dynamics within the transformer framework.
+
+### Short Term Goals (Next 1-2 Milestones)
+
+*   **Tune SSL Pretraining for Better Downstream Task Performance**: Leverage the linear probing framework to guide hyperparameter tuning and architectural choices for SSL pretraining, aiming to improve the quality of learned representations for tasks like classification.
 
 ## Citation
 If you find Cora useful in your work, please cite the original PCX paper: [arXiv link](https://arxiv.org/abs/2407.01163) and this repo (an OpenReview paper is coming soon).

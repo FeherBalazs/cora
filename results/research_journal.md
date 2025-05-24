@@ -286,6 +286,15 @@
   - Results:
     - I should have used more ES patience as I reduced validation from 10 to 5 epochs. With block 6 especially it lead to premature ES, but other blocks could have benefitted as well for more patience.
     - All settings reached below 0.008 MSE, so using the same settings seems fine
+
+- Experiment:
+  - Try best settings for 10 different seeds to check stability
+  - Run: [https://wandb.ai/neural-machines/pc-arch-search-recursing-meitner?nw=nwusergradientracer](https://wandb.ai/neural-machines/pc-arch-search-recursing-meitner?nw=nwusergradientracer)
+  - Results:
+    - hyperparam_search_results/hyperparam_search_results_6block_20250522_035339.txt
+    - All nicely converged
+    - Best val MSE 0.0042
+
 - Experiment: 
   - Trying to run best settings for different batch sizes to stabilise training, as well as trying layernorm for vode states
   - `batch_size = [200, 500, 1000]`
@@ -301,6 +310,7 @@
    - I have stopped the training early with the batch size 200 experiments finished as I did not see benefit of using layernorm.
   - Interpretation and next steps:
     - Just run the experiment on looking at the effect of modifying batch sizes
+
 - Experiment: 
   - Trying to run best settings for different batch sizes to stabilise training.
   - `batch_size = [200, 500, 1000]`
@@ -315,6 +325,7 @@
   - Results:
    - Batch size 200 is much better than the other setings.
    - more importantly there is no visible difference in training stability - still oscillating with higher batch size
+
 - Experiment: 
   - Just out of curiosity testing how robust are the hyperparams when we increase network size, adding more hidden_size and num_heads
   - `hidden_size_candidates = [64, 128, 256]`
@@ -328,3 +339,184 @@
     - Let's stop now and do the linear probing tests
 
 
+
+- Experiment: 
+  - shuffling 
+  - theta 10000 
+  - image augmentations from vision_transformer script
+  - 500 epochs, decayed to 0.1
+  - 3 seeds
+  - Run: [https://wandb.ai/neural-machines/pc-arch-search-hardcore-varahamihira?nw=nwusergradientracer](https://wandb.ai/neural-machines/pc-arch-search-hardcore-varahamihira?nw=nwusergradientracer)
+  - Results:
+    - only finished one of the seeds but it diverged
+
+- Experiment:
+  - now running with 75 epochs: 
+  - Run: [https://wandb.ai/neural-machines/pc-arch-search-eloquent-jang?nw=nwusergradientracer](https://wandb.ai/neural-machines/pc-arch-search-eloquent-jang?nw=nwusergradientracer)
+  - from 3 seeds one seed reached 0.006 with shuffling and augmentations, the others early stopped as modified criteria to train_mse with 10 patience
+  - ../results/hyperparam_search_results/hyperparam_search_results_6block_20250523_083624.txt
+
+- Experiment:
+  - further change in data augmentation - added cifar10 specific normalisation and simplified augmentations - have to test if converges:
+  - Run: [https://wandb.ai/neural-machines/pc-arch-search-friendly-lehmann](https://wandb.ai/neural-machines/pc-arch-search-friendly-lehmann)
+  - Results:
+    - all stopped, and did not reach much:
+    - Achieved Overall Best Validation MSE: 0.015082
+    - Run Best Train MSE of Best Val Run: 0.01942340098321438
+  - Interpretation and next steps: 
+    - it was still downward trend when looking running average. maybe it needs more time with augmentaions to converge
+
+- Experiment:
+  - running the same as above but with more patience for 10 seeds:
+  - Run: [https://wandb.ai/neural-machines/pc-arch-search-boring-turing](https://wandb.ai/neural-machines/pc-arch-search-boring-turing)
+  - Results:
+   - all but 1 diverged or got worse from about epoch 35
+   - best run 0.013 - none of them reached near 0.008
+   - ../results/hyperparam_search_results/hyperparam_search_results_6block_20250523_134529.txt
+  - Interpretation and next steps:
+    - let's backtrack for now and double down on getting best possible run to do linear probing on
+
+
+- Experiment:
+  - New run to produce model artifact with best settings
+  - `seed_candidates = [40, 50, 60, 70, 80, 90, 100]`
+  - Run: [https://wandb.ai/neural-machines/pc-arch-search-adoring-northcutt?nw=nwusergradientracer](https://wandb.ai/neural-machines/pc-arch-search-adoring-northcutt?nw=nwusergradientracer)
+  - Results:
+    - Best run: nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd80_epoch69_trainmse0.004531_20250523_173804.npz
+    - MSE: 0.004531
+  - Linear probing:
+    - Vode 0 - Final Test Accuracy: 0.1882
+
+- Experiment:
+  - New run with above settings but for 150 epochs and to 0 LR decay
+  - `seed_candidates = [80]`
+  - `epochs = 150`
+  - `lr_schedule_min_lr_factor = 0`
+  - Run: [https://wandb.ai/neural-machines/pc-arch-search-lucid-maxwell](https://wandb.ai/neural-machines/pc-arch-search-lucid-maxwell)
+  - Results:
+    - Early stopped as it got stagnating and oscillating wildly
+
+- Experiment:
+  - Repeat run with lower weight updates
+  - `peak_lr_weights: 0.0001`
+  - `seed_candidates = [80]`
+  - `epochs = 150`
+  - `lr_schedule_min_lr_factor = 0.5`
+  - Run: [https://wandb.ai/neural-machines/pc-arch-search-sweet-lamport](https://wandb.ai/neural-machines/pc-arch-search-sweet-lamport)
+  - Results:
+    - Run Best Train MSE of Best Val Run: 0.017332421615719795
+  - Interpretation and next steps:
+    - I have missed to study the effect of weight LR on stability. This run is very stable with 0.0001 weight LR, but does not reach optimal levels. Also, interesting loss curve, going back up for a while after an initial downward trend, but then keeps coming back down again. Let's first try to add augmentations, to see if it helps the curve be consistently downward. 
+
+- Experiment:
+  - Repeat run with augmentations and cifar scaling
+  - `use_ssl_augmentations: True`
+  - `use_cifar10_norm: True`
+  - `peak_lr_weights: 0.0001`
+  - `seed_candidates = [80]`
+  - `epochs = 150`
+  - `lr_schedule_min_lr_factor = 0.5`
+  - Run: [https://wandb.ai/neural-machines/pc-arch-search-inspiring-wescoff](https://wandb.ai/neural-machines/pc-arch-search-inspiring-wescoff)
+  - Results:
+    - Did not help with the loss shape initially dropping but coming back up a bit and then dropping again. 
+    - Loss comes down much slower than without augmentation, it is harder to fit. But that is expected.
+    - It starts oscillating around epoch 45, while mse is only 0.042-0.052
+  - Interpretation:
+    - Not sure why still oscillates after a while. 
+
+- Experiment:
+  - Repeat above but bump up learning rate for weights.
+  - `theta = 100`
+  - `peak_lr_weights: 0.0005`
+  - `use_ssl_augmentations: True`
+  - `use_cifar10_norm: True`
+  - `seed_candidates = [80]`
+  - `epochs = 150`
+  - `lr_schedule_min_lr_factor = 0.5`
+  - Run: [https://wandb.ai/neural-machines/pc-arch-search-angry-williams](https://wandb.ai/neural-machines/pc-arch-search-angry-williams)
+  - Results:
+    - Too much, oscillates again. Stopped, as it looked that bad.
+  - Interpretation:
+    - Oscillations clearly get tamed with lower regimes, when we bumped up again they creep back in. But even in the above smooth setting oscillations start to accur around epoch 45. 
+
+
+- Experiment:
+  - Revisiting iPC and resetting h each epoch
+  - `use_status_init_in_training: True`
+  - `use_status_init_in_unmasking: True`
+  - `update_weights_every_inference_step: True`
+  - `theta = 10_000`
+  - `peak_lr_weights: 0.0001`
+  - `use_ssl_augmentations: True`
+  - `use_cifar10_norm: True`
+  - `seed_candidates = [80]`
+  - `epochs = 150`
+  - `lr_schedule_min_lr_factor = 0.5`
+  - Run: [https://wandb.ai/neural-machines/pc-arch-search-busy-chatterjee?nw=nwusergradientracer](https://wandb.ai/neural-machines/pc-arch-search-busy-chatterjee?nw=nwusergradientracer)
+  - Results:
+    - All diverged and higher than 0.3
+  - Interpretation:
+    - stop this line of experiments for now - refocus effort on linear probing and what affects linear probing scores
+
+
+
+Experiment:
+  - Creating models for each block variation with standard settings
+  - Results: 
+    - Blocks 0:
+      - epoch10_trainmse: 0.000172
+      - Vode 0 - Final Test Accuracy: 0.2692
+    - Block 1: 
+      - epoch18_trainmse: 0.000436
+      - Vode 0 - Final Test Accuracy: 0.2418
+      - Experiment with SSL + theta=10_000 + batch_size=500
+        - epoch69_trainmse: 0.003560
+        - nb1_bs500_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd80_epoch69_trainmse0.003560_20250524_120732.npz
+        - had to increase LR to starting 0.095
+        - Vode 0 - Final Test Accuracy: 0.1840
+    - Block 2: 
+      - epoch12_trainmse: 0.002394
+      - Vode 0 - Final Test Accuracy: 0.2081
+    - Block 3:
+      - epoch19_trainmse: 0.002849
+      - Vode 0 - Final Test Accuracy: 0.1971
+
+
+
+- Try next: 
+  - Get back to block1 - and iterate quicly with linear probing as direct feedback on how data augmentation, and regularisation can improve representations; I could also experiment faster with more hidden dim and num heads
+  - Block6:
+    - oscillation reduction: lower learning rate from 0.0005 ro 0.0003
+    - maybe need to revisit iPC
+    - have to revisit latent resetting
+    - outsource hyperparam search - before that merge the liner probing script to main, and experiment on new branch
+
+Criticism:
+  - normal ViT with the same architecture as my 6 block 1 head, 64 dim model reaches 76% accuracy in 64 epochs
+  - this means it has the representational capacity for good features. Good enough for this classification.
+
+Ideas to test:
+ - experiment with regularisation, especially L1 and L2 on h
+ - add dropout
+ - lower weight updates to 0.0001
+ - experiment with muzero like regularisation as planned. start small. commit first initial probing results.
+
+Current state:
+  - for 6block model even with the close to all time best final train mse 0.004531 the linear probing results are merely 0.18 for vode_0
+  - something might be off with the feature creation, what if we have some catastrophic collapse of the hidden states? when I set the actual LR that was used when the model was extracted, then the image generated gets very bad. the reference video is generated after the feature extraction, so that proces already messed with the latents significantly. So,  I mean, if we reset h during training, and if we did that here as well, that is the only way we can ensure this does not happen. but I have not experimented with that setup for a long time. but, that setup could also ensure perhaps that we get better higher latents? it might force the network, to always try to find good representations from scratch, and not just rely on the weights. 
+
+
+Commands:
+ python linear_probe.py --config_name 6block --feature_layer_vode_indices "0,6,7" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.048514  --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd80_epoch69_trainmse0.004531_20250523_173804.npz
+
+Block 1:
+ python linear_probe.py --config_name 1block --feature_layer_vode_indices "0" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.09351  --model_path ../results/models/nb1_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e150_sd80_epoch18_finalabstrainmse0.000436_20250524_100129.npz
+
+  python linear_probe.py --config_name 1block --feature_layer_vode_indices "0" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.048514  --model_path ../results/models/nb1_bs500_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd80_epoch69_trainmse0.003560_20250524_120732.npz
+ 
+
+Block 2:
+ python linear_probe.py --config_name 2block --feature_layer_vode_indices "0" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.094372 --model_path ../results/models/nb2_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e150_sd80_epoch12_trainmse0.002394_20250524_100558.npz
+
+Block 3:
+ python linear_probe.py --config_name 3block --feature_layer_vode_indices "0" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.09333 --model_path ../results/models/nb3_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e150_sd80_epoch19_trainmse0.002849_20250524_101515.npz
