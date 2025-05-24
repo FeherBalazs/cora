@@ -44,6 +44,10 @@ from src.decoder_transformer import (
     calculate_psnr # Import if needed elsewhere, though eval_pretext_metrics uses it internally
 )
 
+# Import the pcx RandomKeyGenerator
+from pcx.core._random import RKG # Assuming this is the correct import path for RKG
+import random # Import Python's random module
+
 #TODO: simplify config across scripts
 @dataclass
 class ModelConfig:
@@ -51,6 +55,7 @@ class ModelConfig:
     name: str
     # Dataset settings
     dataset: str = "cifar10"
+    dataset_img_shape: Optional[Tuple[int, ...]] = None # New: (C, H, W) or (F, C, H, W)
     data_dir: str = "../datasets/"
     train_subset: int = 50000
     test_subset: int = 200
@@ -145,6 +150,11 @@ class ModelConfig:
     vode_grad_norm_target: float = 1.0     # Target norm for h-gradient normalization
     use_adamw_for_hidden_optimizer: bool = False # New: Use AdamW for hidden state optimizer
     lr_schedule_min_lr_factor: float = 0.5 # New: Factor to determine min_lr in schedule (min_lr = base_lr * factor)
+    use_ssl_augmentations: bool = True # New: Use stronger augmentations for SSL pretraining
+    early_stopping_metric: str = "val_mse" # New: Metric for early stopping ("val_mse" or "train_mse")
+    use_cifar10_norm: bool = True # New: Use CIFAR-10 specific normalization vs (0.5, 0.5, 0.5)
+    save_model_train_mse_threshold: Optional[float] = 0.006 # New: Train MSE threshold to enable model saving
+    model_saving_metric: str = "train_mse" # New: Metric to base model saving on ("train_mse" or "val_mse")
     
 
 
@@ -155,6 +165,7 @@ MODEL_CONFIGS = {
         hidden_size=64,
         num_heads=1,
         num_blocks=5,
+        dataset_img_shape=(3,32,32), # Added for cifar10
         # Target experiment settings for next run:
         peak_lr_hidden=0.07,
         inference_lr_scale_base=1.1,
@@ -164,19 +175,237 @@ MODEL_CONFIGS = {
         use_inference_lr_scaling=True,
         validation_every_n_epochs=5, # Keep frequent validation
         reconstruction_every_n_epochs=25, # And reconstruction
+    ),
+    "0block": ModelConfig(
+        name="0block",
+        # Dataset settings
+        dataset="cifar10",
+        dataset_img_shape=(3,32,32), # Added for cifar10
+        data_dir="../datasets/",
+        train_subset=50000,
+        test_subset=200,
+        target_class=None,
+        reconstruction_every_n_epochs=10,
+        validation_every_n_epochs=5,
+        use_corruption=False,
+        corrupt_ratio=0.25,
+        use_lower_half_mask=False,
+        inference_clamp_alpha=1.0,
+        # Visualization settings
+        num_images=2,
+        # Model architecture
+        hidden_size=64,
+        num_heads=1,
+        num_blocks=0,
+        mlp_ratio=4.0,
+        patch_size=4,
+        axes_dim=[16, 16],
+        theta=100,
+        act_fn=jax.nn.swish,
+        # Status init settings
+        use_status_init_in_training=False,
+        use_status_init_in_unmasking=False,
+        # Training settings
+        use_noise=True,
+        batch_size=200,
+        epochs=75,
+        inference_steps=20,
+        eval_inference_steps=[20],
+        reconstruction_steps=[20],
+        peak_lr_weights=0.001,
+        peak_lr_hidden=0.095,
+        update_weights_during_unmasking=False,
+        hidden_lr_inference=0.095,
+        weight_decay=2e-4,
+        warmup_steps=0, # Explicitly set for 6block
+        seed=42,
+        # Layer-specific inference LR scaling
+        use_inference_lr_scaling=True,
+        inference_lr_scale_base=1.25,
+        # Grad clipping
+        h_grad_clip_norm=2000.0,
+        w_grad_clip_norm=500.0,
+        # iPC or classic PC
+        update_weights_every_inference_step=False,
+        # Early stopping settings
+        use_early_stopping=True,
+        early_stopping_patience=3,
+        early_stopping_min_delta=0.001,
+        save_reconstruction_images=True,
+        save_reconstruction_video=True,
+        video_fps=60,
+        reinitialize_model_for_each_epoch=False,
         # New norm options
         use_vode_state_layernorm=False,
         use_vode_grad_norm=False,
         vode_grad_norm_target=1.0,
+        hidden_momentum=0.4,
         use_adamw_for_hidden_optimizer=False, # Default to SGD
         lr_schedule_min_lr_factor=0.5, # Default factor
-        use_lr_schedule_w=False, # Example: Fixed for weights
-        use_lr_schedule_h=True   # Example: Scheduled for hidden
+        # use_lr_schedule was True, translating to:
+        use_lr_schedule_w=False, # Weights fixed
+        use_lr_schedule_h=True,   # Hidden scheduled
+        use_ssl_augmentations=True, # Enable SSL augmentations
+        early_stopping_metric="val_mse", # Default early stopping metric
+        use_cifar10_norm=True, # Default to CIFAR-10 specific norm
+        save_model_train_mse_threshold=0.006,
+        model_saving_metric="train_mse",
+    ),
+    "1block": ModelConfig(
+        name="1block",
+        # Dataset settings
+        dataset="cifar10",
+        dataset_img_shape=(3,32,32), # Added for cifar10
+        data_dir="../datasets/",
+        train_subset=50000,
+        test_subset=200,
+        target_class=None,
+        reconstruction_every_n_epochs=10,
+        validation_every_n_epochs=5,
+        use_corruption=False,
+        corrupt_ratio=0.25,
+        use_lower_half_mask=False,
+        inference_clamp_alpha=1.0,
+        # Visualization settings
+        num_images=2,
+        # Model architecture
+        hidden_size=64,
+        num_heads=1,
+        num_blocks=1,
+        mlp_ratio=4.0,
+        patch_size=4,
+        axes_dim=[16, 16],
+        theta=100,
+        act_fn=jax.nn.swish,
+        # Status init settings
+        use_status_init_in_training=False,
+        use_status_init_in_unmasking=False,
+        # Training settings
+        use_noise=True,
+        batch_size=200,
+        epochs=75,
+        inference_steps=20,
+        eval_inference_steps=[20],
+        reconstruction_steps=[20],
+        peak_lr_weights=0.001,
+        peak_lr_hidden=0.095,
+        update_weights_during_unmasking=False,
+        hidden_lr_inference=0.095,
+        weight_decay=2e-4,
+        warmup_steps=0, # Explicitly set for 6block
+        seed=42,
+        # Layer-specific inference LR scaling
+        use_inference_lr_scaling=True,
+        inference_lr_scale_base=1.25,
+        # Grad clipping
+        h_grad_clip_norm=2000.0,
+        w_grad_clip_norm=500.0,
+        # iPC or classic PC
+        update_weights_every_inference_step=False,
+        # Early stopping settings
+        use_early_stopping=True,
+        early_stopping_patience=3,
+        early_stopping_min_delta=0.001,
+        save_reconstruction_images=True,
+        save_reconstruction_video=True,
+        video_fps=60,
+        reinitialize_model_for_each_epoch=False,
+        # New norm options
+        use_vode_state_layernorm=False,
+        use_vode_grad_norm=False,
+        vode_grad_norm_target=1.0,
+        hidden_momentum=0.4,
+        use_adamw_for_hidden_optimizer=False, # Default to SGD
+        lr_schedule_min_lr_factor=0.5, # Default factor
+        # use_lr_schedule was True, translating to:
+        use_lr_schedule_w=False, # Weights fixed
+        use_lr_schedule_h=True,   # Hidden scheduled
+        use_ssl_augmentations=True, # Enable SSL augmentations
+        early_stopping_metric="val_mse", # Default early stopping metric
+        use_cifar10_norm=True, # Default to CIFAR-10 specific norm
+        save_model_train_mse_threshold=0.006,
+        model_saving_metric="train_mse",
+    ),
+    "2block": ModelConfig(
+        name="2block",
+        # Dataset settings
+        dataset="cifar10",
+        dataset_img_shape=(3,32,32), # Added for cifar10
+        data_dir="../datasets/",
+        train_subset=50000,
+        test_subset=200,
+        target_class=None,
+        reconstruction_every_n_epochs=10,
+        validation_every_n_epochs=5,
+        use_corruption=False,
+        corrupt_ratio=0.25,
+        use_lower_half_mask=False,
+        inference_clamp_alpha=1.0,
+        # Visualization settings
+        num_images=2,
+        # Model architecture
+        hidden_size=64,
+        num_heads=1,
+        num_blocks=2,
+        mlp_ratio=4.0,
+        patch_size=4,
+        axes_dim=[16, 16],
+        theta=100,
+        act_fn=jax.nn.swish,
+        # Status init settings
+        use_status_init_in_training=False,
+        use_status_init_in_unmasking=False,
+        # Training settings
+        use_noise=True,
+        batch_size=200,
+        epochs=75,
+        inference_steps=20,
+        eval_inference_steps=[20],
+        reconstruction_steps=[20],
+        peak_lr_weights=0.001,
+        peak_lr_hidden=0.095,
+        update_weights_during_unmasking=False,
+        hidden_lr_inference=0.095,
+        weight_decay=2e-4,
+        warmup_steps=0, # Explicitly set for 6block
+        seed=42,
+        # Layer-specific inference LR scaling
+        use_inference_lr_scaling=True,
+        inference_lr_scale_base=1.25,
+        # Grad clipping
+        h_grad_clip_norm=2000.0,
+        w_grad_clip_norm=500.0,
+        # iPC or classic PC
+        update_weights_every_inference_step=False,
+        # Early stopping settings
+        use_early_stopping=True,
+        early_stopping_patience=3,
+        early_stopping_min_delta=0.001,
+        save_reconstruction_images=True,
+        save_reconstruction_video=True,
+        video_fps=60,
+        reinitialize_model_for_each_epoch=False,
+        # New norm options
+        use_vode_state_layernorm=False,
+        use_vode_grad_norm=False,
+        vode_grad_norm_target=1.0,
+        hidden_momentum=0.4,
+        use_adamw_for_hidden_optimizer=False, # Default to SGD
+        lr_schedule_min_lr_factor=0.5, # Default factor
+        # use_lr_schedule was True, translating to:
+        use_lr_schedule_w=False, # Weights fixed
+        use_lr_schedule_h=True,   # Hidden scheduled
+        use_ssl_augmentations=True, # Enable SSL augmentations
+        early_stopping_metric="val_mse", # Default early stopping metric
+        use_cifar10_norm=True, # Default to CIFAR-10 specific norm
+        save_model_train_mse_threshold=0.006,
+        model_saving_metric="train_mse",
     ),
     "5block": ModelConfig(
         name="5block",
         # Dataset settings
         dataset="cifar10",
+        dataset_img_shape=(3,32,32), # Added for cifar10
         data_dir="../datasets/",
         train_subset=50000,
         test_subset=200,
@@ -240,13 +469,18 @@ MODEL_CONFIGS = {
         lr_schedule_min_lr_factor=0.5, # Default factor
         # use_lr_schedule was True, translating to:
         use_lr_schedule_w=False, # Weights fixed (as per recent changes)
-        use_lr_schedule_h=True   # Hidden scheduled
+        use_lr_schedule_h=True,   # Hidden scheduled
+        use_ssl_augmentations=True, # Enable SSL augmentations
+        early_stopping_metric="val_mse", # Default early stopping metric
+        use_cifar10_norm=True, # Default to CIFAR-10 specific norm
+        save_model_train_mse_threshold=0.006,
+        model_saving_metric="train_mse",
     ),
-    # TODO: still actively experimenting with this
     "6block": ModelConfig(
         name="6block",
         # Dataset settings
         dataset="cifar10",
+        dataset_img_shape=(3,32,32), # Added for cifar10
         data_dir="../datasets/",
         train_subset=50000,
         test_subset=200,
@@ -310,37 +544,12 @@ MODEL_CONFIGS = {
         lr_schedule_min_lr_factor=0.5, # Default factor
         # use_lr_schedule was True, translating to:
         use_lr_schedule_w=False, # Weights fixed
-        use_lr_schedule_h=True   # Hidden scheduled
-    ),
-    "debug_small": ModelConfig(
-        name="debug_small",
-        hidden_size=512,
-        num_heads=8,
-        num_blocks=6,
-        # New norm options
-        use_vode_state_layernorm=False,
-        use_vode_grad_norm=False,
-        vode_grad_norm_target=1.0,
-        hidden_momentum=0.1, # Default momentum
-        use_adamw_for_hidden_optimizer=False, # Default to SGD
-        lr_schedule_min_lr_factor=0.5, # Default factor
-        use_lr_schedule_w=False, # Assuming fixed by default for new configs
-        use_lr_schedule_h=False  # Assuming fixed by default for new configs
-    ),
-    "baseline": ModelConfig(
-        name="baseline",
-        hidden_size=128,
-        num_heads=8,
-        num_blocks=6,
-        # New norm options
-        use_vode_state_layernorm=False,
-        use_vode_grad_norm=False,
-        vode_grad_norm_target=1.0,
-        hidden_momentum=0.1, # Default momentum
-        use_adamw_for_hidden_optimizer=False, # Default to SGD
-        lr_schedule_min_lr_factor=0.5, # Default factor
-        use_lr_schedule_w=False, # Assuming fixed by default
-        use_lr_schedule_h=False  # Assuming fixed by default
+        use_lr_schedule_h=True,   # Hidden scheduled
+        use_ssl_augmentations=True, # Enable SSL augmentations
+        early_stopping_metric="val_mse", # Default early stopping metric
+        use_cifar10_norm=True, # Default to CIFAR-10 specific norm
+        save_model_train_mse_threshold=0.006,
+        model_saving_metric="train_mse",
     )
 }
 
@@ -467,16 +676,47 @@ def create_learning_rate_schedule(base_lr, warmup_steps, total_steps, min_lr_fac
     return lr_schedule
 
 
-def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=None, test_subset_n=None, target_class=None):
+def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=None, test_subset_n=None, target_class=None, use_ssl_augmentations=True, use_cifar10_norm=True):
     """Get data loaders with simple augmentation for debugging."""
-    train_transform = transforms.Compose([
+    
+    # Define a common normalization (from vision_transformer_script.py)
+    if use_cifar10_norm:
+        print("Using CIFAR-10 specific normalization.")
+        mean = (0.4914, 0.4822, 0.4465)
+        std = (0.2023, 0.1994, 0.2010)
+    else:
+        print("Using generic (0.5, 0.5, 0.5) normalization.")
+        mean = (0.5, 0.5, 0.5)
+        std = (0.5, 0.5, 0.5)
+    
+    # Image dimensions (assuming 32x32 for CIFAR-10)
+    height, width = 32, 32
+
+    if use_ssl_augmentations: # For now, this flag will enable the ViT script's augmentations
+        print("Using data augmentations from vision_transformer_script.py for training.")
+        train_transform_list = [
+            transforms.RandomCrop(32, padding=4),
+            transforms.Resize((height, width)), # Ensure this matches expected input if different from crop
+            transforms.RandomHorizontalFlip(),
+            # transforms.RandomResizedCrop(size=32, scale=(0.2, 1.0)), # SSL Aug: Commented out
+            # transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1), # SSL Aug: Commented out
+            # transforms.GaussianBlur(kernel_size=3), # SSL Aug: Commented out
         transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-    ])
+            transforms.Normalize(mean, std) # Use selected normalization
+        ]
+    else:
+        print("Using basic ToTensor and Normalize for training (CIFAR-10 specific).")
+        train_transform_list = [
+            transforms.ToTensor(),
+            transforms.Normalize(mean, std) # Use selected normalization
+        ]
+    
+    train_transform = transforms.Compose(train_transform_list)
     
     test_transform = transforms.Compose([
+        transforms.Resize((height, width)), # From vision_transformer_script.py
         transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+        transforms.Normalize(mean, std) # Use selected normalization
     ])
     
     dataset_root = '../' + root_path + "/cifar10/"
@@ -509,7 +749,7 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=batch_size,
-        shuffle=False,
+        shuffle=True,
         num_workers=0,
     )
     test_dataloader = DataLoader(
@@ -533,9 +773,10 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
     return TorchDataloader(train_dataloader), TorchDataloader(test_dataloader)
 
 
-def create_reconstruction_images(intermediate_recons, T_values, orig_images, masked_images, labels_list, num_images, image_shape, wandb_run, epoch):
+def create_reconstruction_images(intermediate_recons, T_values, orig_images, masked_images, labels_list, num_images, image_shape, wandb_run, epoch, reconstruction_mses=None):
     """
     Creates a grid of images comparing originals, masked inputs, and reconstructions at specific T_values.
+    Adds MSE to the title of the final reconstruction if provided.
     """
     num_channels, H, W = image_shape
     # Increase columns by 1 to accommodate the masked image
@@ -556,11 +797,12 @@ def create_reconstruction_images(intermediate_recons, T_values, orig_images, mas
         
         # Plot masked input (Column 1)
         masked_np = np.array(masked_images[i])
+        current_mse_str = f" (MSE: {reconstruction_mses[i]:.4f})" if reconstruction_mses and i < len(reconstruction_mses) else ""
         if num_channels == 1:
             axes[i, 1].imshow(np.clip(np.squeeze(masked_np), 0.0, 1.0), cmap='gray')
         else:
             axes[i, 1].imshow(np.clip(np.transpose(masked_np, (1, 2, 0)), 0.0, 1.0))
-        axes[i, 1].set_title(f'Masked Input')
+        axes[i, 1].set_title(f'Masked Input{current_mse_str}')
         axes[i, 1].axis('off')
 
         # Plot reconstructions for specific T values (Start from Column 2)
@@ -605,7 +847,7 @@ def create_reconstruction_images(intermediate_recons, T_values, orig_images, mas
     return reconstruction_path, log_dict
 
 
-def visualize_reconstruction(model, model_config, optim_h_inference, dataloader, config, wandb_run=None, epoch=None, step=None, optim_w=None):
+def visualize_reconstruction(model, model_config, optim_h, dataloader, config, wandb_run=None, epoch=None, step=None, optim_w=None):
     
     # Extract static info from config
     image_shape = model.config.image_shape
@@ -621,6 +863,7 @@ def visualize_reconstruction(model, model_config, optim_h_inference, dataloader,
     labels_list = []
     masked_images_list = [] # List to store the masked input images
     all_inference_grads = [] # Add list to store grad logs per image
+    reconstruction_mses = [] # New: Store MSE for each reconstruction
     dataloader_iter = iter(dataloader)
 
     # Get the single batch
@@ -645,11 +888,12 @@ def visualize_reconstruction(model, model_config, optim_h_inference, dataloader,
                 target_T_values=T_values, # Determines max_T internally
                 x=single_x,               
                 model=model, 
-                optim_h=optim_h_inference, # Use optim_h_inference if defined/desired
+                optim_h=optim_h, # Use optim_h_inference if defined/desired
                 optim_w=optim_w, # <<< Pass optim_w
                 log_inference_grads=True # Set the flag
             )
             all_inference_grads.append(inference_grads) # Store the logs
+            reconstruction_mses.append(loss) # Store the MSE for this image
 
             # --- Regenerate the masked input for visualization using the returned mask --- 
             x_init_single = single_x # Default if no corruption
@@ -740,7 +984,8 @@ def visualize_reconstruction(model, model_config, optim_h_inference, dataloader,
             num_images=num_images,
             image_shape=image_shape,
             wandb_run=wandb_run,
-            epoch=epoch
+            epoch=epoch,
+            reconstruction_mses=reconstruction_mses
         )
         final_path = image_path # Prioritize image path if both are created
         combined_log_dict.update(image_log_dict)
@@ -759,7 +1004,8 @@ def visualize_reconstruction(model, model_config, optim_h_inference, dataloader,
                 image_shape=image_shape,
                 wandb_run=wandb_run,
                 epoch=epoch,
-                fps=config.video_fps # Use fps from config
+                fps=config.video_fps, # Use fps from config
+                reconstruction_mses=reconstruction_mses, # Pass MSEs
             )
             if final_path is None:
                 final_path = video_path # Set video path if images weren't created
@@ -768,9 +1014,10 @@ def visualize_reconstruction(model, model_config, optim_h_inference, dataloader,
     return final_path, combined_log_dict
 
 
-def create_reconstruction_video(all_reconstruction_frames, orig_images, masked_images, labels_list, num_images, image_shape, wandb_run, epoch, fps=10):
+def create_reconstruction_video(all_reconstruction_frames, orig_images, masked_images, labels_list, num_images, image_shape, wandb_run, epoch, fps=10, reconstruction_mses=None):
     """
     Creates a video comparing original images and their reconstructions over time.
+    Adds MSE to the title of the reconstruction if provided.
 
     Args:
         all_reconstruction_frames: List (num_images) of lists (T_steps) of reconstruction tensors.
@@ -782,6 +1029,7 @@ def create_reconstruction_video(all_reconstruction_frames, orig_images, masked_i
         wandb_run: Wandb run object.
         epoch: Current epoch number.
         fps: Frames per second for the video.
+        reconstruction_mses: List of MSE values for each image.
 
     Returns:
         Tuple: (video_path, log_dict)
@@ -831,6 +1079,7 @@ def create_reconstruction_video(all_reconstruction_frames, orig_images, masked_i
             recon_t = all_reconstruction_frames[i][t]
             recon_np = np.array(recon_t[0]) # Get the first element from batch dim
             recon_np = np.reshape(recon_np, image_shape)
+            current_mse_str = f" (MSE: {reconstruction_mses[i]:.4f})" if reconstruction_mses and i < len(reconstruction_mses) else ""
 
             if num_channels == 1: # Grayscale
                 recon_plot = np.clip(np.squeeze(recon_np), 0.0, 1.0)
@@ -841,7 +1090,7 @@ def create_reconstruction_video(all_reconstruction_frames, orig_images, masked_i
             
             # Plot in column 2
             axes[i, 2].imshow(recon_plot)
-            axes[i, 2].set_title(f'Recon T={t+1}')
+            axes[i, 2].set_title(f'Recon T={t+1}{current_mse_str}')
             axes[i, 2].axis('off')
         
         plt.tight_layout()
@@ -1199,12 +1448,36 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
                      wandb_run_name: Optional[str] = None,
                      wandb_mode: str = "online"):
     """Main function to run the debugging process with W&B logging."""
-    # args = parse_args() # Args will be handled by overrides or a new main
+    
+    # --- Seed everything FIRST for reproducibility ---
+    if config_overrides and "seed" in config_overrides:
+        current_seed = config_overrides["seed"]
+    elif hasattr(config, 'seed'):
+        current_seed = config.seed
+    else:
+        current_seed = 42 # Fallback seed if not found
+        print(f"Warning: Seed not found in config or overrides, using fallback: {current_seed}")
+
+    print(f"Using master seed: {current_seed}")
+    np.random.seed(current_seed)
+    torch.manual_seed(current_seed)
+    random.seed(current_seed)
+    RKG.seed(current_seed) # Re-seed the pcx global RandomKeyGenerator
+    # For PyTorch CUDA ops (optional, uncomment to try if GPU non-determinism is suspected)
+    # torch.cuda.manual_seed(current_seed)
+    # torch.cuda.manual_seed_all(current_seed) # if using multiple GPUs
+    # torch.backends.cudnn.deterministic = True
+    # torch.backends.cudnn.benchmark = False
+    
+    # Master JAX key for this experiment run - operations in run_experiment will derive from this
+    master_key = jax.random.PRNGKey(current_seed) 
+    # --- End Seeding ---
     
     # Load the base configuration
     if base_config_name not in MODEL_CONFIGS:
         print(f"Error: Base config name '{base_config_name}' not found. Available: {list(MODEL_CONFIGS.keys())}")
-        return float('inf'), None # Return a high MSE indicating failure and None for early_stop_reason
+        # Return structure for hyperparam_search: best_val_mse, run_best_train_mse, final_train_mse, early_stop_reason
+        return float('inf'), float('inf'), float('inf'), "ConfigNotFound" 
         
     config = MODEL_CONFIGS[base_config_name]
     
@@ -1233,9 +1506,9 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     print()
     
     # Set random seed for reproducibility
-    np.random.seed(config.seed)
-    torch.manual_seed(config.seed)
-    key = jax.random.PRNGKey(config.seed)
+    # np.random.seed(config.seed) # Moved to the top
+    # torch.manual_seed(config.seed) # Moved to the top
+    # key = jax.random.PRNGKey(config.seed) # Master key is now 'master_key', initialized at the top
     
     # Determine run name for WandB
     effective_wandb_run_name = wandb_run_name
@@ -1325,7 +1598,9 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         root_path=config.data_dir,
         train_subset_n=config.train_subset,
         test_subset_n=config.test_subset,
-        target_class=config.target_class
+        target_class=config.target_class,
+        use_ssl_augmentations=config.use_ssl_augmentations, # Pass the flag
+        use_cifar10_norm=config.use_cifar10_norm # Pass the new flag
     )
     
     print(f"Training on {len(train_loader.dataset)} samples")
@@ -1341,7 +1616,7 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     # Create learning rate functions based on config
     if config.use_lr_schedule_w:
         weights_lr_fn = create_learning_rate_schedule(
-            config.peak_lr_weights,
+            config.peak_lr_weights, 
             config.warmup_steps,
             total_train_steps,
             config.lr_schedule_min_lr_factor
@@ -1350,10 +1625,10 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     else:
         weights_lr_fn = config.peak_lr_weights # Fixed LR for weights
         print(f"Using FIXED learning rate for weights: {weights_lr_fn:.0e}")
-
+        
     if config.use_lr_schedule_h:
         hidden_lr_fn = create_learning_rate_schedule(
-            config.peak_lr_hidden,
+            config.peak_lr_hidden, 
             config.warmup_steps,  # Assuming shared warmup steps for now
             total_train_steps,
             config.lr_schedule_min_lr_factor # Assuming shared min factor
@@ -1362,7 +1637,7 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     else:
         hidden_lr_fn = config.peak_lr_hidden # Fixed LR for hidden
         print(f"Using FIXED learning rate for hidden: {hidden_lr_fn}")
-
+    
     # --- Create base optimizers --- 
     if config.use_adamw_for_hidden_optimizer:
         print("Using AdamW for hidden state optimizer.")
@@ -1373,8 +1648,8 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         base_optim_h_inference = optax.adamw(learning_rate=config.hidden_lr_inference, b1=0.9, b2=0.999, eps=1e-8)
     else:
         print("Using SGD for hidden state optimizer.")
-        base_optim_h_train = optax.sgd(hidden_lr_fn, momentum=config.hidden_momentum)
-        base_optim_h_inference = optax.sgd(config.hidden_lr_inference, momentum=config.hidden_momentum)
+    base_optim_h_train = optax.sgd(hidden_lr_fn, momentum=config.hidden_momentum)
+    base_optim_h_inference = optax.sgd(config.hidden_lr_inference, momentum=config.hidden_momentum)
     
     base_optim_w = optax.adamw(weights_lr_fn, weight_decay=config.weight_decay)
     
@@ -1423,12 +1698,16 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     all_epochs_energy_data = []
     all_epochs_grad_data = []
     
-    # Early stopping variables
-    best_val_loss = float('inf') # Will track the primary metric (e.g., masked_mse)
-    # val_loss = float('inf') # Replaced by pretext_metrics dictionary
-    epochs_without_improvement = 0
+    # Early stopping & Model saving variables
+    best_val_loss_for_overall_best_model = float('inf') # Tracks best validation loss overall for a dedicated save
+    best_metric_for_early_stopping = float('inf') # Tracks the chosen metric for the stopping decision
+    best_metric_for_saving = float('inf') # Tracks the chosen metric for the primary saving strategy
+    can_save_model_now = False # Flag to enable saving after train MSE threshold is met
+    epochs_without_improvement_early_stopping = 0 # Counter for early stopping
+    epochs_without_improvement_saving = 0 # Counter for saving (not strictly needed if saving on any improvement)
+
     early_stopped = False
-    early_stopped_epoch = -1 # Store epoch when stopped
+    early_stop_reason = None # Initialize early_stop_reason
     pretext_metrics = {} # Initialize metrics dict
     
     print(f"Training for {config.epochs} epochs with W&B logging...")
@@ -1441,11 +1720,22 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     init_shape = (config.batch_size, *model_config.image_shape)
     x_init = jnp.zeros(init_shape, dtype=jnp.float32) # Use float32 or model's dtype
     print(f"Initializing Vode states using dummy tensor with shape: {init_shape}")
-    with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
-        forward(x_init, model=model) # Use dummy tensor for shape initialization
+
+    # It's good practice to ensure model parameter initialization uses a JAX key derived 
+    # from your master_key for this run, rather than relying solely on pcx.RKG 
+    # if pcx.RKG was already used by pcx modules during their class definition/import time.
+    # However, pcx.nn.Linear and other layers in pcx might directly use pcx.RKG internally by default.
+    # Re-seeding RKG (done above) is the primary way to control its behavior for the current run.
+    # For model initialization itself, if it explicitly takes a key, use a split from master_key.
+    model_init_key, main_train_key = jax.random.split(master_key) # Split master key
+
+    with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache): # Removed key=model_init_key
+        forward(x_init, model=model)
     
     for epoch in range(config.epochs):
         epoch_start = time.time()
+        new_train_mse_milestone_reached_this_epoch = False # New flag for triggering val/recon
+
         if model_config.use_inference_lr_scaling:
             print(f"Current inference_lr_scale_base: {model_config.inference_lr_scale_base}")
         else:
@@ -1481,6 +1771,47 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         avg_train_w_energy = float(avg_train_w_energy) if not jnp.isnan(avg_train_w_energy) else float('nan')
         avg_train_mse = float(avg_train_mse) if not jnp.isnan(avg_train_mse) else float('nan')
         
+        # Check if train MSE is below threshold for enabling model saving
+        if not can_save_model_now and config.save_model_train_mse_threshold is not None and \
+           not np.isnan(avg_train_mse) and avg_train_mse < config.save_model_train_mse_threshold:
+            can_save_model_now = True
+            new_train_mse_milestone_reached_this_epoch = True # Met threshold for the first time
+            print(f"INFO: Train MSE {avg_train_mse:.6f} is below threshold {config.save_model_train_mse_threshold}. Model saving enabled. Validation & Reconstruction will be triggered.")
+        elif config.save_model_train_mse_threshold is None: # If no threshold, saving is always possible based on metric
+            can_save_model_now = True
+
+        # Update best_train_mse_this_run (tracks the absolute best train MSE for reporting)
+        if not np.isnan(avg_train_mse) and avg_train_mse < best_train_mse_this_run:
+            best_train_mse_this_run = avg_train_mse
+
+        # --- Model Saving based on Training MSE (if configured) ---
+        if config.model_saving_metric == "train_mse" and can_save_model_now and not training_nan_detected:
+            if not np.isnan(avg_train_mse): # Only consider valid MSE
+                # Initialize best_metric_for_saving only if the threshold was JUST met this epoch
+                if best_metric_for_saving == float('inf') and new_train_mse_milestone_reached_this_epoch: 
+                    best_metric_for_saving = avg_train_mse
+                    # Save on first qualifying metric after threshold
+                    print(f"Saving model: Initial train_mse {avg_train_mse:.6f} meets criteria (threshold crossed).")
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    model_filename = f"{effective_wandb_run_name}_epoch{epoch+1}_trainmse{avg_train_mse:.6f}_{timestamp}.npz"
+                    model_save_path = os.path.join("../results/models", model_filename)
+                    os.makedirs("../results/models", exist_ok=True)
+                    pxu.save_params(model, model_save_path, filter=lambda x: isinstance(x, (pxnn.LayerParam, pxc.VodeParam)))
+                    print(f"Saved model to {model_save_path}")
+
+                elif avg_train_mse < (best_metric_for_saving - config.early_stopping_min_delta):
+                    print(f"Saving model: Train MSE improved! {best_metric_for_saving:.6f} -> {avg_train_mse:.6f}")
+                    best_metric_for_saving = avg_train_mse
+                    new_train_mse_milestone_reached_this_epoch = True # Also a milestone for triggering val/recon
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    model_filename = f"{effective_wandb_run_name}_epoch{epoch+1}_trainmse{avg_train_mse:.6f}_{timestamp}.npz"
+                    model_save_path = os.path.join("../results/models", model_filename)
+                    os.makedirs("../results/models", exist_ok=True)
+                    pxu.save_params(model, model_save_path, filter=lambda x: isinstance(x, (pxnn.LayerParam, pxc.VodeParam)))
+                    print(f"Saved model to {model_save_path}")
+            else:
+                print(f"Warning: Training MSE is NaN at epoch {epoch+1}, cannot use for model saving decision.")
+        
         training_nan_detected = False
         if jnp.isnan(avg_train_w_energy) or jnp.isnan(avg_train_mse):
             print(f"!!! WARNING: NaN detected in training metrics (Energy: {avg_train_w_energy}, MSE: {avg_train_mse}) at Epoch {epoch+1}. Stopping training for this run. !!!")
@@ -1504,18 +1835,83 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
             'LearningRate/hidden': current_h_lr
         }
 
+        # --- Early stopping based on Training MSE (if configured) ---
+        if config.use_early_stopping and config.early_stopping_metric == "train_mse" and not training_nan_detected:
+            if not np.isnan(avg_train_mse): # Only consider valid MSE
+                if best_metric_for_early_stopping == float('inf'): # Initialize on first valid metric
+                    best_metric_for_early_stopping = avg_train_mse
+                    print(f"Initialized best_metric_for_early_stopping (train_mse): {best_metric_for_early_stopping:.6f}")
+                
+                if avg_train_mse < (best_metric_for_early_stopping - config.early_stopping_min_delta):
+                    print(f"Training MSE improved! {best_metric_for_early_stopping:.6f} -> {avg_train_mse:.6f}")
+                    best_metric_for_early_stopping = avg_train_mse
+                    epochs_without_improvement_early_stopping = 0
+                else:
+                    epochs_without_improvement_early_stopping += 1
+                    print(f"No improvement in Training MSE for early stopping for {epochs_without_improvement_early_stopping} epochs (best: {best_metric_for_early_stopping:.6f})")
+                    if epochs_without_improvement_early_stopping >= config.early_stopping_patience:
+                        print(f"Early stopping triggered on Training MSE after {epoch+1} epochs!")
+                        early_stopped = True
+                        early_stop_reason = "TrainMetric"
+                        early_stopped_epoch = epoch
+                        # Log metrics before breaking from the main loop
+                        run.log(epoch_metrics, step=epoch+1)
+                        break 
+            else:
+                print(f"Warning: Training MSE is NaN at epoch {epoch+1}, cannot use for early stopping decision.")
+
+
         # --- Run validation and other epoch-end tasks only if training was successful --- 
         # <<< --- ADD CHECK: Only proceed if no NaN and not already early stopped normally --- >>>
-        if not training_nan_detected and ( (epoch + 1) % config.validation_every_n_epochs == 0 or epoch == config.epochs - 1 or (config.use_early_stopping and early_stopped and epoch == early_stopped_epoch) ):
-        # <<< --- END CHECK --- >>>
-            print(f"Evaluating pretext task metrics on validation set...")
+        # Trigger validation if it's a validation epoch OR if the MSE threshold was met
+        trigger_validation_event = (
+            ((epoch + 1) % config.validation_every_n_epochs == 0) or \
+            (epoch == config.epochs - 1) or \
+            (early_stopped and epoch == early_stopped_epoch) or \
+            (new_train_mse_milestone_reached_this_epoch and can_save_model_now) 
+        )
+        # mse_threshold_met is no longer used to trigger validation here
+        
+        if not training_nan_detected and trigger_validation_event and not (early_stopped and early_stop_reason == 'TrainMetric' and not ((epoch + 1) % config.validation_every_n_epochs == 0 or epoch == config.epochs -1)):
+            # If early stopping was due to train metric, we might not need to run validation again,
+            # unless it's a scheduled validation, the very last epoch, or a new train MSE milestone was just hit.
+            # This condition tries to avoid redundant validation if only TrainMetric early stop occurred AND it's not a scheduled/final/milestone validation.
+
+            print(f"Evaluating pretext task metrics on validation set (Epoch {epoch+1})...")
+
+            # Determine the optimizer for hidden states during evaluation
+            # It should use the current_h_lr if a schedule is active for training h,
+            # otherwise, it uses the fixed config.hidden_lr_inference.
+            if config.use_lr_schedule_h:
+                # Create a new base optimizer for hidden states for this specific evaluation, using current_h_lr
+                if config.use_adamw_for_hidden_optimizer:
+                    eval_base_optim_h = optax.adamw(learning_rate=current_h_lr, b1=0.9, b2=0.999, eps=1e-8)
+                else:
+                    eval_base_optim_h = optax.sgd(current_h_lr, momentum=config.hidden_momentum)
+                
+                # Apply clipping, similar to how final_optim_h_inference was constructed
+                eval_optim_h_steps = []
+                if config.h_grad_clip_norm is not None and config.h_grad_clip_norm > 0:
+                    # Define h_clipper if not already defined (e.g., if h_grad_clip_norm was only for training)
+                    # This h_clipper is the same one used for optim_h_inference's original definition.
+                    h_eval_clipper = optax.clip_by_global_norm(config.h_grad_clip_norm)
+                    eval_optim_h_steps.append(h_eval_clipper)
+                eval_optim_h_steps.append(eval_base_optim_h)
+                final_eval_optim_h_config = optax.chain(*eval_optim_h_steps)
+                
+                # Wrap in pxu.Optim
+                actual_optim_h_for_eval = pxu.Optim(lambda: final_eval_optim_h_config)
+            else:
+                # If no schedule for h, use the pre-configured optim_h_inference
+                actual_optim_h_for_eval = optim_h_inference
+
             pretext_metrics = eval_pretext_metrics(
                 val_loader, # Use validation loader
                 T_values=config.eval_inference_steps, # Use eval_inference_steps
                 use_corruption=config.use_corruption, 
                 corrupt_ratio=config.corrupt_ratio,
                 model=model, 
-                optim_h=optim_h, # <<< Use inference optimizer
+                optim_h=optim_h, # <<< Use the correctly configured optimizer for eval
                 optim_w=optim_w # <<< Pass optim_w
             )
             print(f"Validation Pretext Metrics: {pretext_metrics}")
@@ -1536,28 +1932,69 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
 
             # Initialize best_val_loss on the first validation run
             current_val_metric = pretext_metrics.get('full_mse', float('inf')) # <<< Use full_mse for early stopping
-            if best_val_loss == float('inf') and current_val_metric != float('inf'):
-                 best_val_loss = current_val_metric
-                 print(f"Initialized best_val_loss for early stopping with full_mse: {best_val_loss:.6f}")
+            if best_val_loss_for_overall_best_model == float('inf') and current_val_metric != float('inf'):
+                 best_val_loss_for_overall_best_model = current_val_metric
+                 print(f"Initialized best_val_loss_for_overall_best_model for early stopping with full_mse: {best_val_loss_for_overall_best_model:.6f}")
             
              # Early stopping check based on the chosen metric (e.g., masked_mse)
-            if config.use_early_stopping and best_val_loss != float('inf'): # Ensure best_val_loss is initialized
-                if current_val_metric < (best_val_loss - config.early_stopping_min_delta):
-                    print(f"Validation metric improved! {best_val_loss:.6f} -> {current_val_metric:.6f}")
-                    best_val_loss = current_val_metric
-                    epochs_without_improvement = 0
+            if config.use_early_stopping and best_val_loss_for_overall_best_model != float('inf'): # Ensure best_val_loss_for_overall_best_model is initialized
+                if current_val_metric < (best_val_loss_for_overall_best_model - config.early_stopping_min_delta):
+                    print(f"Overall best validation MSE improved! {best_val_loss_for_overall_best_model:.6f} -> {current_val_metric:.6f}")
+                    best_val_loss_for_overall_best_model = current_val_metric
+                    # epochs_without_improvement_early_stopping = 0 # This is now handled by the chosen metric's block
                     # Save the best model here if desired
+                    try:
+                        model_save_dir = "../results/models"
+                        os.makedirs(model_save_dir, exist_ok=True)
+                        # New filename format
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        model_filename = f"{effective_wandb_run_name}_epoch{epoch+1}_BESTVALmse{best_val_loss_for_overall_best_model:.6f}_{timestamp}.npz"
+                        model_save_path = os.path.join(model_save_dir, model_filename)
+                        
+                        # Save LayerParams (weights) and VodeParams (hidden states like h, u)
+                        pxu.save_params(model, model_save_path, filter=lambda x: isinstance(x, (pxnn.LayerParam, pxc.VodeParam)))
+                        print(f"Saved new overall best validation model to {model_save_path}")
+                        # Log as artifact to W&B
+                        # if wandb.run and wandb.run.mode != "disabled":
+                        #     model_artifact = wandb.Artifact(name=f"{effective_wandb_run_name}_best_model", type="model")
+                        #     model_artifact.add_file(model_save_path)
+                        #     wandb.run.log_artifact(model_artifact)
+                        #     print(f"Logged best model artifact to W&B: {model_artifact.name}")
+                    except Exception as e:
+                        print(f"Error saving model: {e}")
+                        import traceback
+                        traceback.print_exc()
                 else:
-                    epochs_without_improvement += 1
-                    print(f"No improvement in validation metric for {epochs_without_improvement} epochs (best: {best_val_loss:.6f})")
-                    if epochs_without_improvement >= config.early_stopping_patience:
-                        print(f"Early stopping triggered after {epoch+1} epochs!")
-                        early_stopped = True
-                        early_stop_reason = "Validation" # <<< Indicate reason
-                        early_stopped_epoch = epoch
-                        # Log final metrics before breaking
-                        run.log(epoch_metrics, step=epoch+1)
-                        break # Exit training loop
+                    # epochs_without_improvement_early_stopping += 1 # This is now handled by the chosen metric's block
+                    print(f"No improvement in validation metric for {epochs_without_improvement_early_stopping} epochs (best: {best_val_loss_for_overall_best_model:.6f})")
+            
+            # --- Early stopping based on Validation MSE (if configured) ---
+            if config.use_early_stopping and config.early_stopping_metric == "val_mse" and not training_nan_detected: # ensure not already stopped by NaN
+                if 'full_mse' in pretext_metrics and not np.isnan(pretext_metrics['full_mse']):
+                    current_val_mse_for_stopping = pretext_metrics['full_mse']
+                    
+                    if best_metric_for_early_stopping == float('inf'): # Initialize on first valid metric
+                        best_metric_for_early_stopping = current_val_mse_for_stopping
+                        print(f"Initialized best_metric_for_early_stopping (val_mse): {best_metric_for_early_stopping:.6f}")
+
+                    if current_val_mse_for_stopping < (best_metric_for_early_stopping - config.early_stopping_min_delta):
+                        print(f"Validation MSE for early stopping improved! {best_metric_for_early_stopping:.6f} -> {current_val_mse_for_stopping:.6f}")
+                        best_metric_for_early_stopping = current_val_mse_for_stopping
+                        epochs_without_improvement_early_stopping = 0
+                    else:
+                        epochs_without_improvement_early_stopping += 1
+                        print(f"No improvement in Validation MSE for early stopping for {epochs_without_improvement_early_stopping} epochs (best: {best_metric_for_early_stopping:.6f})")
+                        if epochs_without_improvement_early_stopping >= config.early_stopping_patience:
+                            print(f"Early stopping triggered on Validation MSE after {epoch+1} epochs!")
+                            early_stopped = True
+                            early_stop_reason = "ValidationMetric" # More specific reason
+                            early_stopped_epoch = epoch
+                            # Log metrics before breaking from the main loop (if not already logged)
+                            run.log(epoch_metrics, step=epoch+1)
+                            break # Break from the main epoch loop
+                else:
+                    print(f"Warning: Validation MSE ('full_mse') is NaN or not available at epoch {epoch+1}, cannot use for early stopping decision.")
+
         
         # Log metrics collected so far for this epoch (includes train loss, potentially val metrics)
         run.log(epoch_metrics, step=epoch+1)  # Use epoch+1 to start from step 1
@@ -1567,24 +2004,46 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         # Use the most recently calculated validation metric if available
         current_val_metric_for_recon = pretext_metrics.get('full_mse', float('inf')) 
 
-        # Trigger reconstruction based on interval OR significant improvement OR final epoch/stop
-        trigger_reconstruction = False
-        if (epoch + 1) % config.reconstruction_every_n_epochs == 0 and current_val_metric_for_recon < float('inf'):
-            trigger_reconstruction = True
-        elif best_val_loss != float('inf') and current_val_metric_for_recon < best_val_loss - 0.01: # Use same threshold as early stopping improvement check
-            trigger_reconstruction = True
+        # Trigger reconstruction based on interval OR significant improvement OR final epoch/stop OR MSE threshold
+        trigger_reconstruction_event = False
+        if ((epoch + 1) % config.reconstruction_every_n_epochs == 0):
+            trigger_reconstruction_event = True
+        # elif best_val_loss_for_overall_best_model != float('inf') and current_val_metric_for_recon < best_val_loss_for_overall_best_model - config.early_stopping_min_delta: 
+        #     trigger_reconstruction_event = True # This was for triggering on any val improvement, simplifying now
         elif epoch == config.epochs - 1: # Final epoch
-            trigger_reconstruction = True
+            trigger_reconstruction_event = True
         elif early_stopped and epoch == early_stopped_epoch: # After early stopping
-             trigger_reconstruction = True
+             trigger_reconstruction_event = True
+        elif (new_train_mse_milestone_reached_this_epoch and can_save_model_now): # New condition
+            trigger_reconstruction_event = True
+        # mse_threshold_met is no longer used here to trigger reconstruction
              
-        if trigger_reconstruction and not training_nan_detected:
-            print(f"Generating reconstructions for epoch {epoch+1} (Val Metric: {current_val_metric_for_recon:.6f})...")
+        if trigger_reconstruction_event and not training_nan_detected:
+            print(f"Generating reconstructions for epoch {epoch+1} (Current Val Metric for Recon: {current_val_metric_for_recon:.6f}, Train MSE: {avg_train_mse:.6f})...")
+            
+            # Determine the optimizer for hidden states for reconstruction visualization
+            # Similar logic as for pretext_metrics evaluation
+            if config.use_lr_schedule_h:
+                if config.use_adamw_for_hidden_optimizer:
+                    recon_base_optim_h = optax.adamw(learning_rate=current_h_lr, b1=0.9, b2=0.999, eps=1e-8)
+                else:
+                    recon_base_optim_h = optax.sgd(current_h_lr, momentum=config.hidden_momentum)
+                
+                recon_optim_h_steps = []
+                if config.h_grad_clip_norm is not None and config.h_grad_clip_norm > 0:
+                    h_recon_clipper = optax.clip_by_global_norm(config.h_grad_clip_norm)
+                    recon_optim_h_steps.append(h_recon_clipper)
+                recon_optim_h_steps.append(recon_base_optim_h)
+                final_recon_optim_h_config = optax.chain(*recon_optim_h_steps)
+                actual_optim_h_for_recon = pxu.Optim(lambda: final_recon_optim_h_config)
+            else:
+                actual_optim_h_for_recon = optim_h_inference
+
             vis_path, vis_logs = visualize_reconstruction(
                 model, 
                 model_config, 
-                optim_h, 
-                val_loader, 
+                optim_h=optim_h, # <<< Use the correctly configured optimizer for recon
+                dataloader=val_loader, 
                 config=config, 
                 wandb_run=run,
                 epoch=epoch+1,
@@ -1599,10 +2058,45 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         if early_stopped and epoch == early_stopped_epoch:
             break
     
-    # <<< DETERMINE FINAL STATUS >>>
-    if not early_stopped:
-        early_stop_reason = None # Completed normally
-    # If early_stopped is True, early_stop_reason is already set ('Validation' or 'NaN')
+    # --- Final Model Save Check (based on absolute improvement over best_metric_for_saving) ---
+    if can_save_model_now and not training_nan_detected: # Ensure saving is enabled and run wasn't a NaN failure
+        final_metric_value_at_run_end = float('inf')
+        metric_type_for_final_save = ""
+        # epoch is 0-indexed from the loop, so epoch + 1 is the last completed epoch number (1-indexed)
+        last_epoch_num_completed = epoch + 1 
+
+        current_final_train_mse = float('inf')
+        if 'epoch_metrics' in locals() and 'Losses/train_mse_avg' in epoch_metrics:
+            candidate_train_mse = epoch_metrics['Losses/train_mse_avg']
+            if not np.isnan(candidate_train_mse):
+                current_final_train_mse = candidate_train_mse
+
+        current_final_val_mse = float('inf')
+        if 'pretext_metrics' in locals() and 'full_mse' in pretext_metrics:
+            candidate_val_mse = pretext_metrics.get('full_mse', float('inf'))
+            if not np.isnan(candidate_val_mse):
+                current_final_val_mse = candidate_val_mse
+
+        if config.model_saving_metric == "train_mse":
+            final_metric_value_at_run_end = current_final_train_mse
+            metric_type_for_final_save = "trainmse"
+        elif config.model_saving_metric == "val_mse":
+            final_metric_value_at_run_end = current_final_val_mse
+            metric_type_for_final_save = "valmse"
+        
+        if metric_type_for_final_save and not np.isnan(final_metric_value_at_run_end) and final_metric_value_at_run_end < best_metric_for_saving:
+            print(f"INFO: End-of-run check. Final {metric_type_for_final_save} ({final_metric_value_at_run_end:.6f}) "
+                  f"is absolutely better than the best saved during run ({best_metric_for_saving:.6f}). "
+                  f"Saving final model.")
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            model_filename = f"{effective_wandb_run_name}_epoch{last_epoch_num_completed}_finalabs{metric_type_for_final_save}{final_metric_value_at_run_end:.6f}_{timestamp}.npz"
+            model_save_path = os.path.join("../results/models", model_filename)
+            os.makedirs("../results/models", exist_ok=True)
+            try:
+                pxu.save_params(model, model_save_path, filter=lambda x: isinstance(x, (pxnn.LayerParam, pxc.VodeParam)))
+                print(f"Saved final model (absolute improvement) to {model_save_path}")
+            except Exception as e:
+                print(f"Error saving final model (absolute improvement): {e}")
     
     # Create summary tables after training is complete
     if all_epochs_energy_data:
@@ -1652,20 +2146,20 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     
     # <<< DEBUG PRINT >>>
     print(f"DEBUG: Returning from run_experiment - final_mse: {final_avg_train_mse}, Type: {type(final_avg_train_mse)}, Reason: {early_stop_reason}")
-    # Ensure best_val_loss is defined even if validation never runs or fails
-    if 'best_val_loss' not in locals():
-        best_val_loss = float('inf')
+    # Ensure best_val_loss_for_overall_best_model is defined even if validation never runs or fails
+    if 'best_val_loss_for_overall_best_model' not in locals():
+        best_val_loss_for_overall_best_model = float('inf')
     # Ensure best_train_mse_this_run is defined even if training loop doesn't run (e.g. epochs=0)
     if 'best_train_mse_this_run' not in locals():
         best_train_mse_this_run = float('inf')
         
-    # Ensure best_val_loss is a Python float before returning
-    if hasattr(best_val_loss, 'item'): # Check if it's a JAX scalar or 0-dim array
-        best_val_loss = float(best_val_loss.item())
+    # Ensure best_val_loss_for_overall_best_model is a Python float before returning
+    if hasattr(best_val_loss_for_overall_best_model, 'item'): # Check if it's a JAX scalar or 0-dim array
+        best_val_loss_for_overall_best_model = float(best_val_loss_for_overall_best_model.item())
     else:
-        best_val_loss = float(best_val_loss) # Ensure it's a float otherwise
+        best_val_loss_for_overall_best_model = float(best_val_loss_for_overall_best_model) # Ensure it's a float otherwise
 
-    return best_val_loss, best_train_mse_this_run, final_avg_train_mse, early_stop_reason
+    return best_val_loss_for_overall_best_model, best_train_mse_this_run, final_avg_train_mse, early_stop_reason
 
 if __name__ == "__main__":
     cli_args = parse_args()
