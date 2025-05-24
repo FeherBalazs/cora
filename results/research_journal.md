@@ -472,8 +472,8 @@ Experiment:
       - Experiment with SSL + theta=10_000 + batch_size=500
         - epoch69_trainmse: 0.003560
         - nb1_bs500_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd80_epoch69_trainmse0.003560_20250524_120732.npz
-        - had to increase LR to starting 0.095 and steps to 40
-        - Vode 0 - Final Test Accuracy: 0.1823
+        - had to increase LR to starting 0.095
+        - Vode 0 - Final Test Accuracy: 0.1840
     - Block 2: 
       - epoch12_trainmse: 0.002394
       - Vode 0 - Final Test Accuracy: 0.2081
