@@ -339,14 +339,6 @@
     - Let's stop now and do the linear probing tests
 
 
-I have a potential contamination, because during eval the latents have the info from the eval set. although they are likely overwritten in the following 50,000 * 20 steps, we shall make sure this is not a serious issue. Now running exp, where we only eval when we reach below 0.008 and we do reconstruction and model saving as well. 
-  - model saving is now implemented and can do it based on val threshold. first test if we meaningfully achieve low val mse or if it was all contaminated in prior runs.
-  - Ok it seems, that there was contamination, because the val scores are now higher, and the reconstructions are less accurate. But it still reconstructs the large scale image which is good.
-  - Now one question is whether I need actually the SGD momentum from train to effectively eval and reconstruct. Let's try that. Because in the latest run I used the new setup wherbeby I use completely separate optimisers for eval and recon, not the one from train.
-  - Great, actually there is no issue if we use the same optim_h as for train we get the same low 0.004 MSE for val without contamination - so SGD momentum is carried over I guess? Or maybe it was just bad luck in the initial test?
-
-
-
 
 - Experiment: 
   - shuffling 
@@ -477,6 +469,11 @@ Experiment:
     - Block 1: 
       - epoch18_trainmse: 0.000436
       - Vode 0 - Final Test Accuracy: 0.2418
+      - Experiment with SSL + theta=10_000 + batch_size=500
+        - epoch69_trainmse: 0.003560
+        - nb1_bs500_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd80_epoch69_trainmse0.003560_20250524_120732.npz
+        - had to increase LR to starting 0.095 and steps to 40
+        - Vode 0 - Final Test Accuracy: 0.1823
     - Block 2: 
       - epoch12_trainmse: 0.002394
       - Vode 0 - Final Test Accuracy: 0.2081
@@ -492,13 +489,11 @@ Experiment:
     - oscillation reduction: lower learning rate from 0.0005 ro 0.0003
     - maybe need to revisit iPC
     - have to revisit latent resetting
-    - outsource hyperparam search to cursor - before that merge the liner probing script to main, and experiment on new branch
+    - outsource hyperparam search - before that merge the liner probing script to main, and experiment on new branch
 
 Criticism:
   - normal ViT with the same architecture as my 6 block 1 head, 64 dim model reaches 76% accuracy in 64 epochs
-  - I think this means it has the representational capacity for good features. Good enough for this classification.
-  - it uses BP and has non-linearity
-  - Can it be that even though it has this high accuracy the learned features are still better in the PC model? I cannot really show evidence to that.
+  - this means it has the representational capacity for good features. Good enough for this classification.
 
 Ideas to test:
  - experiment with regularisation, especially L1 and L2 on h
@@ -507,7 +502,7 @@ Ideas to test:
  - experiment with muzero like regularisation as planned. start small. commit first initial probing results.
 
 Current state:
-  - even with the close to all time best final train mse 0.004531 the linear probing results are merely 0.18 for vode_0
+  - for 6block model even with the close to all time best final train mse 0.004531 the linear probing results are merely 0.18 for vode_0
   - something might be off with the feature creation, what if we have some catastrophic collapse of the hidden states? when I set the actual LR that was used when the model was extracted, then the image generated gets very bad. the reference video is generated after the feature extraction, so that proces already messed with the latents significantly. So,  I mean, if we reset h during training, and if we did that here as well, that is the only way we can ensure this does not happen. but I have not experimented with that setup for a long time. but, that setup could also ensure perhaps that we get better higher latents? it might force the network, to always try to find good representations from scratch, and not just rely on the weights. 
 
 
@@ -516,6 +511,9 @@ Commands:
 
 Block 1:
  python linear_probe.py --config_name 1block --feature_layer_vode_indices "0" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.09351  --model_path ../results/models/nb1_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e150_sd80_epoch18_finalabstrainmse0.000436_20250524_100129.npz
+
+  python linear_probe.py --config_name 1block --feature_layer_vode_indices "0" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.048514  --model_path ../results/models/nb1_bs500_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd80_epoch69_trainmse0.003560_20250524_120732.npz
+ 
 
 Block 2:
  python linear_probe.py --config_name 2block --feature_layer_vode_indices "0" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.094372 --model_path ../results/models/nb2_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e150_sd80_epoch12_trainmse0.002394_20250524_100558.npz
