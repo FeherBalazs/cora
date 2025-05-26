@@ -458,6 +458,30 @@
   - Interpretation:
     - stop this line of experiments for now - refocus effort on linear probing and what affects linear probing scores
 
+- Experiment:
+  - Best 6block settings with data augmentation
+  - `use_ssl_augmentations`: with gaussian blur, colorjitter, etc.
+  - `theta = 10_000`
+  - `seed_candidates = [80, 90, 10, 20, 30, 40, 50, 60, 70]`
+  - Run: [https://wandb.ai/neural-machines/pc-arch-search-festive-jones](https://wandb.ai/neural-machines/pc-arch-search-festive-jones)
+  - Results:
+    - new lowest [so far, still running]: trainmse0.003547:
+      - nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250526_155633.npz
+      - Linear probe results: 
+        Vode Combination: 7, Test Accuracy: 0.2563, Num Features: 64
+        Vode Combination: 0, Test Accuracy: 0.1929, Num Features: 48
+        Vode Combination: 6, Test Accuracy: 0.1902, Num Features: 64
+        Vode Combination: 5, Test Accuracy: 0.1592, Num Features: 64
+        Vode Combination: 4, Test Accuracy: 0.1589, Num Features: 64
+        Vode Combination: 2, Test Accuracy: 0.1579, Num Features: 64
+        Vode Combination: 3, Test Accuracy: 0.1296, Num Features: 64
+        Vode Combination: 1, Test Accuracy: 0.1278, Num Features: 64
+        - Combination:
+          - Vodes _concat_0_1_2_3_4_5_6_7 - Final Test Accuracy: 0.2322
+          - Vodes _concat_0_7 - Final Test Accuracy: 0.2984
+          - Vodes _concat_0_6_7 - Final Test Accuracy: 0.3051
+          - Vodes _concat_0_1_2_3_4_5_6_7 - Final Test Accuracy: 0.2237
+
 
 
 Experiment:
@@ -480,6 +504,8 @@ Experiment:
     - Block 3:
       - epoch19_trainmse: 0.002849
       - Vode 0 - Final Test Accuracy: 0.1971
+    - Block 6:
+      - Vode 0 - Final Test Accuracy: 0.1664
 
 
 
@@ -496,9 +522,13 @@ Criticism:
   - this means it has the representational capacity for good features. Good enough for this classification.
 
 Ideas to test:
+ - validate if latents are extracted correctly for linear probing. when we do 200 batches, we are not averageing the latents right?
+ - can we do training like starting from 256 batches, then reduce to 128, 64, 32, 16, 8, 4, 2, 1? would it improve reconstruction and linear probing results?
+ - what is the effect of decreasing batch size?
  - experiment with regularisation, especially L1 and L2 on h
  - add dropout
  - lower weight updates to 0.0001
+ - experiment with converging up to a certain energy during inference, instead for a fixed number of steps
  - experiment with muzero like regularisation as planned. start small. commit first initial probing results.
 
 Current state:
@@ -507,7 +537,17 @@ Current state:
 
 
 Commands:
- python linear_probe.py --config_name 6block --feature_layer_vode_indices "0,6,7" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.048514  --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd80_epoch69_trainmse0.004531_20250523_173804.npz
+Block6:
+
+ python linear_probe.py --config_name 6block --feature_layer_vode_indices "0,1,2,3,4,5,6,7" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.048514  --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd80_epoch69_trainmse0.004531_20250523_173804.npz
+
+  python linear_probe.py --config_name 6block --feature_layer_vode_indices "0" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.095  --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250526_155633.npz
+
+  python linear_probe.py --config_name 6block --probe_inference_steps 20 --probe_h_lr 0.095 --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250526_155633.npz
+
+  python linear_probe.py --config_name 6block --feature_layer_vode_indices "0,1,2,3,4,5,6,7" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.095 --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250526_155633.npz
+
+  python linear_probe.py --config_name 6block --feature_layer_vode_indices "0, 6, 7" --concatenate_features True --probe_inference_steps 100 --probe_h_lr 0.095 --seed 10 --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250526_155633.npz
 
 Block 1:
  python linear_probe.py --config_name 1block --feature_layer_vode_indices "0" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.09351  --model_path ../results/models/nb1_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e150_sd80_epoch18_finalabstrainmse0.000436_20250524_100129.npz
