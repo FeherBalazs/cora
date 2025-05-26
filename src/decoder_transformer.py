@@ -236,85 +236,6 @@ class TransformerDecoder(pxc.EnergyModule):
             self.vodes[-1].set("h", y)
         
         return self.vodes[-1].get("u")  # Return prediction
-
-
-# class TransformerDecoder(pxc.EnergyModule):
-#     def __init__(self, config: TransformerConfig) -> None:
-#         super().__init__()
-#         self.config = px.static(config)
-        
-#         # Initialize random key
-#         key = jax.random.PRNGKey(0)
-
-#         print(f"Model initialized with {self.config.num_patches} patches, each with dimension {self.config.patch_dim}")
-#         print(f"Model initialized with {self.config.hidden_size} hidden_size, {self.config.mlp_hidden_dim} mlp_hidden_dim")
-#         print(f"Using {'video' if self.config.is_video else 'image'} mode with shape {self.config.image_shape}")
-
-#         # Define Vodes for predictive coding
-#         # Top-level latent Vode
-#         self.vodes = [pxc.Vode(
-#             energy_fn=None,
-#             ruleset={
-#                 pxc.STATUS.INIT: ("h, u <- u:to_init",),
-#                 },
-#             tforms={
-#                 "to_init": lambda n, k, v, rkg: jax.random.normal(
-#                     px.RKG(), (config.hidden_size,)
-#                 ) * 0.01 if config.use_noise else jnp.zeros((config.hidden_size,))
-#             }
-#         )]
-        
-#         # Create Vodes for each transformer block output except final one where we want different ruleset
-#         for _ in range(config.num_blocks):
-#             self.vodes.append(pxc.Vode(
-#                 ruleset={
-#                     STATUS_FORWARD: ("h -> u",)}
-#             ))
-
-#         # Add final output Vode (sensory layer) - shape depends on whether we're handling video or images
-#         self.vodes.append(pxc.Vode())
-        
-#         # Freeze the output Vode's hidden state
-#         self.vodes[-1].h.frozen = True  
-
-#         # DEBUG: Try FC blocks instead of transformer blocks to see if it works better for reconstruction
-#         self.fc_blocks = []
-#         for i in range(config.num_blocks):
-#             self.fc_blocks.append(
-#                 pxnn.Linear(
-#                     in_features=config.hidden_size,
-#                     out_features=config.hidden_size
-#                 )
-#             )
-
-#         # Add output projection layer to map from hidden_size back to output_dim
-#         self.output_projection = pxnn.Linear(in_features=config.hidden_size, out_features=32 * 32 * 3)
-        
-    
-#     def __call__(self, y: jax.Array | None = None):        
-#         # Get the initial sequence of patch embeddings from Vode 0
-#         x = self.vodes[0](jnp.empty(()))
-
-#         # Process through FC blocks
-#         for i, block in enumerate(self.fc_blocks):
-#             x_after_block = block(x) 
-#             x = self.config.act_fn(x_after_block) 
-#             x = self.vodes[i+1](x) # Apply Vode
-
-#         # Apply output projection layer
-#         x = self.output_projection(x)
-        
-#         # Reshape to match the expected image dimensions (channels, height, width)
-#         x = jnp.reshape(x, (3, 32, 32))
-        
-#         # Apply sensory Vode
-#         x = self.vodes[-1](x)
-        
-#         # Set target if provided
-#         if y is not None:
-#             self.vodes[-1].set("h", y)
-        
-#         return self.vodes[-1].get("u")  # Return prediction
     
 
     def unpatchify(self, x, patch_size, image_size, channel_size):
@@ -716,41 +637,6 @@ def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.
     return avg_train_w_energy, avg_train_mse, h_grad, w_grad
 
 
-# @pxf.jit(static_argnums=0)
-def eval_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim):
-    model.eval()
-    optim_h.clear()
-    optim_h.init(pxu.M_hasnot(pxc.VodeParam, frozen=True)(model))
-
-    inference_step = pxf.value_and_grad(pxu.M_hasnot(pxc.VodeParam, frozen=True).to([False, True]), has_aux=True)(
-        energy
-    )
-
-    # Init step
-    with pxu.step(model, clear_params=pxc.VodeParam.Cache):
-        forward(x, model=model)
-
-    # Inference steps (then we start to refine our guess)
-    for t in range(T):
-        with pxu.step(model, clear_params=pxc.VodeParam.Cache):
-            (h_energy, y_), h_grad = inference_step(model=model)
-            print("h_energy:", h_energy, "at step t:", t)
-
-        optim_h.step(model, h_grad["model"])
-    
-    optim_h.clear()
-
-    # Final step (we make our final guess with our refined activations per layer)
-    # with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
-    # We do not clear the cache here as we want to keep the energy for logging
-    with pxu.step(model, STATUS_FORWARD):
-        x_hat = forward(None, model=model)
-
-    loss = jnp.square(x_hat.flatten() - x.flatten()).mean()
-
-    return loss, x_hat
-
-
 def eval(dl, T, *, model: TransformerDecoder, optim_h: pxu.Optim):
     losses = []
 
@@ -762,6 +648,7 @@ def eval(dl, T, *, model: TransformerDecoder, optim_h: pxu.Optim):
     return jnp.mean(jnp.array(losses))
 
 
+# @pxf.jit(static_argnums=0)
 def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, target_T_values: List[int], x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim):
     """
     Runs inference on a batch (x), potentially corrupted, and returns the final loss
