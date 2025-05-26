@@ -690,9 +690,15 @@ def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.
         if current_time - last_postfix_update_time >= 1.0:
             metrics_to_display = {}
             if batch_train_mses:
-                metrics_to_display['MSE'] = f'{batch_train_mses[-1]:.4f}'
+                # Calculate average of last 100 (or fewer if not enough entries)
+                mse_to_avg = batch_train_mses[-100:]
+                avg_recent_mse = jnp.mean(jnp.array(mse_to_avg))
+                metrics_to_display['Avg_MSE_100'] = f'{avg_recent_mse:.4f}'
             if batch_w_energies:
-                metrics_to_display['Energy'] = f'{batch_w_energies[-1]:.4f}'
+                # Calculate average of last 100 (or fewer if not enough entries)
+                energy_to_avg = batch_w_energies[-100:]
+                avg_recent_energy = jnp.mean(jnp.array(energy_to_avg))
+                metrics_to_display['Avg_Energy_100'] = f'{avg_recent_energy:.4f}'
             
             if metrics_to_display: # Only call set_postfix if there are metrics
                 pbar.set_postfix(metrics_to_display)
