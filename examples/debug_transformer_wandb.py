@@ -500,7 +500,7 @@ MODEL_CONFIGS = {
         mlp_ratio=4.0,
         patch_size=4,
         axes_dim=[16, 16],
-        theta=100,
+        theta=10_000,
         act_fn=jax.nn.swish,
         # Status init settings
         use_status_init_in_training=False,
@@ -544,10 +544,10 @@ MODEL_CONFIGS = {
         lr_schedule_min_lr_factor=0.5, # Default factor
         # use_lr_schedule was True, translating to:
         use_lr_schedule_w=False, # Weights fixed
-        use_lr_schedule_h=True,   # Hidden scheduled
-        use_ssl_augmentations=True, # Enable SSL augmentations
+        use_lr_schedule_h=False,   # Hidden scheduled
+        use_ssl_augmentations=False, # Enable SSL augmentations
         early_stopping_metric="val_mse", # Default early stopping metric
-        use_cifar10_norm=True, # Default to CIFAR-10 specific norm
+        use_cifar10_norm=False, # Default to CIFAR-10 specific norm
         save_model_train_mse_threshold=0.006,
         model_saving_metric="train_mse",
     )
@@ -695,13 +695,13 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
     if use_ssl_augmentations: # For now, this flag will enable the ViT script's augmentations
         print("Using data augmentations from vision_transformer_script.py for training.")
         train_transform_list = [
-            transforms.RandomCrop(32, padding=4),
-            transforms.Resize((height, width)), # Ensure this matches expected input if different from crop
-            transforms.RandomHorizontalFlip(),
-            # transforms.RandomResizedCrop(size=32, scale=(0.2, 1.0)), # SSL Aug: Commented out
-            # transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1), # SSL Aug: Commented out
-            # transforms.GaussianBlur(kernel_size=3), # SSL Aug: Commented out
-        transforms.ToTensor(),
+            # transforms.RandomCrop(32, padding=4),
+            # transforms.Resize((height, width)), # Ensure this matches expected input if different from crop
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomResizedCrop(size=32, scale=(0.2, 1.0)), # SSL Aug: Commented out
+            transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1), # SSL Aug: Commented out
+            transforms.GaussianBlur(kernel_size=3), # SSL Aug: Commented out
+            transforms.ToTensor(),
             transforms.Normalize(mean, std) # Use selected normalization
         ]
     else:
@@ -852,7 +852,8 @@ def visualize_reconstruction(model, model_config, optim_h, dataloader, config, w
     # Extract static info from config
     image_shape = model.config.image_shape
     num_channels = image_shape[0]
-    num_images = config.num_images
+    # num_images = config.num_images # This is the requested number
+    requested_num_images = config.num_images # Rename for clarity
     use_corruption = config.use_corruption
     corrupt_ratio = config.corrupt_ratio
     T_values = config.reconstruction_steps # Use T_values from config
@@ -866,18 +867,24 @@ def visualize_reconstruction(model, model_config, optim_h, dataloader, config, w
     reconstruction_mses = [] # New: Store MSE for each reconstruction
     dataloader_iter = iter(dataloader)
 
+    actual_num_images_visualized = 0 # Counter for images actually visualized
+
     # Get the single batch
     try:
-        x, label = next(dataloader_iter)
-        x = jnp.array(x)
+        x_batch, label_batch = next(dataloader_iter) # x_batch.shape[0] is batch_size
+        x_batch = jnp.array(x_batch)
+
+        # Determine how many images to actually visualize from this single batch
+        num_to_visualize_from_this_batch = min(requested_num_images, x_batch.shape[0])
 
         # Process each image in the batch separately
-        for i in range(num_images):
-            single_x = x[i:i+1]
+        for i in range(num_to_visualize_from_this_batch): # Modified loop range
+            actual_num_images_visualized += 1
+            single_x = x_batch[i:i+1] # This is now safe
             orig_images.append(jnp.reshape(single_x[0], image_shape))
             
-            if hasattr(label, 'item'):
-                labels_list.append(label[i].item() if len(label.shape) > 0 else label.item())
+            if hasattr(label_batch, 'item'): # Use label_batch here
+                labels_list.append(label_batch[i].item() if len(label_batch.shape) > 0 else label_batch.item())
             else:
                 labels_list.append(None)
                 
@@ -923,15 +930,20 @@ def visualize_reconstruction(model, model_config, optim_h, dataloader, config, w
                         recon_images_at_T[T_step].append(x_hat_single)
 
     except StopIteration:
-        print("Warning: No data available in dataloader")
-        return None, {} # Return None for path, empty dict for logs
+        print("Warning: No data available in dataloader for visualization.")
+        # actual_num_images_visualized will remain 0
     
     # --- Create Visualizations based on config ---
     final_path = None
     combined_log_dict = {}
 
+    if actual_num_images_visualized == 0: # Check if any images were processed
+        print("No images were visualized from the batch.")
+        return None, {}
+
+
     # --- Process and log inference gradients ---
-    if all_inference_grads:
+    if all_inference_grads: # This list will have actual_num_images_visualized elements
         print("Logging inference gradients...")
         # Log grads for the first image only for simplicity
         first_image_inference_grads = all_inference_grads[0]
@@ -981,7 +993,7 @@ def visualize_reconstruction(model, model_config, optim_h, dataloader, config, w
             orig_images=orig_images,
             masked_images=masked_images_list,
             labels_list=labels_list,
-            num_images=num_images,
+            num_images=actual_num_images_visualized, # Pass the actual number processed
             image_shape=image_shape,
             wandb_run=wandb_run,
             epoch=epoch,
@@ -992,7 +1004,7 @@ def visualize_reconstruction(model, model_config, optim_h, dataloader, config, w
 
     # Create video if requested
     if config.save_reconstruction_video:
-        if not all_reconstruction_frames:
+        if not all_reconstruction_frames: # This list will have actual_num_images_visualized items
             print("Warning: No reconstruction frames generated for video.")
         else:
             video_path, video_log_dict = create_reconstruction_video(
@@ -1000,7 +1012,7 @@ def visualize_reconstruction(model, model_config, optim_h, dataloader, config, w
                 orig_images=orig_images,
                 masked_images=masked_images_list, # Pass masked images
                 labels_list=labels_list,
-                num_images=num_images,
+                num_images=actual_num_images_visualized, # Pass the actual number processed
                 image_shape=image_shape,
                 wandb_run=wandb_run,
                 epoch=epoch,
@@ -1586,9 +1598,9 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         use_status_init_in_training=config.use_status_init_in_training,
         use_status_init_in_unmasking=config.use_status_init_in_unmasking,
         update_weights_every_inference_step=config.update_weights_every_inference_step,
-        use_vode_state_layernorm=config.use_vode_state_layernorm, # Pass through
-        use_vode_grad_norm=config.use_vode_grad_norm,             # Pass through
-        vode_grad_norm_target=config.vode_grad_norm_target        # Pass through
+        use_vode_state_layernorm=config.use_vode_state_layernorm, # New
+        use_vode_grad_norm=config.use_vode_grad_norm,             # New
+        vode_grad_norm_target=config.vode_grad_norm_target        # New
     )
     
     print(f"Creating debug dataloaders for CIFAR-10...")

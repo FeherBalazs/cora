@@ -16,11 +16,12 @@ def perform_hyperparameter_search():
     # Fixed overrides: Non-searched parameters, taking cues from the "6block" base
     fixed_overrides = {
         "epochs": 75,
-        "theta": 100,
-        "use_ssl_augmentations": False,
+        "theta": 10_000,
+        "use_ssl_augmentations": True,
         "use_cifar10_norm": False,
-        "num_images": 10,
+        "num_images": 3,
         "test_subset": 200,
+        "train_subset": 50000,
         "peak_lr_weights": 0.001,
         "hidden_lr_inference": 0.095,
         "reconstruction_every_n_epochs": 75,
@@ -38,7 +39,7 @@ def perform_hyperparameter_search():
         "early_stopping_patience": 50,
         "early_stopping_min_delta": 0.001,
         "early_stopping_metric": "train_mse",
-        "save_model_train_mse_threshold": 0.009,
+        "save_model_train_mse_threshold": 0.01,
         "model_saving_metric": "train_mse",
         
         "use_vode_grad_norm": False,
@@ -66,7 +67,7 @@ def perform_hyperparameter_search():
     inference_lr_scale_base_candidates = [1.25]
     hidden_momentum_candidates = [0.4]
     h_grad_clip_norm_candidates = [2000]
-    seed_candidates = [80]
+    seed_candidates = [10]
     inference_steps_candidates = [20]
     warmup_steps_candidates = [0]
     w_grad_clip_norm_candidates = [500.0]
