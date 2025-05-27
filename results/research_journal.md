@@ -470,19 +470,23 @@
     - Also a new lowest train MSE with seed 10: 0.003547:
       - nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250526_155633.npz
       - Linear probe results: 
-        Vode Combination: 7, Test Accuracy: 0.2563, Num Features: 64
-        Vode Combination: 0, Test Accuracy: 0.1929, Num Features: 48
-        Vode Combination: 6, Test Accuracy: 0.1902, Num Features: 64
-        Vode Combination: 5, Test Accuracy: 0.1592, Num Features: 64
-        Vode Combination: 4, Test Accuracy: 0.1589, Num Features: 64
-        Vode Combination: 2, Test Accuracy: 0.1579, Num Features: 64
-        Vode Combination: 3, Test Accuracy: 0.1296, Num Features: 64
-        Vode Combination: 1, Test Accuracy: 0.1278, Num Features: 64
+        Vode Combination: 2, Test Accuracy: 0.2920, Num Features: 64
+        Vode Combination: 3, Test Accuracy: 0.2906, Num Features: 64
+        Vode Combination: 5, Test Accuracy: 0.2900, Num Features: 64
+        Vode Combination: 7, Test Accuracy: 0.2900, Num Features: 64
+        Vode Combination: 4, Test Accuracy: 0.2898, Num Features: 64
+        Vode Combination: 6, Test Accuracy: 0.2898, Num Features: 64
+        Vode Combination: 1, Test Accuracy: 0.2890, Num Features: 64
+        Vode Combination: 0, Test Accuracy: 0.2795, Num Features: 48
         - Combination:
+          - Vode Combination: _concat_1_4_7, Test Accuracy: 0.3104, Num Features: 192
+            - also tried a little grid search with probe_lr: 0.1, 0.01, 0.0001 - they all slightly dropped accuracy so keeping the default for now: 0.001
+          - Vode Combination: _concat_0_2_4_7, Test Accuracy: 0.3083, Num Features: 240
+          - Vode Combination: _concat_2_3_5_7, Test Accuracy: 0.3078, Num Features: 256
+          - Vode Combination: _concat_2_3_5, Test Accuracy: 0.3022, Num Features: 192
           - Vodes _concat_0_1_2_3_4_5_6_7 - Final Test Accuracy: 0.2322
           - Vodes _concat_0_7 - Final Test Accuracy: 0.2984
           - Vodes _concat_0_6_7 - Final Test Accuracy: 0.3051
-          - Vodes _concat_0_1_2_3_4_5_6_7 - Final Test Accuracy: 0.2237
   - Interpretations and next steps:
     - better MSE and/or added data augmentation and theta increased linear probing results, with best combined accuracy of 0.3051
     - this is still low but shows the promise of using data augmentations
@@ -499,11 +503,6 @@ Experiment:
     - Block 1: 
       - epoch18_trainmse: 0.000436
       - Vode 0 - Final Test Accuracy: 0.2418
-      - Experiment with SSL + theta=10_000 + batch_size=500
-        - epoch69_trainmse: 0.003560
-        - nb1_bs500_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd80_epoch69_trainmse0.003560_20250524_120732.npz
-        - had to increase LR to starting 0.095
-        - Vode 0 - Final Test Accuracy: 0.1840
     - Block 2: 
       - epoch12_trainmse: 0.002394
       - Vode 0 - Final Test Accuracy: 0.2081
@@ -512,10 +511,13 @@ Experiment:
       - Vode 0 - Final Test Accuracy: 0.1971
     - Block 6:
       - Vode 0 - Final Test Accuracy: 0.1664
+  - Interpretation and next steps:
+    - It seems like with increasing depth the top latent generates less and less separable features.
 
 
 
 - Try next: 
+  - run validation test for block 6 setup - then start refactoring the code to make it simpler - then add linear probing feature and test - then do regularisation tomorrow
   - Get back to block1 - and iterate quicly with linear probing as direct feedback on how data augmentation, and regularisation can improve representations; I could also experiment faster with more hidden dim and num heads
   - Block6:
     - oscillation reduction: lower learning rate from 0.0005 ro 0.0003
@@ -528,9 +530,8 @@ Criticism:
   - this means it has the representational capacity for good features. Good enough for this classification.
 
 Ideas to test:
- - validate if latents are extracted correctly for linear probing. when we do 200 batches, we are not averageing the latents right?
- - can we do training like starting from 256 batches, then reduce to 128, 64, 32, 16, 8, 4, 2, 1? would it improve reconstruction and linear probing results?
- - what is the effect of decreasing batch size?
+ - validate if latents are extracted correctly for linear probing
+ - what is the effect of decreasing batch size? can we do training like starting from 256 batches, then reduce to 128, 64, 32, 16, 8, 4, 2, 1? would it improve reconstruction and linear probing results?
  - experiment with regularisation, especially L1 and L2 on h
  - add dropout
  - lower weight updates to 0.0001
@@ -549,11 +550,21 @@ Block6:
 
   python linear_probe.py --config_name 6block --feature_layer_vode_indices "0" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.095  --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250526_155633.npz
 
+    python linear_probe.py --config_name 6block --feature_layer_vode_indices "0" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.095  --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250527_180210.npz
+
   python linear_probe.py --config_name 6block --probe_inference_steps 20 --probe_h_lr 0.095 --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250526_155633.npz
 
   python linear_probe.py --config_name 6block --feature_layer_vode_indices "0,1,2,3,4,5,6,7" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.095 --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250526_155633.npz
 
-  python linear_probe.py --config_name 6block --feature_layer_vode_indices "0, 6, 7" --concatenate_features True --probe_inference_steps 100 --probe_h_lr 0.095 --seed 10 --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250526_155633.npz
+  python linear_probe.py --config_name 6block --feature_layer_vode_indices "0, 6, 7" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.095 --seed 10 --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250526_155633.npz
+
+  python linear_probe.py --config_name 6block --feature_layer_vode_indices "1, 4, 7" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.095 --seed 10 --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250526_155633.npz
+
+  python linear_probe.py --config_name 6block --feature_layer_vode_indices "0, 2, 4, 7" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.095 --seed 10 --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250526_155633.npz
+
+  python linear_probe.py --config_name 6block --feature_layer_vode_indices "2, 3, 5, 7" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.095 --seed 10 --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250526_155633.npz
+
+  python linear_probe.py --config_name 6block --feature_layer_vode_indices "2, 3, 5" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.095 --seed 10 --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250526_155633.npz
 
 Block 1:
  python linear_probe.py --config_name 1block --feature_layer_vode_indices "0" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.09351  --model_path ../results/models/nb1_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e150_sd80_epoch18_finalabstrainmse0.000436_20250524_100129.npz
