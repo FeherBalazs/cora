@@ -465,7 +465,9 @@
   - `seed_candidates = [80, 90, 10, 20, 30, 40, 50, 60, 70]`
   - Run: [https://wandb.ai/neural-machines/pc-arch-search-festive-jones](https://wandb.ai/neural-machines/pc-arch-search-festive-jones)
   - Results:
-    - new lowest [so far, still running]: trainmse0.003547:
+    - hyperparam_search_results_6block_20250527_003033.txt
+    - Only one seed diverged all the rest nicely converged, most of them reachnig below or around 0.008 train and val MSE
+    - Also a new lowest train MSE with seed 10: 0.003547:
       - nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250526_155633.npz
       - Linear probe results: 
         Vode Combination: 7, Test Accuracy: 0.2563, Num Features: 64
@@ -481,6 +483,10 @@
           - Vodes _concat_0_7 - Final Test Accuracy: 0.2984
           - Vodes _concat_0_6_7 - Final Test Accuracy: 0.3051
           - Vodes _concat_0_1_2_3_4_5_6_7 - Final Test Accuracy: 0.2237
+  - Interpretations and next steps:
+    - better MSE and/or added data augmentation and theta increased linear probing results, with best combined accuracy of 0.3051
+    - this is still low but shows the promise of using data augmentations
+    - this is still based on using purely MSE 
 
 
 
