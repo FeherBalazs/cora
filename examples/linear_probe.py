@@ -9,6 +9,7 @@ import pcx.functional as pxf
 import pcx.utils as pxu
 import pcx.nn as pxnn
 import pcx.predictive_coding as pxc
+from pcx.core._random import RKG # Import RKG for seeding
 from debug_transformer_wandb import MODEL_CONFIGS, ModelConfig # To get config definitions
 from src.decoder_transformer import (
     TransformerDecoder, TransformerConfig, forward, energy, 
@@ -192,6 +193,11 @@ def create_reconstruction_video(all_reconstruction_frames, orig_images, masked_i
 def main():
     args = parse_args()
 
+    # Seed pcx.RKG for reproducibility, matching the training seed if possible
+    # The user should pass the correct seed via --seed argument for the specific model loaded.
+    RKG.seed(args.seed)
+    print(f"Global pcx.RKG seeded with: {args.seed}")
+
     print("--- Linear Probing Setup ---")
     print(f"Loading pretrained model from: {args.model_path}")
     print(f"Using base config: {args.config_name}")
@@ -342,20 +348,11 @@ def main():
     # Determine effective h_lr for feature extraction
     # Priority: CLI arg -> SSL model's peak_lr_hidden (if schedule was off) / current LR (if schedule on) -> default 0.055
     ssl_model_peak_lr_hidden = base_model_config_obj.peak_lr_hidden
-    ssl_model_hidden_lr_inference = base_model_config_obj.hidden_lr_inference # Fallback if other options are not clear
 
     # Try to get the learning rate that would have been active at the END of SSL pretraining if a schedule was used.
     # This is a rough approximation if total_train_steps isn't perfectly known or if model saved mid-epoch.
     effective_h_lr_from_ssl = ssl_model_peak_lr_hidden # Default to peak if no schedule
-    if base_model_config_obj.use_lr_schedule_h:
-        # Recreate the schedule to get the final LR. Needs total_train_steps from pretraining.
-        # This info isn't directly in ModelConfig. Assuming it trained for full base_model_config_obj.epochs.
-        # This is an approximation.
-        # For simplicity, if schedule was used, and no CLI override, let's just use the base peak_lr_hidden
-        # or a new default, as accurately recreating the final scheduled LR is complex here.
-        # A better approach would be to save the final LR with the model.
-        # For now, we'll prioritize CLI, then a sensible default, then the model's peak_lr_hidden.
-        pass # Using peak_lr_hidden as a proxy if schedule was on and no CLI override for now.
+
 
     if args.probe_h_lr is not None:
         h_lr_for_extraction = args.probe_h_lr
@@ -631,6 +628,7 @@ def main():
 
     # --- Feature Extraction and Linear Probing Loop ---
     all_probe_results = []
+    epsilon = 1e-7 # For numerical stability
 
     # Determine which Vode indices to run the probe for
     if args.feature_layer_vode_indices is not None:
@@ -668,6 +666,25 @@ def main():
         num_features = x_train.shape[1]
         print(f"Number of features for concatenated Vodes {vode_str_for_print}: {num_features}")
         
+        # --- Feature Normalization ---
+        print("Normalizing concatenated features...")
+        # Convert to NumPy for mean/std calculation if they are Torch tensors
+        x_train_np = x_train.numpy() if hasattr(x_train, 'numpy') else np.array(x_train)
+        x_test_np = x_test.numpy() if hasattr(x_test, 'numpy') else np.array(x_test)
+
+        train_mean = np.mean(x_train_np, axis=0, keepdims=True)
+        train_std = np.std(x_train_np, axis=0, keepdims=True)
+        
+
+        x_train_normalized_np = (x_train_np - train_mean) / (train_std + epsilon)
+        x_test_normalized_np = (x_test_np - train_mean) / (train_std + epsilon) # Use train stats
+        
+        # Convert back to Torch tensors for DataLoader
+        x_train_normalized = torch.from_numpy(x_train_normalized_np).float()
+        x_test_normalized = torch.from_numpy(x_test_normalized_np).float()
+        print("Concatenated features normalized.")
+        # --- End Feature Normalization ---
+
         # Initialize linear classifier parameters (W, b)
         key_probe_init, _ = jax.random.split(jax.random.PRNGKey(args.seed))
         # Glorot/Xavier uniform initialization for weights
@@ -681,7 +698,8 @@ def main():
         probe_opt_state = probe_optimizer.init(probe_params)
 
         # Convert to TensorDataset for DataLoader
-        probe_train_dataset = TensorDataset(x_train, y_train)
+        # Use normalized features
+        probe_train_dataset = TensorDataset(x_train_normalized, y_train)
         probe_train_loader = DataLoader(probe_train_dataset, batch_size=args.probe_batch_size, shuffle=True)
 
         print(f"Training linear probe for Vodes {vode_str_for_print} for {args.probe_epochs} epochs...")
@@ -708,9 +726,10 @@ def main():
             current_train_acc = epoch_train_correct / epoch_train_total
             
             # Evaluate on test set
-            x_test_jnp = jnp.array(x_test.numpy())
+            # Use normalized test features
+            x_test_jnp_normalized = jnp.array(x_test_normalized.numpy()) # Ensure JAX array
             y_test_one_hot = jax.nn.one_hot(jnp.array(y_test.numpy()), 10)
-            current_test_acc = accuracy(probe_params, x_test_jnp, y_test_one_hot).item()
+            current_test_acc = accuracy(probe_params, x_test_jnp_normalized, y_test_one_hot).item()
             best_test_acc_concat = max(best_test_acc_concat, current_test_acc)
 
             print(f"Vodes {vode_str_for_print} - Probe Epoch {epoch+1}/{args.probe_epochs} - Train Loss: {avg_epoch_train_loss:.4f}, Train Acc: {current_train_acc:.4f}, Test Acc: {current_test_acc:.4f}")
@@ -738,6 +757,23 @@ def main():
             num_features = x_train.shape[1]
             print(f"Number of features for Vode {current_vode_idx}: {num_features}")
 
+            # --- Feature Normalization (for individual Vode) ---
+            print(f"Normalizing features for Vode {current_vode_idx}...")
+            x_train_np_indiv = x_train.numpy() if hasattr(x_train, 'numpy') else np.array(x_train)
+            x_test_np_indiv = x_test.numpy() if hasattr(x_test, 'numpy') else np.array(x_test)
+
+            train_mean_indiv = np.mean(x_train_np_indiv, axis=0, keepdims=True)
+            train_std_indiv = np.std(x_train_np_indiv, axis=0, keepdims=True)
+            # epsilon defined above
+
+            x_train_normalized_np_indiv = (x_train_np_indiv - train_mean_indiv) / (train_std_indiv + epsilon)
+            x_test_normalized_np_indiv = (x_test_np_indiv - train_mean_indiv) / (train_std_indiv + epsilon) # Use train stats
+
+            x_train_normalized_indiv = torch.from_numpy(x_train_normalized_np_indiv).float()
+            x_test_normalized_indiv = torch.from_numpy(x_test_normalized_np_indiv).float()
+            print(f"Features for Vode {current_vode_idx} normalized.")
+            # --- End Feature Normalization ---
+
             # Initialize linear classifier parameters (W, b)
             key_probe_init, _ = jax.random.split(jax.random.PRNGKey(args.seed + current_vode_idx)) # Vary seed per Vode
             limit = np.sqrt(6 / (num_features + 10))
@@ -750,7 +786,8 @@ def main():
             probe_opt_state = probe_optimizer.init(probe_params)
 
             # Convert to TensorDataset for DataLoader
-            probe_train_dataset = TensorDataset(x_train, y_train)
+            # Use normalized features for individual Vode
+            probe_train_dataset = TensorDataset(x_train_normalized_indiv, y_train)
             probe_train_loader = DataLoader(probe_train_dataset, batch_size=args.probe_batch_size, shuffle=True)
 
             print(f"Training linear probe for Vode {current_vode_idx} for {args.probe_epochs} epochs...")
@@ -776,9 +813,10 @@ def main():
                 current_train_acc = epoch_train_correct / epoch_train_total
                 
                 # Evaluate on test set
-                x_test_jnp = jnp.array(x_test.numpy())
+                # Use normalized test features for individual Vode
+                x_test_jnp_normalized_indiv = jnp.array(x_test_normalized_indiv.numpy()) # Ensure JAX array
                 y_test_one_hot = jax.nn.one_hot(jnp.array(y_test.numpy()), 10)
-                current_test_acc = accuracy(probe_params, x_test_jnp, y_test_one_hot).item()
+                current_test_acc = accuracy(probe_params, x_test_jnp_normalized_indiv, y_test_one_hot).item()
                 best_test_acc_this_vode = max(best_test_acc_this_vode, current_test_acc)
 
                 print(f"Vode {current_vode_idx} - Probe Epoch {epoch+1}/{args.probe_epochs} - Train Loss: {avg_epoch_train_loss:.4f}, Train Acc: {current_train_acc:.4f}, Test Acc: {current_test_acc:.4f}")
