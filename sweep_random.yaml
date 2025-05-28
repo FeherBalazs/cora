@@ -1,5 +1,6 @@
 program: examples/debug_transformer_wandb.py
 method: random
+run_cap: 120  # Total experiments across all agents
 metric:
   goal: maximize
   name: best_probe_accuracy
