@@ -859,7 +859,30 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
             traceback.print_exc()
     
     print(f"Creating configuration for CIFAR-10 transformer...")
-    model_config = config.model_config
+    model_config = create_config(
+        dataset=config.dataset,
+        hidden_size=config.hidden_size,
+        num_blocks=config.num_blocks,
+        num_heads=config.num_heads,
+        mlp_ratio=config.mlp_ratio,
+        patch_size=config.patch_size,
+        axes_dim=config.axes_dim,
+        theta=config.theta,
+        use_noise=config.use_noise,
+        use_lower_half_mask=config.use_lower_half_mask,
+        use_inference_lr_scaling=config.use_inference_lr_scaling,
+        inference_lr_scale_base=config.inference_lr_scale_base,
+        inference_clamp_alpha=config.inference_clamp_alpha,
+        update_weights_during_unmasking=config.update_weights_during_unmasking,
+        use_status_init_in_training=config.use_status_init_in_training,
+        use_status_init_in_unmasking=config.use_status_init_in_unmasking,
+        update_weights_every_inference_step=config.update_weights_every_inference_step,
+        use_vode_state_layernorm=config.use_vode_state_layernorm, # New
+        use_vode_grad_norm=config.use_vode_grad_norm,             # New
+        vode_grad_norm_target=config.vode_grad_norm_target,        # New
+        intermediate_l1_coeff=config.intermediate_l1_coeff, # ADDED
+        intermediate_l2_coeff=config.intermediate_l2_coeff  # ADDED
+    )
     
     print(f"Creating debug dataloaders for CIFAR-10...")
     train_loader, val_loader = get_debug_dataloaders(
@@ -999,6 +1022,7 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     for epoch in range(config.epochs):
         epoch_start = time.time()
         new_train_mse_milestone_reached_this_epoch = False # New flag for triggering val/recon
+        training_nan_detected = False # Initialize here
 
         if model_config.use_inference_lr_scaling:
             print(f"Current inference_lr_scale_base: {model_config.inference_lr_scale_base}")
