@@ -26,11 +26,13 @@ from src.utils import create_positional_encoding
 from jax.typing import DTypeLike
 from einops import rearrange
 from pcx.core._parameter import get as param_get
+from pcx.predictive_coding import regularized_plus_se_energy, se_energy
 
 import matplotlib.pyplot as plt
 from datetime import datetime
 import time
 import math
+import functools
 
 STATUS_FORWARD = "forward"
 
@@ -91,6 +93,10 @@ class TransformerConfig:
     use_vode_grad_norm: bool = False       # Normalize Vode h-gradients before optimizer step
     vode_grad_norm_target: float = 1.0     # Target norm for h-gradient normalization
 
+    # New fields for regularization coefficients
+    intermediate_l1_coeff: float = 0.0
+    intermediate_l2_coeff: float = 0.0
+
     def __post_init__(self):
         # Determine if we're dealing with video based on the shape of image_shape
         if len(self.image_shape) == 4:
@@ -130,11 +136,12 @@ class TransformerDecoder(pxc.EnergyModule):
         print(f"Model initialized with {self.config.num_patches} patches, each with dimension {self.config.patch_dim}")
         print(f"Model initialized with {self.config.hidden_size} hidden_size, {self.config.mlp_hidden_dim} mlp_hidden_dim")
         print(f"Using {'video' if self.config.is_video else 'image'} mode with shape {self.config.image_shape}")
+        print(f"Regularization: IntL1={self.config.intermediate_l1_coeff}, IntL2={self.config.intermediate_l2_coeff}")
 
         # Define Vodes for predictive coding
         # Top-level latent Vode
         self.vodes = [pxc.Vode(
-            energy_fn=None,
+            energy_fn=None, # Vode 0 does not have local energy term for regularization
             ruleset={
                 pxc.STATUS.INIT: ("h, u <- u:to_init",)
                 },
@@ -145,15 +152,26 @@ class TransformerDecoder(pxc.EnergyModule):
             }
         )]
 
-        # Add a Vode for patch projection
+        # Intermediate Vodes energy function (Patch Projection Vode and Transformer Block Vodes)
+        # If intermediate_l1_coeff and intermediate_l2_coeff are 0, 
+        # regularized_plus_se_energy will effectively just compute its SE term.
+        intermediate_vodes_energy_fn = functools.partial(
+            regularized_plus_se_energy,
+            l1_coeff=self.config.intermediate_l1_coeff,
+            l2_coeff=self.config.intermediate_l2_coeff
+        )
+
+        # Add a Vode for patch projection (Vode 1)
         self.vodes.append(pxc.Vode(
+            energy_fn=intermediate_vodes_energy_fn, # Use the prepared partial function
                 ruleset={ 
                     STATUS_FORWARD: ("h -> u",)}
             ))
         
-        # Create Vodes for each transformer block output
+        # Create Vodes for each transformer block output (Vodes 2 to num_blocks + 1)
         for _ in range(config.num_blocks):
             self.vodes.append(pxc.Vode(
+                energy_fn=intermediate_vodes_energy_fn, # Use the same prepared partial function
                 ruleset={
                     STATUS_FORWARD: ("h -> u",)}
             ))
