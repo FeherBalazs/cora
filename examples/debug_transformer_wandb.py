@@ -82,6 +82,8 @@ def parse_args():
                         help='Save reconstruction images (true/false)')
     parser.add_argument('--save_reconstruction_video', type=str_to_bool, nargs='?', const=True, default=None,
                         help='Save reconstruction video (true/false)')
+    parser.add_argument('--sweep', action='store_true',
+                        help='Run as part of a wandb sweep (gets config from wandb.config)')
     # Add any other parameters from ModelConfig you want to control via CLI here
     return parser.parse_args()
 
@@ -172,7 +174,13 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
         transforms.Normalize(mean, std) # Use selected normalization
     ])
     
-    dataset_root = '../' + root_path + "/cifar10/"
+    # Fix dataset path to work regardless of where script is run from
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    # Go up one level from examples/ to project root, then add datasets path
+    project_root = os.path.dirname(script_dir)
+    dataset_root = os.path.join(project_root, "datasets", "cifar10")
+    print(f"Using dataset root: {dataset_root}")
+    
     train_dataset = torchvision.datasets.CIFAR10(
         root=dataset_root,
         transform=train_transform,
@@ -753,7 +761,8 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
                      config_overrides: Optional[Dict[str, Any]] = None,
                      wandb_project_name: str = "debug-transformer-search",
                      wandb_run_name: Optional[str] = None,
-                     wandb_mode: str = "online"):
+                     wandb_mode: str = "online",
+                     wandb_run: Optional[Any] = None):
     """Main function to run the debugging process with W&B logging."""
     
     # --- Seed everything FIRST for reproducibility ---
@@ -815,14 +824,19 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         
         effective_wandb_run_name = f"{config.name}_{nb_str}_{hs_str}_{lr_w_str}_{lr_h_str}_{scale_base_str}_{hclip_str}_{wclip_str}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
-    # Initialize Weights & Biases
-    run = wandb.init(
-        entity="neural-machines", # Replace with your entity or remove if not needed
-        project=wandb_project_name,
-        name=effective_wandb_run_name,
-        config=vars(config),
-        mode=wandb_mode  # Allows disabling for search
-    )
+    # Initialize Weights & Biases (only if not provided)
+    if wandb_run is None:
+        run = wandb.init(
+            entity="neural-machines", # Replace with your entity or remove if not needed
+            project=wandb_project_name,
+            name=effective_wandb_run_name,
+            config=vars(config),
+            mode=wandb_mode  # Allows disabling for search
+        )
+    else:
+        run = wandb_run
+        # Update the config in the existing run
+        wandb.config.update(vars(config))
     
     # Upload code artifacts to W&B if an active run exists and not disabled
     if wandb.run and wandb.run.mode != "disabled":
@@ -1460,7 +1474,8 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         })
         
     # Close W&B after all logging is complete
-    wandb.finish()
+    if wandb_run is None:  # Only finish if we created the run ourselves
+        wandb.finish()
     
     print("Debug run completed!")
     # Return the average training MSE of the last epoch, or infinity if NaN occurred
@@ -1494,11 +1509,51 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
 
     return best_val_loss_for_overall_best_model, best_train_mse_this_run, final_avg_train_mse, early_stop_reason, best_linear_probe_accuracy_overall
 
+def run_sweep():
+    """Main function for running with wandb sweeps."""
+    # Initialize wandb first to get access to wandb.config
+    run = wandb.init()
+    
+    # Get base config name from sweep config
+    base_config_name = wandb.config.get('config', DEFAULT_CONFIG)
+    
+    # Create config overrides from wandb.config
+    # Skip 'config' key as it's used for base config selection
+    config_overrides = {k: v for k, v in wandb.config.items() if k != 'config'}
+    
+    print(f"Running sweep with base config: {base_config_name}")
+    print(f"Sweep overrides: {config_overrides}")
+    
+    # Run the experiment with sweep parameters
+    best_val_mse, best_train_mse, final_train_mse, early_stop_reason, best_probe_acc = run_experiment(
+        base_config_name=base_config_name,
+        config_overrides=config_overrides,
+        wandb_project_name=None,  # Will use the sweep's project
+        wandb_run_name=None,      # Will use the sweep's run name
+        wandb_mode="online",      # Sweeps should always be online
+        wandb_run=run             # Pass the existing run
+    )
+    
+    # Log the final metrics that the sweep will optimize using the run object directly
+    run.log({
+        "best_val_mse": best_val_mse,
+        "best_train_mse": best_train_mse, 
+        "final_train_mse": final_train_mse,
+        "best_probe_accuracy": best_probe_acc,
+        "early_stop_reason": early_stop_reason
+    })
+    
+    print(f"Sweep run completed. Best val MSE: {best_val_mse:.6f}")
+    return best_val_mse
+
 if __name__ == "__main__":
     cli_args = parse_args()
     
     # Prepare config_overrides from CLI arguments, excluding 'config' which is used for base_config_name
     overrides = {k: v for k, v in vars(cli_args).items() if v is not None and k != 'config'}
     
-    run_experiment(base_config_name=cli_args.config, 
-                   config_overrides=overrides) 
+    if cli_args.sweep:
+        run_sweep()
+    else:
+        run_experiment(base_config_name=cli_args.config, 
+                       config_overrides=overrides) 
