@@ -74,14 +74,64 @@ def parse_args():
                         help='Number of epochs to train for')
     parser.add_argument('--num_blocks', type=int, default=None,
                         help='Number of transformer blocks')
+    parser.add_argument('--hidden_size', type=int, default=None,
+                        help='Hidden size of transformer')
+    parser.add_argument('--num_heads', type=int, default=None,
+                        help='Number of attention heads')
+    parser.add_argument('--seed', type=int, default=None,
+                        help='Random seed')
     parser.add_argument('--peak_lr_weights', type=float, default=None,
                         help='Peak learning rate for weights')
     parser.add_argument('--peak_lr_hidden', type=float, default=None,
                         help='Peak learning rate for hidden states')
+    parser.add_argument('--inference_lr_scale_base', type=float, default=None,
+                        help='Base scaling factor for inference learning rates')
+    parser.add_argument('--hidden_momentum', type=float, default=None,
+                        help='Momentum for hidden state optimizer')
+    parser.add_argument('--h_grad_clip_norm', type=float, default=None,
+                        help='Gradient clipping norm for hidden states')
+    parser.add_argument('--w_grad_clip_norm', type=float, default=None,
+                        help='Gradient clipping norm for weights')
+    parser.add_argument('--inference_steps', type=int, default=None,
+                        help='Number of inference steps')
+    parser.add_argument('--warmup_steps', type=int, default=None,
+                        help='Number of warmup steps for learning rate schedule')
+    parser.add_argument('--use_ssl_augmentations', type=str_to_bool, nargs='?', const=True, default=None,
+                        help='Use SSL data augmentations (true/false)')
+    parser.add_argument('--use_cifar10_norm', type=str_to_bool, nargs='?', const=True, default=None,
+                        help='Use CIFAR-10 specific normalization (true/false)')
+    parser.add_argument('--use_lr_schedule_h', type=str_to_bool, nargs='?', const=True, default=None,
+                        help='Use learning rate schedule for hidden states (true/false)')
+    parser.add_argument('--use_lr_schedule_w', type=str_to_bool, nargs='?', const=True, default=None,
+                        help='Use learning rate schedule for weights (true/false)')
+    parser.add_argument('--corrupt_ratio', type=float, default=None,
+                        help='Ratio of corruption for masking')
+    parser.add_argument('--use_lower_half_mask', type=str_to_bool, nargs='?', const=True, default=None,
+                        help='Use lower half masking strategy (true/false)')
+    parser.add_argument('--early_stopping_patience', type=int, default=None,
+                        help='Early stopping patience')
+    parser.add_argument('--linear_probe_every_n_epochs', type=int, default=None,
+                        help='Run linear probe every N epochs')
+    parser.add_argument('--linear_probe_epochs', type=int, default=None,
+                        help='Number of epochs for linear probe training')
+    parser.add_argument('--linear_probe_lr', type=float, default=None,
+                        help='Learning rate for linear probe')
+    parser.add_argument('--linear_probe_wd', type=float, default=None,
+                        help='Weight decay for linear probe')
+    parser.add_argument('--test_subset', type=int, default=None,
+                        help='Size of test subset')
+    parser.add_argument('--train_subset', type=int, default=None,
+                        help='Size of training subset')
+    parser.add_argument('--num_images', type=int, default=None,
+                        help='Number of images for visualization')
     parser.add_argument('--save_reconstruction_images', type=str_to_bool, nargs='?', const=True, default=None,
                         help='Save reconstruction images (true/false)')
     parser.add_argument('--save_reconstruction_video', type=str_to_bool, nargs='?', const=True, default=None,
                         help='Save reconstruction video (true/false)')
+    parser.add_argument('--intermediate_l1_coeff', type=float, default=None,
+                        help='L1 regularization coefficient for intermediate layers')
+    parser.add_argument('--intermediate_l2_coeff', type=float, default=None,
+                        help='L2 regularization coefficient for intermediate layers')
     parser.add_argument('--sweep', action='store_true',
                         help='Run as part of a wandb sweep (gets config from wandb.config)')
     # Add any other parameters from ModelConfig you want to control via CLI here
