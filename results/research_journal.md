@@ -493,6 +493,17 @@
     - this is still based on using purely MSE 
 
 
+- Experiment:
+  - Added L1 and L2 regularisation to intermediate Vode's 
+  - `intermediate_l1_coeff_candidates = [0.0, 0.0001, 0.001]`
+  - `intermediate_l2_coeff_candidates = [0.0, 0.0001, 0.001]`
+  - `seed_candidates = [10, 20]`
+  - Run: [https://wandb.ai/neural-machines/pc-arch-search-hardcore-almeida?nw=nwusergradientracer](https://wandb.ai/neural-machines/pc-arch-search-hardcore-almeida?nw=nwusergradientracer)
+  - Results:
+    - 
+
+
+
 
 Experiment:
   - Creating models for each block variation with standard settings
@@ -517,7 +528,8 @@ Experiment:
 
 
 - Try next: 
-  - run validation test for block 6 setup - then start refactoring the code to make it simpler - then add linear probing feature and test - then do regularisation tomorrow
+  - then add linear probing feature to train script - otherwise it is hard to really tell if we move the needle in the right direction
+  - start refactoring the code to make it simpler
   - Get back to block1 - and iterate quicly with linear probing as direct feedback on how data augmentation, and regularisation can improve representations; I could also experiment faster with more hidden dim and num heads
   - Block6:
     - oscillation reduction: lower learning rate from 0.0005 ro 0.0003
@@ -566,6 +578,10 @@ Block6:
 
   python linear_probe.py --config_name 6block --feature_layer_vode_indices "2, 3, 5" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.095 --seed 10 --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250526_155633.npz
 
+  L2/L1
+  
+  python linear_probe.py --config_name 6block --feature_layer_vode_indices "1, 4, 7" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.095 --seed 10 --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_intl1OFF_intl21.0e-04_e75_sd20_epoch58_trainmse0.005915_20250527_231257.npz
+
 Block 1:
  python linear_probe.py --config_name 1block --feature_layer_vode_indices "0" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.09351  --model_path ../results/models/nb1_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e150_sd80_epoch18_finalabstrainmse0.000436_20250524_100129.npz
 
@@ -577,3 +593,6 @@ Block 2:
 
 Block 3:
  python linear_probe.py --config_name 3block --feature_layer_vode_indices "0" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.09333 --model_path ../results/models/nb3_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e150_sd80_epoch19_trainmse0.002849_20250524_101515.npz
+
+
+ CONTAINER_ID=$(sudo docker run --gpus all -d --restart unless-stopped --shm-size=16G -v "$HOST_CORA_DIR:/home/cora/workspace" cora:latest /bin/bash -c "sleep infinity")

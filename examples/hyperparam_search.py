@@ -6,7 +6,8 @@ from datetime import datetime
 import os
 
 
-from debug_transformer_wandb import run_experiment, MODEL_CONFIGS
+from debug_transformer_wandb import run_experiment
+from src.config import MODEL_CONFIGS
 
 def perform_hyperparameter_search():
     print("Starting hyperparameter search...")
@@ -17,15 +18,15 @@ def perform_hyperparameter_search():
     fixed_overrides = {
         "epochs": 75,
         "theta": 10_000,
-        "use_ssl_augmentations": False,
+        "use_ssl_augmentations": True,
         "use_cifar10_norm": False,
         "num_images": 3,
         "test_subset": 200,
         "train_subset": 50000,
         "peak_lr_weights": 0.001,
         "hidden_lr_inference": 0.095,
-        "reconstruction_every_n_epochs": 75,
-        "validation_every_n_epochs": 75,
+        "reconstruction_every_n_epochs": 25,
+        "validation_every_n_epochs": 25,
         "use_inference_lr_scaling": True,
         "use_lr_schedule_w": True,
         "use_lr_schedule_h": True,
@@ -36,10 +37,10 @@ def perform_hyperparameter_search():
         "update_weights_every_inference_step": False,
 
         "use_early_stopping": True,
-        "early_stopping_patience": 50,
+        "early_stopping_patience": 20,
         "early_stopping_min_delta": 0.001,
         "early_stopping_metric": "train_mse",
-        "save_model_train_mse_threshold": 0.01,
+        "save_model_train_mse_threshold": 0.009,
         "model_saving_metric": "train_mse",
         
         "use_vode_grad_norm": False,
@@ -54,12 +55,23 @@ def perform_hyperparameter_search():
         "use_status_init_in_training": False,
         "use_status_init_in_unmasking": False,
         "lr_schedule_min_lr_factor": 0.5,
-        "intermediate_l1_coeff": 0.0,
-        "intermediate_l2_coeff": 0.0
+
+        # Linear Probing Defaults (can be overridden per run if made searchable)
+        "linear_probe_every_n_epochs": 10, # Disabled by default, enable for specific searches
+        "linear_probe_vode_indices": "0", # Example: probe all layers
+        "linear_probe_concatenate_features": True, # Example: concatenate all specified
+        "linear_probe_use_gap": True,
+        "linear_probe_lr": 1e-3,
+        "linear_probe_wd": 1e-4,
+        "linear_probe_epochs": 10, # A shorter number of epochs for hyperparam search might be wise
+        "linear_probe_batch_size": 200,
+        # "linear_probe_h_lr": None, # Will use main config's hidden_lr_inference
+        # "linear_probe_inference_steps": None, # Will use main config's inference_steps
+        "linear_probe_seed": 123
     }
 
     # --- Architectural Search Space ---
-    num_blocks_candidates = [6]
+    num_blocks_candidates = [0, 1, 2, 3, 4, 5, 6]
     batch_size_candidates = [200]
     hidden_size_candidates = [64]
     num_heads_candidates = [1]
@@ -76,8 +88,8 @@ def perform_hyperparameter_search():
     use_vode_state_layernorm_candidates = [False]
 
     # --- NEW: Regularization Search Space ---
-    intermediate_l1_coeff_candidates = [0.0, 0.0001, 0.001]
-    intermediate_l2_coeff_candidates = [0.0, 0.0001, 0.001]
+    intermediate_l1_coeff_candidates = [0.0001, 0.001, 0.01, 0.1, 0.0]
+    intermediate_l2_coeff_candidates = [0.0001, 0.001, 0.01, 0.1, 0.0]
 
     best_run_info = {
         "num_blocks": None,
@@ -98,7 +110,8 @@ def perform_hyperparameter_search():
         "intermediate_l2_coeff": None, # New
         "overall_best_val_mse": float('inf'),
         "run_best_train_mse_of_best_val_run": float('inf'),
-        "final_train_mse_of_best_val_run": float('inf')
+        "final_train_mse_of_best_val_run": float('inf'),
+        "best_linear_probe_accuracy": 0.0 # New: track best probe accuracy
     }
 
     all_run_results = []
@@ -174,6 +187,10 @@ def perform_hyperparameter_search():
                                                                 current_overrides["intermediate_l1_coeff"] = int_l1 # New
                                                                 current_overrides["intermediate_l2_coeff"] = int_l2 # New
 
+                                                                print(f"DEBUG_SEARCH: int_l1={int_l1}, int_l2={int_l2}") # ADDED DEBUG
+                                                                print(f"DEBUG_SEARCH: current_overrides entry for L1: {current_overrides.get('intermediate_l1_coeff')}") # ADDED DEBUG
+                                                                print(f"DEBUG_SEARCH: current_overrides entry for L2: {current_overrides.get('intermediate_l2_coeff')}") # ADDED DEBUG
+
                                                                 nb_str = f"nb{nb_val}"
                                                                 bs_str = f"bs{bs_val}"
                                                                 hs_str = f"hs{hs_val}"
@@ -192,9 +209,11 @@ def perform_hyperparameter_search():
                                                                 wandb_run_name = f"{nb_str}_{bs_str}_{hs_str}_{nh_str}_{lr_h_str}_{scale_base_str}_{inf_steps_str}_{ws_str}_{hm_str}_{h_clip_str}_{w_clip_str}_{vln_str}_{int_l1_str}_{int_l2_str}_e{current_overrides['epochs']}_sd{seed_val}"
                                                                 
                                                                 print(f"Parameters: num_blocks={nb_val}, batch_size={bs_val}, hidden_size={hs_val}, num_heads={nh_val}, use_vode_state_layernorm={vln_val}, lr_h={lr_h}, scale={scale_base if current_overrides.get('use_inference_lr_scaling', False) else 'OFF'}, inf_steps={inf_steps}, warmup_steps={ws_val}, hidden_momentum={hm_val}, h_clip={h_clip}, w_clip={w_clip}, seed={seed_val}, int_l1={int_l1}, int_l2={int_l2}")
+                                                                if current_overrides.get("linear_probe_every_n_epochs", 0) > 0:
+                                                                    print(f"  Linear Probe: Every {current_overrides['linear_probe_every_n_epochs']} epochs, Vodes: {current_overrides['linear_probe_vode_indices']}, Concat: {current_overrides['linear_probe_concatenate_features']}")
 
                                                                 try:
-                                                                    achieved_best_val_mse, run_best_train_mse, final_train_mse, early_stop_reason = run_experiment(
+                                                                    achieved_best_val_mse, run_best_train_mse, final_train_mse, early_stop_reason, achieved_best_probe_acc = run_experiment(
                                                                         base_config_name=base_config_to_use,
                                                                         config_overrides=current_overrides,
                                                                         wandb_project_name=wandb_project,
@@ -206,6 +225,7 @@ def perform_hyperparameter_search():
                                                                     is_valid_val_mse = isinstance(achieved_best_val_mse, (int, float)) and not np.isnan(achieved_best_val_mse) and achieved_best_val_mse != float('inf')
                                                                     is_valid_run_best_train_mse = isinstance(run_best_train_mse, (int, float)) and not np.isnan(run_best_train_mse) and run_best_train_mse != float('inf')
                                                                     is_valid_final_train_mse = isinstance(final_train_mse, (int, float)) and not np.isnan(final_train_mse) and final_train_mse != float('inf')
+                                                                    is_valid_probe_acc = isinstance(achieved_best_probe_acc, (int, float)) and not np.isnan(achieved_best_probe_acc)
 
                                                                     run_result_data = {
                                                                         "run_number": current_run,
@@ -228,54 +248,45 @@ def perform_hyperparameter_search():
                                                                         "best_val_mse": achieved_best_val_mse if is_valid_val_mse else "Failed or Invalid",
                                                                         "run_best_train_mse": run_best_train_mse if is_valid_run_best_train_mse else "Failed or Invalid",
                                                                         "final_train_mse": final_train_mse if is_valid_final_train_mse else "Failed or Invalid",
+                                                                        "best_probe_accuracy": achieved_best_probe_acc if is_valid_probe_acc else 0.0, # New
                                                                         "early_stop_reason": early_stop_reason,
                                                                         "wandb_run_name": wandb_run_name
                                                                     }
                                                                     all_run_results.append(run_result_data)
 
-                                                                    if is_valid_val_mse:
-                                                                        if achieved_best_val_mse < best_run_info["overall_best_val_mse"]:
-                                                                            best_run_info["num_blocks"] = nb_val
-                                                                            best_run_info["batch_size"] = bs_val
-                                                                            best_run_info["hidden_size"] = hs_val
-                                                                            best_run_info["num_heads"] = nh_val
-                                                                            best_run_info["use_vode_state_layernorm"] = vln_val # New
-                                                                            best_run_info["lr_weights"] = lr_w
-                                                                            best_run_info["lr_hidden"] = lr_h
-                                                                            best_run_info["inference_lr_scale_base"] = scale_base if current_overrides.get("use_inference_lr_scaling", False) else "N/A"
-                                                                            best_run_info["inference_steps"] = inf_steps
-                                                                            best_run_info["warmup_steps"] = ws_val
-                                                                            best_run_info["h_grad_clip_norm"] = h_clip
-                                                                            best_run_info["w_grad_clip_norm"] = w_clip
-                                                                            best_run_info["hidden_momentum"] = hm_val
-                                                                            best_run_info["seed"] = seed_val
-                                                                            best_run_info["intermediate_l1_coeff"] = int_l1 # New
-                                                                            best_run_info["intermediate_l2_coeff"] = int_l2 # New
-                                                                            best_run_info["overall_best_val_mse"] = achieved_best_val_mse
-                                                                            best_run_info["run_best_train_mse_of_best_val_run"] = run_best_train_mse if is_valid_run_best_train_mse else "N/A"
-                                                                            best_run_info["final_train_mse_of_best_val_run"] = final_train_mse if is_valid_final_train_mse else "N/A"
-                                                                            print(f"*** New best overall_best_val_mse: {achieved_best_val_mse:.6f} (Run Best Train MSE: {best_run_info['run_best_train_mse_of_best_val_run'] if isinstance(best_run_info['run_best_train_mse_of_best_val_run'], float) else 'N/A'}, Final Train MSE: {best_run_info['final_train_mse_of_best_val_run'] if isinstance(best_run_info['final_train_mse_of_best_val_run'], float) else 'N/A'}) with Params: nb={nb_val}, bs={bs_val}, hs={hs_val}, nh={nh_val}, vln={vln_val}, lr_h={lr_h}, scale={scale_base if current_overrides.get('use_inference_lr_scaling', False) else 'OFF'}, inf_steps={inf_steps}, warmup_steps={ws_val}, hidden_momentum={hm_val}, h_clip={h_clip}, w_clip={w_clip}, seed={seed_val}, int_l1={int_l1}, int_l2={int_l2} ***")
-                                                                        elif is_valid_run_best_train_mse and best_run_info["overall_best_val_mse"] == float('inf'):
-                                                                            if run_best_train_mse < best_run_info["run_best_train_mse_of_best_val_run"]:
-                                                                                best_run_info["num_blocks"] = nb_val
-                                                                                best_run_info["batch_size"] = bs_val
-                                                                                best_run_info["hidden_size"] = hs_val
-                                                                                best_run_info["num_heads"] = nh_val
-                                                                                best_run_info["use_vode_state_layernorm"] = vln_val # New
-                                                                                best_run_info["lr_weights"] = lr_w
-                                                                                best_run_info["lr_hidden"] = lr_h
-                                                                                best_run_info["inference_lr_scale_base"] = scale_base if current_overrides.get("use_inference_lr_scaling", False) else "N/A"
-                                                                                best_run_info["inference_steps"] = inf_steps
-                                                                                best_run_info["warmup_steps"] = ws_val
-                                                                                best_run_info["h_grad_clip_norm"] = h_clip
-                                                                                best_run_info["w_grad_clip_norm"] = w_clip
-                                                                                best_run_info["hidden_momentum"] = hm_val
-                                                                                best_run_info["seed"] = seed_val
-                                                                                best_run_info["intermediate_l1_coeff"] = int_l1 # New
-                                                                                best_run_info["intermediate_l2_coeff"] = int_l2 # New
-                                                                                best_run_info["run_best_train_mse_of_best_val_run"] = run_best_train_mse
-                                                                                best_run_info["final_train_mse_of_best_val_run"] = final_train_mse if is_valid_final_train_mse else "N/A"
-                                                                                print(f"*** No valid validation MSEs yet. New best run_best_train_mse: {run_best_train_mse:.6f} (Final Train MSE: {best_run_info['final_train_mse_of_best_val_run'] if isinstance(best_run_info['final_train_mse_of_best_val_run'], float) else 'N/A'}) with Params: nb={nb_val}, bs={bs_val}, hs={hs_val}, nh={nh_val}, vln={vln_val}, lr_h={lr_h}, scale={scale_base if current_overrides.get('use_inference_lr_scaling', False) else 'OFF'}, inf_steps={inf_steps}, warmup_steps={ws_val}, hidden_momentum={hm_val}, h_clip={h_clip}, w_clip={w_clip}, seed={seed_val}, int_l1={int_l1}, int_l2={int_l2} ***")
+                                                                    # Update best run based on a combined logic or primarily probe accuracy if available
+                                                                    new_best_found = False
+                                                                    if is_valid_probe_acc and achieved_best_probe_acc > best_run_info["best_linear_probe_accuracy"]:
+                                                                        new_best_found = True
+                                                                        print(f"*** New best linear_probe_accuracy: {achieved_best_probe_acc:.4f} ***")
+                                                                    elif not is_valid_probe_acc and is_valid_val_mse and achieved_best_val_mse < best_run_info["overall_best_val_mse"] and best_run_info["best_linear_probe_accuracy"] == 0.0:
+                                                                        # Fallback to MSE if probe isn't run or fails, and no probe best exists yet
+                                                                        new_best_found = True
+                                                                        print(f"*** New best overall_best_val_mse (probe not run/failed): {achieved_best_val_mse:.6f} ***")
+
+                                                                    if new_best_found:
+                                                                        best_run_info["num_blocks"] = nb_val
+                                                                        best_run_info["batch_size"] = bs_val
+                                                                        best_run_info["hidden_size"] = hs_val
+                                                                        best_run_info["num_heads"] = nh_val
+                                                                        best_run_info["use_vode_state_layernorm"] = vln_val # New
+                                                                        best_run_info["lr_weights"] = lr_w
+                                                                        best_run_info["lr_hidden"] = lr_h
+                                                                        best_run_info["inference_lr_scale_base"] = scale_base if current_overrides.get("use_inference_lr_scaling", False) else "N/A"
+                                                                        best_run_info["inference_steps"] = inf_steps
+                                                                        best_run_info["warmup_steps"] = ws_val
+                                                                        best_run_info["h_grad_clip_norm"] = h_clip
+                                                                        best_run_info["w_grad_clip_norm"] = w_clip
+                                                                        best_run_info["hidden_momentum"] = hm_val
+                                                                        best_run_info["seed"] = seed_val
+                                                                        best_run_info["intermediate_l1_coeff"] = int_l1 # New
+                                                                        best_run_info["intermediate_l2_coeff"] = int_l2 # New
+                                                                        best_run_info["overall_best_val_mse"] = achieved_best_val_mse
+                                                                        best_run_info["run_best_train_mse_of_best_val_run"] = run_best_train_mse if is_valid_run_best_train_mse else "N/A"
+                                                                        best_run_info["final_train_mse_of_best_val_run"] = final_train_mse if is_valid_final_train_mse else "N/A"
+                                                                        best_run_info["best_linear_probe_accuracy"] = achieved_best_probe_acc if is_valid_probe_acc else 0.0
+                                                                        print(f"    (Probe Acc: {best_run_info['best_linear_probe_accuracy']:.4f}, Val MSE: {best_run_info['overall_best_val_mse']:.6f}, Train MSE: {best_run_info['run_best_train_mse_of_best_val_run'] if isinstance(best_run_info['run_best_train_mse_of_best_val_run'], float) else 'N/A'})")
+                                                                        print(f"    Params: nb={nb_val}, bs={bs_val}, hs={hs_val}, nh={nh_val}, vln={vln_val}, lr_h={lr_h}, scale={scale_base if current_overrides.get('use_inference_lr_scaling', False) else 'OFF'}, inf_steps={inf_steps}, warmup_steps={ws_val}, hidden_momentum={hm_val}, h_clip={h_clip}, w_clip={w_clip}, seed={seed_val}, int_l1={int_l1}, int_l2={int_l2}")
 
                                                                 except Exception as e:
                                                                     print(f"!!!! Run {current_run} failed with Params: nb={nb_val}, bs={bs_val}, hs={hs_val}, nh={nh_val}, vln={vln_val}, lr_h={lr_h}, scale={scale_base if current_overrides.get('use_inference_lr_scaling', False) else 'OFF'}, inf_steps={inf_steps}, warmup_steps={ws_val}, hidden_momentum={hm_val}, h_clip={h_clip}, w_clip={w_clip}, seed={seed_val}, int_l1={int_l1}, int_l2={int_l2}. Error: {e} !!!!")
@@ -302,6 +313,7 @@ def perform_hyperparameter_search():
                                                                         "best_val_mse": "Exception",
                                                                         "run_best_train_mse": "Exception",
                                                                         "final_train_mse": "Exception",
+                                                                        "best_probe_accuracy": 0.0, # New
                                                                         "early_stop_reason": "Exception",
                                                                         "wandb_run_name": wandb_run_name
                                                                     })
@@ -329,6 +341,7 @@ def perform_hyperparameter_search():
         print(f"  intermediate_l2_coeff: {best_run_info['intermediate_l2_coeff']}") # New
         print(f"  seed: {best_run_info['seed']}")
         print(f"  Achieved Overall Best Validation MSE: {best_run_info['overall_best_val_mse']:.6f}")
+        print(f"  Achieved Best Linear Probe Accuracy: {best_run_info['best_linear_probe_accuracy']:.4f}") # New
         print(f"  Run Best Train MSE of Best Val Run: {best_run_info['run_best_train_mse_of_best_val_run'] if isinstance(best_run_info['run_best_train_mse_of_best_val_run'], float) else 'N/A'}")
         print(f"  Final Train MSE of Best Val Run: {best_run_info['final_train_mse_of_best_val_run'] if isinstance(best_run_info['final_train_mse_of_best_val_run'], float) else 'N/A'}")
     else:
@@ -366,20 +379,22 @@ def perform_hyperparameter_search():
         header_parts = [
             "Run", "NB", "BS", "HS", "NH", "VodeLN", "LR Hid", "Scale", "Inf Steps", "Warmup", "Hid Mom", "H Clip", "W Clip", "Seed",
             "IntL1", "IntL2",
-            "Best Val MSE", "Run Best Train MSE", "Final Train MSE", "Status", "W&B Run Name"
+            "Best Val MSE", "Best Probe Acc", "Run Best Train MSE", "Final Train MSE", "Status", "W&B Run Name"
         ]
         col_widths = {
             "Run": 3, "NB": 2, "BS": 4, "HS": 4, "NH": 2, "VodeLN": 6, "LR Hid": 9, "Scale": 7, "Inf Steps": 9, "Warmup": 6,
             "Hid Mom": 7, "H Clip": 6, "W Clip": 6, "Seed": 4,
             "IntL1": 7, "IntL2": 7,
-            "Best Val MSE": 14, "Run Best Train MSE": 18 , "Final Train MSE": 15, "Status": 8, "W&B Run Name": 60 # Increased W&B name width
+            "Best Val MSE": 14, "Best Probe Acc": 14, "Run Best Train MSE": 18 , "Final Train MSE": 15, "Status": 8, "W&B Run Name": 60
         }
         
         header_str = " | ".join([f"{h:<{col_widths[h]}}" for h in header_parts])
         f.write(header_str + "\n")
         f.write("---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------\n")
         
-        all_run_results.sort(key=lambda x: (x['best_val_mse'] if isinstance(x['best_val_mse'], (int, float)) and not np.isnan(x['best_val_mse']) else float('inf'),
+        all_run_results.sort(key=lambda x: (
+                                          -(x['best_probe_accuracy'] if isinstance(x['best_probe_accuracy'], (int, float)) and not np.isnan(x['best_probe_accuracy']) else 0.0), # Primary sort: descending probe acc
+                                          x['best_val_mse'] if isinstance(x['best_val_mse'], (int, float)) and not np.isnan(x['best_val_mse']) else float('inf'), # Secondary sort: ascending val_mse
                                           x['run_best_train_mse'] if isinstance(x['run_best_train_mse'], (int, float)) and not np.isnan(x['run_best_train_mse']) else float('inf'),
                                           x['final_train_mse'] if isinstance(x['final_train_mse'], (int, float)) and not np.isnan(x['final_train_mse']) else float('inf'),
                                           x['run_number']))
@@ -388,6 +403,7 @@ def perform_hyperparameter_search():
             best_val_mse_val = result['best_val_mse']
             run_best_train_mse_val = result['run_best_train_mse']
             final_train_mse_val = result['final_train_mse']
+            best_probe_acc_val = result.get('best_probe_accuracy', 0.0)
             stop_reason = result.get('early_stop_reason')
             status_str = ""
 
@@ -421,6 +437,7 @@ def perform_hyperparameter_search():
                 final_train_mse_str = str(final_train_mse_val) 
                 if not status_str: status_str = "(TrFail)"
 
+            probe_acc_str = f"{best_probe_acc_val:.4f}" if isinstance(best_probe_acc_val, float) and best_probe_acc_val > 0 else "N/A"
 
             run_name_str = result.get('wandb_run_name', 'N/A')
             h_clip_str = f"{result['h_grad_clip_norm']:.1f}" if result['h_grad_clip_norm'] is not None else "None"
@@ -460,6 +477,7 @@ def perform_hyperparameter_search():
                 "IntL1": int_l1_log_str, # New
                 "IntL2": int_l2_log_str, # New
                 "Best Val MSE": best_val_mse_str,
+                "Best Probe Acc": probe_acc_str, # New
                 "Run Best Train MSE": run_best_train_mse_str,
                 "Final Train MSE": final_train_mse_str,
                 "Status": status_str,
@@ -480,6 +498,7 @@ def perform_hyperparameter_search():
             f.write(f"Best Params: num_blocks={best_run_info['num_blocks']}, batch_size={best_run_info['batch_size']}, hidden_size={best_run_info['hidden_size']}, num_heads={best_run_info['num_heads']}, use_vode_state_layernorm={vln_best_str}, peak_lr_hidden={best_run_info['lr_hidden']:.3e}, inference_lr_scale_base={best_scale_str}, inference_steps={best_run_info['inference_steps']}, warmup_steps={best_run_info['warmup_steps']}, hidden_momentum={hm_best_str}, h_grad_clip_norm={h_clip_best_str}, w_grad_clip_norm={w_clip_best_str}, seed={best_run_info['seed']}\n")
             f.write(f"Regularization: Intermediate L1={best_run_info['intermediate_l1_coeff']:.1e}, Intermediate L2={best_run_info['intermediate_l2_coeff']:.1e}\n") # New
             f.write(f"Achieved Overall Best Validation MSE: {best_run_info['overall_best_val_mse']:.6f}\n")
+            f.write(f"Achieved Best Linear Probe Accuracy: {best_run_info['best_linear_probe_accuracy']:.4f}\n") # New
             f.write(f"Run Best Train MSE of Best Val Run: {best_run_info['run_best_train_mse_of_best_val_run'] if isinstance(best_run_info['run_best_train_mse_of_best_val_run'], float) else 'N/A'}\n")
             f.write(f"Final Train MSE of Best Val Run: {best_run_info['final_train_mse_of_best_val_run'] if isinstance(best_run_info['final_train_mse_of_best_val_run'], float) else 'N/A'}\n")
             f.write(f" (lr_weights={best_run_info['lr_weights']:.3e} fixed)\n")
