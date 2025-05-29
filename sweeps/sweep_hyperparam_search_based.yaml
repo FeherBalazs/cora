@@ -10,7 +10,7 @@ parameters:
   
   # ARCHITECTURAL SEARCH SPACE (from the script)
   num_blocks:
-    values: [0, 1, 2, 3, 4, 5, 6]  # num_blocks_candidates
+    values: [6]  # num_blocks_candidates
   
   batch_size:
     value: 200  # batch_size_candidates = [200]
@@ -70,10 +70,10 @@ parameters:
     value: false
   
   num_images:
-    value: 3
+    value: 1
   
   test_subset:
-    value: 200
+    value: 1000
   
   train_subset:
     value: 50000
@@ -118,7 +118,7 @@ parameters:
     value: true
   
   early_stopping_patience:
-    value: 20
+    value: 10
   
   early_stopping_min_delta:
     value: 0.001
@@ -170,7 +170,7 @@ parameters:
   
   # LINEAR PROBING SETTINGS (from the script)
   linear_probe_every_n_epochs:
-    value: 10
+    value: 1
   
   linear_probe_vode_indices:
     value: "0"
@@ -188,7 +188,7 @@ parameters:
     value: 0.0001
   
   linear_probe_epochs:
-    value: 10
+    value: 1
   
   linear_probe_batch_size:
     value: 200

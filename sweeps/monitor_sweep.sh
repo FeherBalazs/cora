@@ -3,7 +3,7 @@
 LOG_DIR="sweep_logs"
 
 echo "=== Sweep Agent Status ==="
-echo "Active processes: $(ps aux | grep -c 'run_sweep.py.*0w4wlvej')"
+echo "Active processes: $(ps aux | grep -c 'run_sweep.py.*c1pmzydl')"
 echo "Log files: $(ls -1 $LOG_DIR/agent_*.log 2>/dev/null | wc -l)"
 echo ""
 

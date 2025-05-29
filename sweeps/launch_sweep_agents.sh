@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # Configuration
-SWEEP_ID="0w4wlvej"
-PROJECT="all-blocks-search"  # Updated to match your actual project
-NUM_AGENTS=25          # Reduced from 50 to fit in memory (35 × 2.5GB = 87.5GB)
-COUNT_PER_AGENT=20     # Increased from 10 to maintain total work (35×15 = 525 vs 50×10 = 500)
+SWEEP_ID="c1pmzydl"
+PROJECT="12-blocks"  # Updated to match your actual project
+NUM_AGENTS=3          # Reduced from 50 to fit in memory (35 × 2.5GB = 87.5GB)
+COUNT_PER_AGENT=100     # Increased from 10 to maintain total work (35×15 = 525 vs 50×10 = 500)
 LOG_DIR="sweep_logs"
 
 # Create log directory
@@ -16,7 +16,7 @@ echo "Logs will be saved to $LOG_DIR/"
 # Launch agents in background
 for i in $(seq 1 $NUM_AGENTS); do
     echo "Starting agent $i..."
-    nohup python examples/run_sweep.py \
+    nohup python ../examples/run_sweep.py \
         --sweep-id $SWEEP_ID \
         --project $PROJECT \
         --count $COUNT_PER_AGENT \

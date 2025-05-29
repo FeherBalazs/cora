@@ -40,7 +40,7 @@ def perform_hyperparameter_search():
         "early_stopping_patience": 20,
         "early_stopping_min_delta": 0.001,
         "early_stopping_metric": "train_mse",
-        "save_model_train_mse_threshold": 0.00005,
+        "save_model_train_mse_threshold": 0.008,
         "model_saving_metric": "train_mse",
         
         "use_vode_grad_norm": False,
@@ -57,13 +57,13 @@ def perform_hyperparameter_search():
         "lr_schedule_min_lr_factor": 0.5,
 
         # Linear Probing Defaults (can be overridden per run if made searchable)
-        "linear_probe_every_n_epochs": 10, # Disabled by default, enable for specific searches
-        "linear_probe_vode_indices": "0", # Example: probe all layers
+        "linear_probe_every_n_epochs": 25, # Disabled by default, enable for specific searches
+        "linear_probe_vode_indices": "0,1,4,7", # Example: probe all layers
         "linear_probe_concatenate_features": True, # Example: concatenate all specified
         "linear_probe_use_gap": True,
         "linear_probe_lr": 1e-3,
         "linear_probe_wd": 1e-4,
-        "linear_probe_epochs": 10, # A shorter number of epochs for hyperparam search might be wise
+        "linear_probe_epochs": 100, # A shorter number of epochs for hyperparam search might be wise
         "linear_probe_batch_size": 200,
         # "linear_probe_h_lr": None, # Will use main config's hidden_lr_inference
         # "linear_probe_inference_steps": None, # Will use main config's inference_steps
@@ -71,7 +71,7 @@ def perform_hyperparameter_search():
     }
 
     # --- Architectural Search Space ---
-    num_blocks_candidates = [0, 1, 2, 3, 4, 5, 6]
+    num_blocks_candidates = [6]
     batch_size_candidates = [200]
     hidden_size_candidates = [64]
     num_heads_candidates = [1]
@@ -81,15 +81,15 @@ def perform_hyperparameter_search():
     inference_lr_scale_base_candidates = [1.25]
     hidden_momentum_candidates = [0.4]
     h_grad_clip_norm_candidates = [2000]
-    seed_candidates = [10, 20]
+    seed_candidates = [10]
     inference_steps_candidates = [20]
     warmup_steps_candidates = [0]
     w_grad_clip_norm_candidates = [500.0]
     use_vode_state_layernorm_candidates = [False]
 
     # --- NEW: Regularization Search Space ---
-    intermediate_l1_coeff_candidates = [0.0001, 0.001, 0.01, 0.1, 0.0]
-    intermediate_l2_coeff_candidates = [0.0001, 0.001, 0.01, 0.1, 0.0]
+    intermediate_l1_coeff_candidates = [0.0001]
+    intermediate_l2_coeff_candidates = [0.0]
 
     best_run_info = {
         "num_blocks": None,

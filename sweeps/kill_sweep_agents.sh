@@ -17,6 +17,6 @@ for pid_file in $LOG_DIR/agent_*.pid; do
 done
 
 # Fallback: kill any remaining processes
-pkill -f "run_sweep.py.*0w4wlvej"
+pkill -f "run_sweep.py.*c1pmzydl"
 
 echo "All agents stopped." 
