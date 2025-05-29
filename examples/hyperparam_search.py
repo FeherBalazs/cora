@@ -19,7 +19,7 @@ def perform_hyperparameter_search():
         "epochs": 75,
         "theta": 10_000,
         "use_ssl_augmentations": False,
-        "use_cifar10_norm": False,
+        "use_cifar10_norm": True,
         "num_images": 3,
         "test_subset": 200,
         "train_subset": 50000,
@@ -37,7 +37,7 @@ def perform_hyperparameter_search():
         "update_weights_every_inference_step": False,
 
         "use_early_stopping": True,
-        "early_stopping_patience": 20,
+        "early_stopping_patience": 50,
         "early_stopping_min_delta": 0.001,
         "early_stopping_metric": "train_mse",
         "save_model_train_mse_threshold": 0.008,

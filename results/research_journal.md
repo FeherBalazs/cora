@@ -494,15 +494,85 @@
 
 
 - Experiment:
-  - Added L1 and L2 regularisation to intermediate Vode's 
-  - `intermediate_l1_coeff_candidates = [0.0, 0.0001, 0.001]`
-  - `intermediate_l2_coeff_candidates = [0.0, 0.0001, 0.001]`
+  - Added L1 and L2 regularisation to intermediate Vode's.
+  - `intermediate_l1_coeff_candidates = [0.0001, 0.001, 0.01, 0.1, 0.0]`
+  - `intermediate_l2_coeff_candidates = [0.0001, 0.001, 0.01, 0.1, 0.0]`
+  - `num_blocks_candidates = [0, 1, 2, 3, 4, 5, 6]`
   - `seed_candidates = [10, 20]`
-  - Run: [https://wandb.ai/neural-machines/pc-arch-search-hardcore-almeida?nw=nwusergradientracer](https://wandb.ai/neural-machines/pc-arch-search-hardcore-almeida?nw=nwusergradientracer)
+  - Run: [https://wandb.ai/neural-machines/pc-arch-search-bold-titan?nw=nwusergradientracer](https://wandb.ai/neural-machines/pc-arch-search-bold-titan?nw=nwusergradientracer)
   - Results:
+    - I will have to stop this, as I am running sequentially. Let's repeat it in a sweep. Actually I let it run - it might finish sooner.
+    - I stopped it but it has 191 runs up to 3 blocks setups - have to analyse as it is a lot of data
+
+- Experiment:
+  - Same as above but with wandb sweep.
+  - `intermediate_l1_coeff_candidates = [0.0001, 0.001, 0.01, 0.1, 0.0]`
+  - `intermediate_l2_coeff_candidates = [0.0001, 0.001, 0.01, 0.1, 0.0]`
+  - `num_blocks_candidates = [0, 1, 2, 3, 4, 5, 6]`
+  - `seed_candidates = [10, 20]`
+  - Run: [https://wandb.ai/neural-machines/all-blocks-search/sweeps/0w4wlvej?nw=nwusergradientracer](https://wandb.ai/neural-machines/all-blocks-search/sweeps/0w4wlvej?nw=nwusergradientracer)
+  - Results:
+    - Had to stop as it was not running efficiently, and there is only marginal benefit of the sweep around L1 and L2 based on quick analysis
+    - Of the 6 block runs which finished, 8 showed improving trends with respect to linear probing accuracy. I have to analyse the settings for those and try them on longer runs, as many early stopped due to MSE metric.
+    - Best setting is with L2=0, L1=0.0001 which gets 0.345 linear probe accuracy for vode_0 by epoch 75 - and generally seems like an upward improving trend for the probe accuracy
+    -
+
+- Experiment:
+  - Best 6 block setting:
+  - `intermediate_l1_coeff_candidates = [0.0001]`
+  - `intermediate_l2_coeff_candidates = [0.0]`
+  - `linear_probe_epochs: 100`
+  - `seed_candidates = [10]`
+  - Run: [https://wandb.ai/neural-machines/pc-arch-search-jovial-swirles/runs/p5vul1hk?nw=nwusergradientracer](https://wandb.ai/neural-machines/pc-arch-search-jovial-swirles/runs/p5vul1hk?nw=nwusergradientracer)
+  - Results:
+    - Vodes _concat_0_1_4_7 - Final Best Test Accuracy: 0.4150 by 25 epochs
+    - It actually early stopped, and differed from the sweep results that were run on GH200. This one run on RTX 4070.
+  - Interpretation and next steps:
+    - This is a significant jump from earlier results. 
+    - Let's fix ES and run again.
+
+- Experiment:
+  - Best 6 block setting - but add cifar10 normalisation out of curiosity:
+  - `use_cifar10_norm": True`
+  - `intermediate_l1_coeff_candidates = [0.0001]`
+  - `intermediate_l2_coeff_candidates = [0.0]`
+  - `linear_probe_epochs: 100`
+  - `seed_candidates = [10]`
+  - Run: [https://wandb.ai/neural-machines/pc-arch-search-goofy-mirzakhani/runs/s60gnvdo?nw=nwusergradientracer](https://wandb.ai/neural-machines/pc-arch-search-goofy-mirzakhani/runs/s60gnvdo?nw=nwusergradientracer)
+  - Results:
+    - Better results with normalisation
+    - Vodes _concat_0_1_4_7 - Final Best Test Accuracy: 0.4250 by 25 epochs
     - 
 
 
+- Experiment:
+  - This might be silly but running 12 block extensive search locally with 3 agents
+  - sweep_12block_comprehensive.yaml
+  - Run: [https://wandb.ai/neural-machines/12-blocks/sweeps/c1pmzydl?nw=nwusergradientracer](https://wandb.ai/neural-machines/12-blocks/sweeps/c1pmzydl?nw=nwusergradientracer)
+  - Results:
+    - It has crashed. I dont think it got far, but let's analyse.
+
+
+
+TODO:
+smaller run locally with just block6 - but what settings?
+    
+
+              - Experiment:
+                - First large wandb sweep.
+                - Run: [https://wandb.ai/neural-machines/mse-vs-probe-search/sweeps/85slx9fu?nw=nwusergradientracer](https://wandb.ai/neural-machines/mse-vs-probe-search/sweeps/85slx9fu?nw=nwusergradientracer)
+                - Results:
+                  - I had to stop it because of ssl_augmentation bottleneck.
+
+              - Experiment:
+                - Second large sweep without SSL augmentation
+                - Run: [https://wandb.ai/neural-machines/6block-search/sweeps/6wrc9jid?nw=nwusergradientracer](https://wandb.ai/neural-machines/6block-search/sweeps/6wrc9jid?nw=nwusergradientracer)
+                Results:
+                  - I had to stop this as I added too many agents and memory bottlenecked.
+
+
+
+python examples/run_sweep.py --sweep-config sweep_mse_vs_probe.yaml --project "all-blocks-search" --create-only
 
 
 Experiment:
