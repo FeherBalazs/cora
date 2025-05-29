@@ -46,8 +46,8 @@ def run_sweep_agent(sweep_id, project, entity=None, count=None):
 
 def main():
     parser = argparse.ArgumentParser(description='Run W&B hyperparameter sweeps')
-    parser.add_argument('--sweep-config', type=str, required=True,
-                        help='Path to sweep configuration YAML file')
+    parser.add_argument('--sweep-config', type=str, default=None,
+                        help='Path to sweep configuration YAML file (required for creating new sweeps)')
     parser.add_argument('--project', type=str, required=True,
                         help='W&B project name')
     parser.add_argument('--entity', type=str, default=None,
@@ -61,15 +61,18 @@ def main():
     
     args = parser.parse_args()
     
-    # Load sweep configuration
-    sweep_config = load_sweep_config(args.sweep_config)
-    print(f"Loaded sweep config from {args.sweep_config}")
+    # Validation: sweep-config is required only when creating a new sweep
+    if not args.sweep_id and not args.sweep_config:
+        parser.error("--sweep-config is required when creating a new sweep (no --sweep-id provided)")
     
     # Create or use existing sweep
     if args.sweep_id:
         sweep_id = args.sweep_id
         print(f"Using existing sweep: {sweep_id}")
     else:
+        # Load sweep configuration for creating new sweep
+        sweep_config = load_sweep_config(args.sweep_config)
+        print(f"Loaded sweep config from {args.sweep_config}")
         sweep_id = create_sweep(sweep_config, args.project, args.entity)
         print(f"Created new sweep: {sweep_id}")
         print(f"W&B URL: https://wandb.ai/{args.entity or 'your-entity'}/{args.project}/sweeps/{sweep_id}")

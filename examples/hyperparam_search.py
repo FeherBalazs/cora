@@ -18,7 +18,7 @@ def perform_hyperparameter_search():
     fixed_overrides = {
         "epochs": 75,
         "theta": 10_000,
-        "use_ssl_augmentations": True,
+        "use_ssl_augmentations": False,
         "use_cifar10_norm": False,
         "num_images": 3,
         "test_subset": 200,
@@ -40,7 +40,7 @@ def perform_hyperparameter_search():
         "early_stopping_patience": 20,
         "early_stopping_min_delta": 0.001,
         "early_stopping_metric": "train_mse",
-        "save_model_train_mse_threshold": 0.009,
+        "save_model_train_mse_threshold": 0.00005,
         "model_saving_metric": "train_mse",
         
         "use_vode_grad_norm": False,
