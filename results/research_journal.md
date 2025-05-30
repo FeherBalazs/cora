@@ -542,6 +542,31 @@
   - Results:
     - Better results with normalisation
     - Vodes _concat_0_1_4_7 - Final Best Test Accuracy: 0.4250 by 25 epochs
+    - Vodes _concat_0_1_4_7 - Final Best Test Accuracy: 0.4350 by 50 epochs
+    - Vodes _concat_0_1_4_7 - Final Best Test Accuracy: 0.4100 by 75 epochs - The run has diverged based on MSE jumped from 0.014 to 0.33 at epoch 69.
+  - Interpretation and next steps:
+    - Great results but diverged at the end - likely did not get the very best epoch for linear probing. 
+    - Try data augmentation next and compare - maybe it will not diverge with that 
+
+- Epxeriment:
+  - Same as above but also add data augmentations
+  - `use_ssl_augmentations: True`
+  - `use_cifar10_norm: True`
+  - `intermediate_l1_coeff_candidates = [0.0001]`
+  - `intermediate_l2_coeff_candidates = [0.0]`
+  - `linear_probe_epochs: 100`
+  - `seed_candidates = [10]`
+  - Run: [https://wandb.ai/neural-machines/pc-arch-search-goofy-mirzakhani/runs/s60gnvdo?nw=nwusergradientracer](https://wandb.ai/neural-machines/pc-arch-search-goofy-mirzakhani/runs/s60gnvdo?nw=nwusergradientracer)
+  - Results:
+   - Smoother, more slowly converging MSE loss
+   - Vodes _concat_0_1_4_7 - Final Best Test Accuracy: 0.4200 by 25 epochs
+   - Vodes _concat_0_1_4_7 - Final Best Test Accuracy: 0.4450 by 50 epochs
+
+
+- Experiment:
+  - Bayesian grid search around best 6 block params (without data augmentation for speed)
+  - Run: [https://wandb.ai/neural-machines/refine-6blocks/sweeps/oq1mmadp?nw=nwusergradientracer](https://wandb.ai/neural-machines/refine-6blocks/sweeps/oq1mmadp?nw=nwusergradientracer)
+  - Results: 
     - 
 
 
@@ -572,7 +597,9 @@ smaller run locally with just block6 - but what settings?
 
 
 
-python examples/run_sweep.py --sweep-config sweep_mse_vs_probe.yaml --project "all-blocks-search" --create-only
+python examples/run_sweep.py --sweep-config sweeps/sweep_focused_search.yaml --project "refine-6blocks"
+
+nohup python examples/run_sweep.py --sweep-id "oq1mmadp" --project "refine-6blocks" > sweep_agent.log 2>&1 &
 
 
 Experiment:
