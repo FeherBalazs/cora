@@ -10,7 +10,7 @@
 
 Cora is a JAX-based library that integrates predictive coding with transformer architectures, initially focusing on image reconstruction and generation, with a long-term goal of video prediction. It is built on top of the [PCX library](https://github.com/liukidar/pcax), which provides a highly configurable framework for developing predictive coding networks. Cora aims to explore the potential advantages of predictive coding with transformer architectures, particularly in terms of generative capabilities derived from energy minimization and local updates.
 
-**Current Status (v0.4.0):** The library now includes a functional Predictive Coding Vision Transformer (PC-ViT) model. Key achievements include successful image reconstruction on CIFAR-10 subsets and scaling unsupervised training to the full CIFAR-10 dataset with a 6-block model achieving ~0.008 MSE. These results validate the core energy-based generative inference mechanism and demonstrate the model's capability to learn from larger datasets.
+**Current Status (v0.6.0):** The library now includes a functional Predictive Coding Vision Transformer (PC-ViT) model. Key achievements include successful image reconstruction on CIFAR-10 subsets, scaling unsupervised training to the full CIFAR-10 dataset with a 6-block model achieving ~0.004 MSE. The model now incorporates L1/L2 regularization options for intermediate Vodes, and hyperparameter tuning is systematically performed using Weights & Biases sweeps. These results validate the core energy-based generative inference mechanism and demonstrate the model's capability to learn meaningful representations from larger datasets.
 
 ## Installation
 
@@ -60,8 +60,10 @@ Cora is an active research project. My planned roadmap includes:
 
 *   [x] Implement and validate PC-ViT for masked image reconstruction (CIFAR-10 subset). *(v0.3.0)*
 *   [x] Scale unsupervised training to the full CIFAR-10 dataset. *(v0.4.0 - Successfully trained a 6-block model on the full dataset, achieving ~0.008 MSE)*
-*   [x] Evaluate learned representations using linear probing on CIFAR-10 classification. *(v0.5.0)
-*   [ ] Experiment with methods for creating more meaningful abstract features, informed by linear probing results.
+*   [x] Evaluate learned representations using linear probing on CIFAR-10 classification. *(v0.5.0 - Initial probing setup)*
+*   [x] Add basic regularisation to latents. *(v0.6.0 - Current best linear probing results: 46% on CIFAR-10 on a smaller validation set)*
+*   [x] Implement systematic hyperparameter search using W&B sweeps. *(v0.6.0)*
+*   [ ] Experiment with methods for creating more meaningful abstract features, informed by linear probing results
 *   [ ] Implement label conditioning mechanisms within the PC-ViT architecture.
 *   [ ] Demonstrate label-conditioned image generation on CIFAR-10.
 
@@ -83,19 +85,7 @@ Cora is an active research project. My planned roadmap includes:
 *   **Tune SSL Pretraining for Better Downstream Task Performance**: Leverage the linear probing framework to guide hyperparameter tuning and architectural choices for SSL pretraining, aiming to improve the quality of learned representations for tasks like classification.
 
 ## Citation
-If you find Cora useful in your work, please cite the original PCX paper: [arXiv link](https://arxiv.org/abs/2407.01163) and this repo (an OpenReview paper is coming soon).
-
-```bibtex
-@article{pinchetti2024benchmarkingpredictivecodingnetworks,
-      title={Benchmarking Predictive Coding Networks -- Made Simple}, 
-      author={Luca Pinchetti and Chang Qi and Oleh Lokshyn and Gaspard Olivers and Cornelius Emde and Mufeng Tang and Amine M'Charrak and Simon Frieder and Bayar Menzat and Rafal Bogacz and Thomas Lukasiewicz and Tommaso Salvatori},
-      year={2024},
-      eprint={2407.01163},
-      archivePrefix={arXiv},
-      primaryClass={cs.LG},
-      url={https://arxiv.org/abs/2407.01163}, 
-}
-```
+If you find Cora useful in your work, please cite this repo (an OpenReview paper is coming soon).
 
 ## Original Repository
 Cora is built on the PCX library, available at https://github.com/liukidar/pcax.
