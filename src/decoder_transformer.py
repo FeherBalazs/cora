@@ -598,7 +598,7 @@ def eval_pretext_metrics(dataloader, T_values, use_corruption, corrupt_ratio, *,
     return avg_metrics
 
 
-def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.Optim, epoch=None):
+def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.Optim, epoch=None, gpu_augmentations=None):
     batch_w_energies = []
     batch_train_mses = []
     step = 0
@@ -609,6 +609,40 @@ def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.
     
     for x, y in pbar:
     # for x, y in dl:
+        # Apply GPU augmentations if available
+        if gpu_augmentations is not None:
+            import torch
+            # Convert to PyTorch tensor if needed
+            if not isinstance(x, torch.Tensor):
+                x_tensor = torch.from_numpy(x.numpy()) if hasattr(x, 'numpy') else torch.tensor(x)
+            else:
+                x_tensor = x
+            
+            # Ensure tensor is float and on GPU
+            x_tensor = x_tensor.float()
+            if torch.cuda.is_available():
+                x_tensor = x_tensor.cuda()
+            
+            # Apply augmentations
+            try:
+                from examples.debug_transformer_wandb import apply_gpu_augmentations
+                x_tensor = apply_gpu_augmentations(x_tensor, gpu_augmentations)
+                # Convert back to JAX format
+                if torch.cuda.is_available():
+                    x_augmented = x_tensor.cpu().numpy()
+                else:
+                    x_augmented = x_tensor.numpy()
+                x = x_augmented
+            except Exception as e:
+                # Fallback to CPU augmentations
+                try:
+                    from examples.debug_transformer_wandb import apply_cpu_fallback_augmentations
+                    x = apply_cpu_fallback_augmentations(x)
+                except Exception as fallback_e:
+                    # if step == 0:  # Only print once per epoch
+                        # print(f"Warning: Both GPU and CPU augmentations failed, using original batch. GPU error: {e}, CPU error: {fallback_e}")
+                    pass
+        
         # Now returns train_mse as the 5th element
         h_energy, w_energy, h_grad, w_grad, train_mse = train_on_batch(
             T, jnp.array(x), model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch, step=step

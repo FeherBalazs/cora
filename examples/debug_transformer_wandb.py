@@ -9,6 +9,7 @@ import torchvision
 import torchvision.transforms as transforms
 import jax
 import jax.numpy as jnp
+import jax.random as jrand
 import optax
 import pcx
 import pcx.utils as pxu
@@ -27,6 +28,7 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 from typing import Callable
 import imageio
+import equinox as eqx
 
 # Add the src directory to the path
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
@@ -52,6 +54,13 @@ import random # Import Python's random module
 from examples.linear_probe import run_linear_probe_evaluation
 
 from src.config import MODEL_CONFIGS, ModelConfig, DEFAULT_CONFIG, create_config
+
+try:
+    import kornia.augmentation as K
+    KORNIA_AVAILABLE = True
+except ImportError:
+    KORNIA_AVAILABLE = False
+    print("Kornia not available. Install with: pip install kornia")
 
 
 def str_to_bool(value):
@@ -198,14 +207,8 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
     height, width = 32, 32
 
     if use_ssl_augmentations: # For now, this flag will enable the ViT script's augmentations
-        print("Using data augmentations from vision_transformer_script.py for training.")
+        print("Using minimal CPU augmentations - heavy augmentations will be done on GPU.")
         train_transform_list = [
-            # transforms.RandomCrop(32, padding=4),
-            # transforms.Resize((height, width)), # Ensure this matches expected input if different from crop
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomResizedCrop(size=32, scale=(0.2, 1.0)), # SSL Aug: Commented out
-            transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1), # SSL Aug: Commented out
-            transforms.GaussianBlur(kernel_size=3), # SSL Aug: Commented out
             transforms.ToTensor(),
             transforms.Normalize(mean, std) # Use selected normalization
         ]
@@ -282,6 +285,76 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
             return len(self.dataloader)
     
     return TorchDataloader(train_dataloader), TorchDataloader(test_dataloader)
+
+
+def setup_gpu_augmentations(use_ssl_augmentations=True):
+    """Setup GPU-accelerated augmentations using Kornia."""
+    if not use_ssl_augmentations or not KORNIA_AVAILABLE:
+        return None
+    
+    # GPU augmentations using Kornia
+    gpu_augmentations = K.AugmentationSequential(
+        K.RandomHorizontalFlip(p=0.5),
+        K.RandomResizedCrop(size=(32, 32), scale=(0.8, 1.0), ratio=(0.9, 1.1)),
+        K.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
+        # Note: Kornia's GaussianBlur is much faster on GPU if needed
+        # K.RandomGaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0), p=0.3),
+        same_on_batch=False
+    )
+    return gpu_augmentations
+
+
+def apply_gpu_augmentations(batch_tensor, gpu_augmentations):
+    """Apply GPU augmentations to a batch of images."""
+    if gpu_augmentations is None:
+        return batch_tensor
+    
+    # Ensure tensor is on GPU and in float format
+    if not batch_tensor.is_cuda:
+        batch_tensor = batch_tensor.cuda()
+    
+    # Apply augmentations
+    with torch.no_grad():  # Don't track gradients for augmentations
+        augmented = gpu_augmentations(batch_tensor)
+    
+    return augmented
+
+
+def apply_cpu_fallback_augmentations(x):
+    """Apply CPU-based augmentations when GPU augmentations fail."""
+    import torch
+    import torchvision.transforms as transforms
+    
+    # Convert to PyTorch tensor if needed
+    if not isinstance(x, torch.Tensor):
+        x_tensor = torch.from_numpy(x.numpy()) if hasattr(x, 'numpy') else torch.tensor(x)
+    else:
+        x_tensor = x
+    
+    # Ensure tensor is float
+    x_tensor = x_tensor.float()
+    
+    # Define CPU augmentations (same as GPU but using torchvision)
+    cpu_augmentations = transforms.Compose([
+        transforms.RandomHorizontalFlip(p=0.5),
+        transforms.RandomResizedCrop(size=32, scale=(0.8, 1.0), ratio=(0.9, 1.1)),
+        transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
+    ])
+    
+    # Apply augmentations batch-wise
+    augmented_batch = []
+    for i in range(x_tensor.shape[0]):
+        # Convert single image from [C, H, W] to PIL format for transforms
+        img = x_tensor[i]  # Shape: [C, H, W]
+        # torchvision transforms expect [C, H, W] tensor, which we have
+        augmented_img = cpu_augmentations(img)
+        augmented_batch.append(augmented_img)
+    
+    # Stack back into batch
+    augmented_tensor = torch.stack(augmented_batch)
+    
+    # Convert back to numpy for JAX
+    return augmented_tensor.numpy()
 
 
 def create_reconstruction_images(intermediate_recons, T_values, orig_images, masked_images, labels_list, num_images, image_shape, wandb_run, epoch, reconstruction_mses=None):
@@ -1069,6 +1142,15 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     
     print(f"Training for {config.epochs} epochs with W&B logging...")
 
+    # Setup GPU augmentations if enabled
+    gpu_augmentations = setup_gpu_augmentations(config.use_ssl_augmentations)
+    if gpu_augmentations is not None and KORNIA_AVAILABLE:
+        print("GPU augmentations enabled using Kornia.")
+    elif config.use_ssl_augmentations and not KORNIA_AVAILABLE:
+        print("Warning: SSL augmentations requested but Kornia not available. Using simple CPU augmentations.")
+    else:
+        print("No augmentations will be applied.")
+
     # Initialize best_train_mse_this_run to track the minimum training MSE for the current run
     best_train_mse_this_run = float('inf')
 
@@ -1117,7 +1199,7 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         
         # Train for one epoch
         avg_train_w_energy, avg_train_mse, h_grad, w_grad = train(
-            train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch
+            train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch, gpu_augmentations=gpu_augmentations
         )
         
         avg_train_w_energy = float(avg_train_w_energy) if not jnp.isnan(avg_train_w_energy) else float('nan')

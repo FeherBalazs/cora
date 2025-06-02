@@ -18,7 +18,7 @@ def perform_hyperparameter_search():
     fixed_overrides = {
         "epochs": 75,
         "theta": 10_000,
-        "use_ssl_augmentations": False,
+        "use_ssl_augmentations": True,
         "use_cifar10_norm": True,
         "num_images": 3,
         "test_subset": 200,
