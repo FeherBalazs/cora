@@ -1,0 +1,197 @@
+program: examples/debug_transformer_wandb.py
+method: grid  # Use grid to explore all combinations like the script does
+metric:
+  goal: maximize
+  name: best_probe_accuracy
+parameters:
+  # Base configuration from hyperparam_search.py
+  config:
+    value: "6block"
+  
+  # ARCHITECTURAL SEARCH SPACE (from the script)
+  num_blocks:
+    values: [6]  # num_blocks_candidates
+  
+  batch_size:
+    value: 200  # batch_size_candidates = [200]
+  
+  hidden_size:
+    value: 64  # hidden_size_candidates = [64]
+  
+  num_heads:
+    value: 1  # num_heads_candidates = [1]
+  
+  # HYPERPARAMETER SEARCH SPACE (from the script)
+  peak_lr_hidden:
+    value: 0.095  # lr_hidden_candidates = [0.095]
+  
+  inference_lr_scale_base:
+    value: 1.25  # inference_lr_scale_base_candidates = [1.25]
+  
+  hidden_momentum:
+    value: 0.4  # hidden_momentum_candidates = [0.4]
+  
+  h_grad_clip_norm:
+    value: 2000  # h_grad_clip_norm_candidates = [2000]
+  
+  w_grad_clip_norm:
+    value: 500.0  # w_grad_clip_norm_candidates = [500.0]
+  
+  inference_steps:
+    value: 20  # inference_steps_candidates = [20]
+  
+  warmup_steps:
+    value: 0  # warmup_steps_candidates = [0]
+  
+  use_vode_state_layernorm:
+    value: false  # use_vode_state_layernorm_candidates = [False]
+  
+  seed:
+    values: [10, 20]  # seed_candidates = [10, 20]
+  
+  # REGULARIZATION SEARCH SPACE (from the script)
+  intermediate_l1_coeff:
+    values: [0.0, 0.0001, 0.001, 0.01, 0.1]  # intermediate_l1_coeff_candidates
+  
+  intermediate_l2_coeff:
+    values: [0.0, 0.0001, 0.001, 0.01, 0.1]  # intermediate_l2_coeff_candidates
+  
+  # FIXED OVERRIDES (from fixed_overrides dict in the script)
+  epochs:
+    value: 75
+  
+  theta:
+    value: 10000
+  
+  use_ssl_augmentations:
+    value: false
+  
+  use_cifar10_norm:
+    value: false
+  
+  num_images:
+    value: 1
+  
+  test_subset:
+    value: 1000
+  
+  train_subset:
+    value: 50000
+  
+  peak_lr_weights:
+    value: 0.001
+  
+  hidden_lr_inference:
+    value: 0.095
+  
+  reconstruction_every_n_epochs:
+    value: 25
+  
+  validation_every_n_epochs:
+    value: 25
+  
+  use_inference_lr_scaling:
+    value: true
+  
+  use_lr_schedule_w:
+    value: true
+  
+  use_lr_schedule_h:
+    value: true
+  
+  weight_decay:
+    value: 0.0002
+  
+  mlp_ratio:
+    value: 4.0
+  
+  patch_size:
+    value: 4
+  
+  use_noise:
+    value: true
+  
+  update_weights_every_inference_step:
+    value: false
+  
+  use_early_stopping:
+    value: true
+  
+  early_stopping_patience:
+    value: 10
+  
+  early_stopping_min_delta:
+    value: 0.001
+  
+  early_stopping_metric:
+    value: "train_mse"
+  
+  save_model_train_mse_threshold:
+    value: 0.00005
+  
+  model_saving_metric:
+    value: "train_mse"
+  
+  use_vode_grad_norm:
+    value: false
+  
+  use_adamw_for_hidden_optimizer:
+    value: false
+  
+  corrupt_ratio:
+    value: 0.25
+  
+  use_lower_half_mask:
+    value: false
+  
+  inference_clamp_alpha:
+    value: 1.0
+  
+  save_reconstruction_images:
+    value: true
+  
+  save_reconstruction_video:
+    value: true
+  
+  video_fps:
+    value: 5
+  
+  reinitialize_model_for_each_epoch:
+    value: false
+  
+  use_status_init_in_training:
+    value: false
+  
+  use_status_init_in_unmasking:
+    value: false
+  
+  lr_schedule_min_lr_factor:
+    value: 0.5
+  
+  # LINEAR PROBING SETTINGS (from the script)
+  linear_probe_every_n_epochs:
+    value: 1
+  
+  linear_probe_vode_indices:
+    value: "0"
+  
+  linear_probe_concatenate_features:
+    value: true
+  
+  linear_probe_use_gap:
+    value: true
+  
+  linear_probe_lr:
+    value: 0.001
+  
+  linear_probe_wd:
+    value: 0.0001
+  
+  linear_probe_epochs:
+    value: 1
+  
+  linear_probe_batch_size:
+    value: 200
+  
+  linear_probe_seed:
+    value: 123 

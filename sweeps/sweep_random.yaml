@@ -1,0 +1,161 @@
+program: examples/debug_transformer_wandb.py
+method: random
+run_cap: 120  # Total experiments across all agents
+metric:
+  goal: maximize
+  name: best_probe_accuracy
+parameters:
+  # Base configuration (always fixed)
+  config:
+    value: "6block"
+  
+  # ARCHITECTURE - fixed for this search
+  num_blocks:
+    value: 6  # Fixed at 6 blocks
+  
+  # SINGLE SEED for broader search (confirm best configs later with multiple seeds)
+  seed:
+    values: [42, 123]  # 2 seeds since we can afford more experiments
+  
+  # PRIMARY SEARCH TARGETS - L1/L2 regularization
+  intermediate_l1_coeff:
+    distribution: log_uniform_values
+    min: 0.00001  # Extend range lower
+    max: 0.1
+  
+  intermediate_l2_coeff:
+    distribution: log_uniform_values  
+    min: 0.00001  # Extend range lower
+    max: 0.1
+  
+  # SECONDARY SEARCH TARGETS - learning and optimization
+  peak_lr_hidden:
+    distribution: log_uniform_values
+    min: 0.03  # Expand range
+    max: 0.2
+  
+  inference_lr_scale_base:
+    distribution: uniform
+    min: 0.8  # Expand range
+    max: 1.8
+  
+  hidden_momentum:
+    values: [0.2, 0.3, 0.4, 0.5, 0.6]  # More options
+  
+  # OPTIMIZATION PARAMETERS
+  h_grad_clip_norm:
+    distribution: uniform
+    min: 1000.0  # Expand range
+    max: 4000.0
+    
+  w_grad_clip_norm:
+    values: [200.0, 300.0, 500.0, 1000.0, 1500.0]  # More options
+  
+  inference_steps:
+    values: [10, 15, 20, 25, 30]  # More options
+  
+  # FIXED ARCHITECTURE
+  batch_size:
+    value: 200
+  hidden_size:
+    value: 64
+  num_heads:
+    value: 1
+  warmup_steps:
+    value: 0
+  use_vode_state_layernorm:
+    value: false
+  
+  # FIXED TRAINING SETTINGS
+  epochs:
+    value: 15  # Slightly longer for better evaluation
+  theta:
+    value: 10000
+  use_ssl_augmentations:
+    value: true
+  use_cifar10_norm:
+    value: false
+  num_images:
+    value: 2
+  test_subset:
+    value: 200  # Larger for better probe accuracy measurement
+  train_subset:
+    value: 50000  # Larger for better representation learning
+  peak_lr_weights:
+    value: 0.001
+  hidden_lr_inference:
+    value: 0.095
+  reconstruction_every_n_epochs:
+    value: 5
+  validation_every_n_epochs:
+    value: 5
+  use_inference_lr_scaling:
+    value: true
+  use_lr_schedule_w:
+    value: true
+  use_lr_schedule_h:
+    value: true
+  weight_decay:
+    value: 0.0002
+  mlp_ratio:
+    value: 4.0
+  patch_size:
+    value: 4
+  use_noise:
+    value: true
+  update_weights_every_inference_step:
+    value: false
+  use_early_stopping:
+    value: true
+  early_stopping_patience:
+    value: 10  # Longer patience for better convergence
+  early_stopping_min_delta:
+    value: 0.001
+  early_stopping_metric:
+    value: "train_mse"
+  save_model_train_mse_threshold:
+    value: 0.009
+  model_saving_metric:
+    value: "train_mse"
+  use_vode_grad_norm:
+    value: false
+  use_adamw_for_hidden_optimizer:
+    value: false
+  corrupt_ratio:
+    value: 0.25
+  use_lower_half_mask:
+    value: false
+  inference_clamp_alpha:
+    value: 1.0
+  save_reconstruction_images:
+    value: true
+  save_reconstruction_video:
+    value: false
+  video_fps:
+    value: 5
+  reinitialize_model_for_each_epoch:
+    value: false
+  use_status_init_in_training:
+    value: false
+  use_status_init_in_unmasking:
+    value: false
+  lr_schedule_min_lr_factor:
+    value: 0.5
+  linear_probe_every_n_epochs:
+    value: 5
+  linear_probe_vode_indices:
+    value: "0"
+  linear_probe_concatenate_features:
+    value: true
+  linear_probe_use_gap:
+    value: true
+  linear_probe_lr:
+    value: 0.001
+  linear_probe_wd:
+    value: 0.0001
+  linear_probe_epochs:
+    value: 15  # More epochs for better probe accuracy
+  linear_probe_batch_size:
+    value: 200
+  linear_probe_seed:
+    value: 123 

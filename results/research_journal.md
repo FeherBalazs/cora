@@ -458,6 +458,116 @@
   - Interpretation:
     - stop this line of experiments for now - refocus effort on linear probing and what affects linear probing scores
 
+- Experiment:
+  - Best 6block settings with data augmentation
+  - `use_ssl_augmentations`: with gaussian blur, colorjitter, etc.
+  - `theta = 10_000`
+  - `seed_candidates = [80, 90, 10, 20, 30, 40, 50, 60, 70]`
+  - Run: [https://wandb.ai/neural-machines/pc-arch-search-festive-jones](https://wandb.ai/neural-machines/pc-arch-search-festive-jones)
+  - Results:
+    - hyperparam_search_results_6block_20250527_003033.txt
+    - Only one seed diverged all the rest nicely converged, most of them reachnig below or around 0.008 train and val MSE
+    - Also a new lowest train MSE with seed 10: 0.003547:
+      - nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250526_155633.npz
+      - Linear probe results: 
+        Vode Combination: 2, Test Accuracy: 0.2920, Num Features: 64
+        Vode Combination: 3, Test Accuracy: 0.2906, Num Features: 64
+        Vode Combination: 5, Test Accuracy: 0.2900, Num Features: 64
+        Vode Combination: 7, Test Accuracy: 0.2900, Num Features: 64
+        Vode Combination: 4, Test Accuracy: 0.2898, Num Features: 64
+        Vode Combination: 6, Test Accuracy: 0.2898, Num Features: 64
+        Vode Combination: 1, Test Accuracy: 0.2890, Num Features: 64
+        Vode Combination: 0, Test Accuracy: 0.2795, Num Features: 48
+        - Combination:
+          - Vode Combination: _concat_1_4_7, Test Accuracy: 0.3104, Num Features: 192
+            - also tried a little grid search with probe_lr: 0.1, 0.01, 0.0001 - they all slightly dropped accuracy so keeping the default for now: 0.001
+          - Vode Combination: _concat_0_2_4_7, Test Accuracy: 0.3083, Num Features: 240
+          - Vode Combination: _concat_2_3_5_7, Test Accuracy: 0.3078, Num Features: 256
+          - Vode Combination: _concat_2_3_5, Test Accuracy: 0.3022, Num Features: 192
+          - Vodes _concat_0_1_2_3_4_5_6_7 - Final Test Accuracy: 0.2322
+          - Vodes _concat_0_7 - Final Test Accuracy: 0.2984
+          - Vodes _concat_0_6_7 - Final Test Accuracy: 0.3051
+  - Interpretations and next steps:
+    - better MSE and/or added data augmentation and theta increased linear probing results, with best combined accuracy of 0.3051
+    - this is still low but shows the promise of using data augmentations
+    - this is still based on using purely MSE 
+
+
+- Experiment:
+  - Added L1 and L2 regularisation to intermediate Vode's.
+  - `intermediate_l1_coeff_candidates = [0.0001, 0.001, 0.01, 0.1, 0.0]`
+  - `intermediate_l2_coeff_candidates = [0.0001, 0.001, 0.01, 0.1, 0.0]`
+  - `num_blocks_candidates = [0, 1, 2, 3, 4, 5, 6]`
+  - `seed_candidates = [10, 20]`
+  - Run: [https://wandb.ai/neural-machines/pc-arch-search-bold-titan?nw=nwusergradientracer](https://wandb.ai/neural-machines/pc-arch-search-bold-titan?nw=nwusergradientracer)
+  - Results:
+    - I will have to stop this, as I am running sequentially. Let's repeat it in a sweep. Actually I let it run - it might finish sooner.
+    - I stopped it but it has 191 runs up to 3 blocks setups - have to analyse as it is a lot of data
+
+- Experiment:
+  - Same as above but with wandb sweep.
+  - `intermediate_l1_coeff_candidates = [0.0001, 0.001, 0.01, 0.1, 0.0]`
+  - `intermediate_l2_coeff_candidates = [0.0001, 0.001, 0.01, 0.1, 0.0]`
+  - `num_blocks_candidates = [0, 1, 2, 3, 4, 5, 6]`
+  - `seed_candidates = [10, 20]`
+  - Run: [https://wandb.ai/neural-machines/all-blocks-search/sweeps/0w4wlvej?nw=nwusergradientracer](https://wandb.ai/neural-machines/all-blocks-search/sweeps/0w4wlvej?nw=nwusergradientracer)
+  - Results:
+    - Had to stop as it was not running efficiently, and there is only marginal benefit of the sweep around L1 and L2 based on quick analysis
+    - Of the 6 block runs which finished, 8 showed improving trends with respect to linear probing accuracy. I have to analyse the settings for those and try them on longer runs, as many early stopped due to MSE metric.
+    - Best setting is with L2=0, L1=0.0001 which gets 0.345 linear probe accuracy for vode_0 by epoch 75 - and generally seems like an upward improving trend for the probe accuracy
+    -
+
+- Experiment:
+  - Best 6 block setting:
+  - `intermediate_l1_coeff_candidates = [0.0001]`
+  - `intermediate_l2_coeff_candidates = [0.0]`
+  - `linear_probe_epochs: 100`
+  - `seed_candidates = [10]`
+  - Run: [https://wandb.ai/neural-machines/pc-arch-search-jovial-swirles/runs/p5vul1hk?nw=nwusergradientracer](https://wandb.ai/neural-machines/pc-arch-search-jovial-swirles/runs/p5vul1hk?nw=nwusergradientracer)
+  - Results:
+    - Vodes _concat_0_1_4_7 - Final Best Test Accuracy: 0.4150 by 25 epochs
+    - It actually early stopped, and differed from the sweep results that were run on GH200. This one run on RTX 4070.
+  - Interpretation and next steps:
+    - This is a significant jump from earlier results. 
+    - Let's fix ES and run again.
+
+- Experiment:
+  - Best 6 block setting - but add cifar10 normalisation out of curiosity:
+  - `use_cifar10_norm": True`
+  - `intermediate_l1_coeff_candidates = [0.0001]`
+  - `intermediate_l2_coeff_candidates = [0.0]`
+  - `linear_probe_epochs: 100`
+  - `seed_candidates = [10]`
+  - Run: [https://wandb.ai/neural-machines/pc-arch-search-goofy-mirzakhani/runs/s60gnvdo?nw=nwusergradientracer](https://wandb.ai/neural-machines/pc-arch-search-goofy-mirzakhani/runs/s60gnvdo?nw=nwusergradientracer)
+  - Results:
+    - Better results with normalisation
+    - Vodes _concat_0_1_4_7 - Final Best Test Accuracy: 0.4250 by 25 epochs
+    - Vodes _concat_0_1_4_7 - Final Best Test Accuracy: 0.4350 by 50 epochs
+    - Vodes _concat_0_1_4_7 - Final Best Test Accuracy: 0.4100 by 75 epochs - The run has diverged based on MSE jumped from 0.014 to 0.33 at epoch 69.
+  - Interpretation and next steps:
+    - Great results but diverged at the end - likely did not get the very best epoch for linear probing. 
+    - Try data augmentation next and compare - maybe it will not diverge with that 
+
+- Epxeriment:
+  - Same as above but also add data augmentations
+  - `use_ssl_augmentations: True`
+  - `use_cifar10_norm: True`
+  - `intermediate_l1_coeff_candidates = [0.0001]`
+  - `intermediate_l2_coeff_candidates = [0.0]`
+  - `linear_probe_epochs: 100`
+  - `seed_candidates = [10]`
+  - Run: [https://wandb.ai/neural-machines/pc-arch-search-bold-wilson?nw=nwusergradientracer](https://wandb.ai/neural-machines/pc-arch-search-bold-wilson?nw=nwusergradientracer)
+  - Results:
+   - Smoother, more slowly converging MSE loss
+   - Vodes _concat_0_1_4_7 - Final Best Test Accuracy: 0.4200 by 25 epochs
+   - Vodes _concat_0_1_4_7 - Final Best Test Accuracy: 0.4450 by 50 epochs
+   - Vodes _concat_0_1_4_7 - Final Best Test Accuracy: 0.4600 by 75 epochs
+  - Interpretation and next steps:
+    - This needs to be pushed further to see how far probe accuracy can go. But away for the weekend, so for now just try to see if we can optimise params around this.
+
+
+
+
 
 
 Experiment:
@@ -469,45 +579,66 @@ Experiment:
     - Block 1: 
       - epoch18_trainmse: 0.000436
       - Vode 0 - Final Test Accuracy: 0.2418
-      - Experiment with SSL + theta=10_000 + batch_size=500
-        - epoch69_trainmse: 0.003560
-        - nb1_bs500_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd80_epoch69_trainmse0.003560_20250524_120732.npz
-        - had to increase LR to starting 0.095
-        - Vode 0 - Final Test Accuracy: 0.1840
     - Block 2: 
       - epoch12_trainmse: 0.002394
       - Vode 0 - Final Test Accuracy: 0.2081
     - Block 3:
       - epoch19_trainmse: 0.002849
       - Vode 0 - Final Test Accuracy: 0.1971
+    - Block 6:
+      - Vode 0 - Final Test Accuracy: 0.1664
+  - Interpretation and next steps:
+    - It seems like with increasing depth the top latent generates less and less separable features.
 
 
 
 - Try next: 
+  - start refactoring the code to make it simpler
   - Get back to block1 - and iterate quicly with linear probing as direct feedback on how data augmentation, and regularisation can improve representations; I could also experiment faster with more hidden dim and num heads
   - Block6:
     - oscillation reduction: lower learning rate from 0.0005 ro 0.0003
     - maybe need to revisit iPC
     - have to revisit latent resetting
-    - outsource hyperparam search - before that merge the liner probing script to main, and experiment on new branch
 
 Criticism:
   - normal ViT with the same architecture as my 6 block 1 head, 64 dim model reaches 76% accuracy in 64 epochs
   - this means it has the representational capacity for good features. Good enough for this classification.
 
 Ideas to test:
- - experiment with regularisation, especially L1 and L2 on h
+ - what is the effect of decreasing batch size? can we do training like starting from 256 batches, then reduce to 128, 64, 32, 16, 8, 4, 2, 1? would it improve reconstruction and linear probing results?
  - add dropout
  - lower weight updates to 0.0001
+ - experiment with converging up to a certain energy during inference, instead for a fixed number of steps
  - experiment with muzero like regularisation as planned. start small. commit first initial probing results.
 
-Current state:
-  - for 6block model even with the close to all time best final train mse 0.004531 the linear probing results are merely 0.18 for vode_0
-  - something might be off with the feature creation, what if we have some catastrophic collapse of the hidden states? when I set the actual LR that was used when the model was extracted, then the image generated gets very bad. the reference video is generated after the feature extraction, so that proces already messed with the latents significantly. So,  I mean, if we reset h during training, and if we did that here as well, that is the only way we can ensure this does not happen. but I have not experimented with that setup for a long time. but, that setup could also ensure perhaps that we get better higher latents? it might force the network, to always try to find good representations from scratch, and not just rely on the weights. 
 
 
 Commands:
- python linear_probe.py --config_name 6block --feature_layer_vode_indices "0,6,7" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.048514  --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd80_epoch69_trainmse0.004531_20250523_173804.npz
+Block6:
+
+ python linear_probe.py --config_name 6block --feature_layer_vode_indices "0,1,2,3,4,5,6,7" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.048514  --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd80_epoch69_trainmse0.004531_20250523_173804.npz
+
+  python linear_probe.py --config_name 6block --feature_layer_vode_indices "0" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.095  --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250526_155633.npz
+
+    python linear_probe.py --config_name 6block --feature_layer_vode_indices "0" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.095  --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250527_180210.npz
+
+  python linear_probe.py --config_name 6block --probe_inference_steps 20 --probe_h_lr 0.095 --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250526_155633.npz
+
+  python linear_probe.py --config_name 6block --feature_layer_vode_indices "0,1,2,3,4,5,6,7" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.095 --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250526_155633.npz
+
+  python linear_probe.py --config_name 6block --feature_layer_vode_indices "0, 6, 7" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.095 --seed 10 --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250526_155633.npz
+
+  python linear_probe.py --config_name 6block --feature_layer_vode_indices "1, 4, 7" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.095 --seed 10 --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250526_155633.npz
+
+  python linear_probe.py --config_name 6block --feature_layer_vode_indices "0, 2, 4, 7" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.095 --seed 10 --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250526_155633.npz
+
+  python linear_probe.py --config_name 6block --feature_layer_vode_indices "2, 3, 5, 7" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.095 --seed 10 --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250526_155633.npz
+
+  python linear_probe.py --config_name 6block --feature_layer_vode_indices "2, 3, 5" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.095 --seed 10 --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e75_sd10_epoch75_trainmse0.003547_20250526_155633.npz
+
+  L2/L1
+  
+  python linear_probe.py --config_name 6block --feature_layer_vode_indices "1, 4, 7" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.095 --seed 10 --model_path ../results/models/nb6_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_intl1OFF_intl21.0e-04_e75_sd20_epoch58_trainmse0.005915_20250527_231257.npz
 
 Block 1:
  python linear_probe.py --config_name 1block --feature_layer_vode_indices "0" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.09351  --model_path ../results/models/nb1_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e150_sd80_epoch18_finalabstrainmse0.000436_20250524_100129.npz
@@ -520,3 +651,6 @@ Block 2:
 
 Block 3:
  python linear_probe.py --config_name 3block --feature_layer_vode_indices "0" --concatenate_features True --probe_inference_steps 20 --probe_h_lr 0.09333 --model_path ../results/models/nb3_bs200_hs64_nh1_lrh0p095_sb1p25_is20_ws0_hm0p40_hclip2000_wclip500_vlnOFF_e150_sd80_epoch19_trainmse0.002849_20250524_101515.npz
+
+
+ CONTAINER_ID=$(sudo docker run --gpus all -d --restart unless-stopped --shm-size=16G -v "$HOST_CORA_DIR:/home/cora/workspace" cora:latest /bin/bash -c "sleep infinity")

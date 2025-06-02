@@ -9,6 +9,7 @@ import torchvision
 import torchvision.transforms as transforms
 import jax
 import jax.numpy as jnp
+import jax.random as jrand
 import optax
 import pcx
 import pcx.utils as pxu
@@ -27,6 +28,7 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 from typing import Callable
 import imageio
+import equinox as eqx
 
 # Add the src directory to the path
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
@@ -44,561 +46,21 @@ from src.decoder_transformer import (
     calculate_psnr # Import if needed elsewhere, though eval_pretext_metrics uses it internally
 )
 
+from src.utils import create_grouped_bar_chart, create_multi_line_chart
+
 # Import the pcx RandomKeyGenerator
 from pcx.core._random import RKG # Assuming this is the correct import path for RKG
 import random # Import Python's random module
+from examples.linear_probe import run_linear_probe_evaluation
 
-#TODO: simplify config across scripts
-@dataclass
-class ModelConfig:
-    """Configuration for transformer models with all hyperparameters in one place."""
-    name: str
-    # Dataset settings
-    dataset: str = "cifar10"
-    dataset_img_shape: Optional[Tuple[int, ...]] = None # New: (C, H, W) or (F, C, H, W)
-    data_dir: str = "../datasets/"
-    train_subset: int = 50000
-    test_subset: int = 200
-    target_class: Optional[int] = None
-    reconstruction_every_n_epochs: int = 25 # Adjusted for shorter runs
-    validation_every_n_epochs: int = 5 # Adjusted for shorter runs
+from src.config import MODEL_CONFIGS, ModelConfig, DEFAULT_CONFIG, create_config
 
-    use_corruption: bool = False
-    corrupt_ratio: float = 0.25
-
-    use_lower_half_mask: bool = False #If False it uses random masking
-    inference_clamp_alpha: float = 1.0     # Blending factor for soft clamping
-
-    # Visualization settings
-    num_images: int = 1
-    
-    # Model architecture
-    hidden_size: int = 48
-    num_heads: int = 6
-    num_blocks: int = 1
-    mlp_ratio: float = 4.0
-    patch_size: int = 4
-    axes_dim: List[int] = field(default_factory=lambda: [16, 16])
-    theta: int = 100
-    act_fn: Callable = jax.nn.swish
-
-    # Status init settings for training and unmasking
-    use_status_init_in_training: bool = False
-    use_status_init_in_unmasking: bool = False
-    
-    # Training settings
-    use_noise: bool = True
-    batch_size: int = 200
-    epochs: int = 75
-    inference_steps: int = 20
-    eval_inference_steps: List[int] = field(default_factory=lambda: [20])
-    reconstruction_steps: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 8, 12, 16, 20])
-
-    # # Settings without status.init: epochs=10, hidden_size=64, num_blocks=4, inference_steps=20, update_weights_every_inference_step=False, use_inference_lr_scaling=True, inference_lr_scale_base=1.3, h_grad_clip_norm=1000.0, w_grad_clip_norm=None, mse=0.006
-    # peak_lr_weights: float = 0.001
-    # peak_lr_hidden: float = 0.1
-
-    # # Settings without status.init: epochs=50, hidden_size=64, num_blocks=4, inference_steps=20, update_weights_every_inference_step=False, use_inference_lr_scaling=True, inference_lr_scale_base=1.3, grad_clip_norm=None, mse=0.004
-    # peak_lr_weights: float = 0.001
-    # peak_lr_hidden: float = 0.1
-
-    # # Settings without status.init: epochs=10, hidden_size=64, num_blocks=4, inference_steps=20, update_weights_every_inference_step=False, use_inference_lr_scaling=True, inference_lr_scale_base=1.3, grad_clip_norm=1000.0, mse=0.006
-    # peak_lr_weights: float = 0.001
-    # peak_lr_hidden: float = 0.1
-
-    # Settings without status.init: epochs=50, hidden_size=64, num_blocks=5, inference_steps=20, update_weights_every_inference_step=False, use_inference_lr_scaling=True, inference_lr_scale_base=1.2, h_grad_clip_norm=1000.0, w_grad_clip_norm=500.0, mse=0.005 => possible to hit but erratically
-    peak_lr_weights: float = 0.001
-    peak_lr_hidden: float = 0.1
-    hidden_momentum: float = 0.1 # New: Momentum for hidden state optimizer
-
-    # # Settings without status.init: hidden_size=64, num_blocks=3, inference_steps=24
-    # peak_lr_weights: float = 0.0025
-    # peak_lr_hidden: float = 0.0025
-
-
-    update_weights_during_unmasking: bool = False
-
-    hidden_lr_inference: float = peak_lr_hidden * 1
-    weight_decay: float = 2e-4
-    warmup_steps: int = 0 # New: Number of steps for warmup
-    use_lr_schedule_w: bool = True # New: Use LR schedule for weights
-    use_lr_schedule_h: bool = True  # New: Use LR schedule for hidden states
-    seed: int = 42
-    
-    # Layer-specific inference LR scaling
-    use_inference_lr_scaling: bool = True
-    inference_lr_scale_base: Optional[float] = 1.25
-
-    h_grad_clip_norm: Optional[float] = 2000.0 # Max norm for H-gradient clipping
-    w_grad_clip_norm: Optional[float] = 500.0  # Max norm for W-gradient clipping
-
-    # iPC or classic PC
-    update_weights_every_inference_step: bool = False
-    
-    # Early stopping settings
-    use_early_stopping: bool = True
-    early_stopping_patience: int = 7 # Adjusted for longer runs
-    early_stopping_min_delta: float = 0.001
-    save_reconstruction_images: bool = True # Option to save static image grid
-    save_reconstruction_video: bool = True # Option to save video
-    video_fps: int = 60 # Frames per second for the reconstruction video
-    reinitialize_model_for_each_epoch: bool = False # WARNING: setting this to True will get around 0.24 val loss with 100 images vs 0.15 without.
-    
-    # New normalization options
-    use_vode_state_layernorm: bool = False # Apply LayerNorm to Vode hidden states (h)
-    use_vode_grad_norm: bool = False       # Normalize Vode h-gradients before optimizer step
-    vode_grad_norm_target: float = 1.0     # Target norm for h-gradient normalization
-    use_adamw_for_hidden_optimizer: bool = False # New: Use AdamW for hidden state optimizer
-    lr_schedule_min_lr_factor: float = 0.5 # New: Factor to determine min_lr in schedule (min_lr = base_lr * factor)
-    use_ssl_augmentations: bool = True # New: Use stronger augmentations for SSL pretraining
-    early_stopping_metric: str = "val_mse" # New: Metric for early stopping ("val_mse" or "train_mse")
-    use_cifar10_norm: bool = True # New: Use CIFAR-10 specific normalization vs (0.5, 0.5, 0.5)
-    save_model_train_mse_threshold: Optional[float] = 0.006 # New: Train MSE threshold to enable model saving
-    model_saving_metric: str = "train_mse" # New: Metric to base model saving on ("train_mse" or "val_mse")
-    
-
-
-# Predefined configurations for easy experimentation
-MODEL_CONFIGS = {
-    "debug_tiny": ModelConfig(
-        name="debug_tiny",
-        hidden_size=64,
-        num_heads=1,
-        num_blocks=5,
-        dataset_img_shape=(3,32,32), # Added for cifar10
-        # Target experiment settings for next run:
-        peak_lr_hidden=0.07,
-        inference_lr_scale_base=1.1,
-        h_grad_clip_norm=1000.0,
-        w_grad_clip_norm=500.0,
-        epochs=25,
-        use_inference_lr_scaling=True,
-        validation_every_n_epochs=5, # Keep frequent validation
-        reconstruction_every_n_epochs=25, # And reconstruction
-    ),
-    "0block": ModelConfig(
-        name="0block",
-        # Dataset settings
-        dataset="cifar10",
-        dataset_img_shape=(3,32,32), # Added for cifar10
-        data_dir="../datasets/",
-        train_subset=50000,
-        test_subset=200,
-        target_class=None,
-        reconstruction_every_n_epochs=10,
-        validation_every_n_epochs=5,
-        use_corruption=False,
-        corrupt_ratio=0.25,
-        use_lower_half_mask=False,
-        inference_clamp_alpha=1.0,
-        # Visualization settings
-        num_images=2,
-        # Model architecture
-        hidden_size=64,
-        num_heads=1,
-        num_blocks=0,
-        mlp_ratio=4.0,
-        patch_size=4,
-        axes_dim=[16, 16],
-        theta=100,
-        act_fn=jax.nn.swish,
-        # Status init settings
-        use_status_init_in_training=False,
-        use_status_init_in_unmasking=False,
-        # Training settings
-        use_noise=True,
-        batch_size=200,
-        epochs=75,
-        inference_steps=20,
-        eval_inference_steps=[20],
-        reconstruction_steps=[20],
-        peak_lr_weights=0.001,
-        peak_lr_hidden=0.095,
-        update_weights_during_unmasking=False,
-        hidden_lr_inference=0.095,
-        weight_decay=2e-4,
-        warmup_steps=0, # Explicitly set for 6block
-        seed=42,
-        # Layer-specific inference LR scaling
-        use_inference_lr_scaling=True,
-        inference_lr_scale_base=1.25,
-        # Grad clipping
-        h_grad_clip_norm=2000.0,
-        w_grad_clip_norm=500.0,
-        # iPC or classic PC
-        update_weights_every_inference_step=False,
-        # Early stopping settings
-        use_early_stopping=True,
-        early_stopping_patience=3,
-        early_stopping_min_delta=0.001,
-        save_reconstruction_images=True,
-        save_reconstruction_video=True,
-        video_fps=60,
-        reinitialize_model_for_each_epoch=False,
-        # New norm options
-        use_vode_state_layernorm=False,
-        use_vode_grad_norm=False,
-        vode_grad_norm_target=1.0,
-        hidden_momentum=0.4,
-        use_adamw_for_hidden_optimizer=False, # Default to SGD
-        lr_schedule_min_lr_factor=0.5, # Default factor
-        # use_lr_schedule was True, translating to:
-        use_lr_schedule_w=False, # Weights fixed
-        use_lr_schedule_h=True,   # Hidden scheduled
-        use_ssl_augmentations=True, # Enable SSL augmentations
-        early_stopping_metric="val_mse", # Default early stopping metric
-        use_cifar10_norm=True, # Default to CIFAR-10 specific norm
-        save_model_train_mse_threshold=0.006,
-        model_saving_metric="train_mse",
-    ),
-    "1block": ModelConfig(
-        name="1block",
-        # Dataset settings
-        dataset="cifar10",
-        dataset_img_shape=(3,32,32), # Added for cifar10
-        data_dir="../datasets/",
-        train_subset=50000,
-        test_subset=200,
-        target_class=None,
-        reconstruction_every_n_epochs=10,
-        validation_every_n_epochs=5,
-        use_corruption=False,
-        corrupt_ratio=0.25,
-        use_lower_half_mask=False,
-        inference_clamp_alpha=1.0,
-        # Visualization settings
-        num_images=2,
-        # Model architecture
-        hidden_size=64,
-        num_heads=1,
-        num_blocks=1,
-        mlp_ratio=4.0,
-        patch_size=4,
-        axes_dim=[16, 16],
-        theta=100,
-        act_fn=jax.nn.swish,
-        # Status init settings
-        use_status_init_in_training=False,
-        use_status_init_in_unmasking=False,
-        # Training settings
-        use_noise=True,
-        batch_size=200,
-        epochs=75,
-        inference_steps=20,
-        eval_inference_steps=[20],
-        reconstruction_steps=[20],
-        peak_lr_weights=0.001,
-        peak_lr_hidden=0.095,
-        update_weights_during_unmasking=False,
-        hidden_lr_inference=0.095,
-        weight_decay=2e-4,
-        warmup_steps=0, # Explicitly set for 6block
-        seed=42,
-        # Layer-specific inference LR scaling
-        use_inference_lr_scaling=True,
-        inference_lr_scale_base=1.25,
-        # Grad clipping
-        h_grad_clip_norm=2000.0,
-        w_grad_clip_norm=500.0,
-        # iPC or classic PC
-        update_weights_every_inference_step=False,
-        # Early stopping settings
-        use_early_stopping=True,
-        early_stopping_patience=3,
-        early_stopping_min_delta=0.001,
-        save_reconstruction_images=True,
-        save_reconstruction_video=True,
-        video_fps=60,
-        reinitialize_model_for_each_epoch=False,
-        # New norm options
-        use_vode_state_layernorm=False,
-        use_vode_grad_norm=False,
-        vode_grad_norm_target=1.0,
-        hidden_momentum=0.4,
-        use_adamw_for_hidden_optimizer=False, # Default to SGD
-        lr_schedule_min_lr_factor=0.5, # Default factor
-        # use_lr_schedule was True, translating to:
-        use_lr_schedule_w=False, # Weights fixed
-        use_lr_schedule_h=True,   # Hidden scheduled
-        use_ssl_augmentations=True, # Enable SSL augmentations
-        early_stopping_metric="val_mse", # Default early stopping metric
-        use_cifar10_norm=True, # Default to CIFAR-10 specific norm
-        save_model_train_mse_threshold=0.006,
-        model_saving_metric="train_mse",
-    ),
-    "2block": ModelConfig(
-        name="2block",
-        # Dataset settings
-        dataset="cifar10",
-        dataset_img_shape=(3,32,32), # Added for cifar10
-        data_dir="../datasets/",
-        train_subset=50000,
-        test_subset=200,
-        target_class=None,
-        reconstruction_every_n_epochs=10,
-        validation_every_n_epochs=5,
-        use_corruption=False,
-        corrupt_ratio=0.25,
-        use_lower_half_mask=False,
-        inference_clamp_alpha=1.0,
-        # Visualization settings
-        num_images=2,
-        # Model architecture
-        hidden_size=64,
-        num_heads=1,
-        num_blocks=2,
-        mlp_ratio=4.0,
-        patch_size=4,
-        axes_dim=[16, 16],
-        theta=100,
-        act_fn=jax.nn.swish,
-        # Status init settings
-        use_status_init_in_training=False,
-        use_status_init_in_unmasking=False,
-        # Training settings
-        use_noise=True,
-        batch_size=200,
-        epochs=75,
-        inference_steps=20,
-        eval_inference_steps=[20],
-        reconstruction_steps=[20],
-        peak_lr_weights=0.001,
-        peak_lr_hidden=0.095,
-        update_weights_during_unmasking=False,
-        hidden_lr_inference=0.095,
-        weight_decay=2e-4,
-        warmup_steps=0, # Explicitly set for 6block
-        seed=42,
-        # Layer-specific inference LR scaling
-        use_inference_lr_scaling=True,
-        inference_lr_scale_base=1.25,
-        # Grad clipping
-        h_grad_clip_norm=2000.0,
-        w_grad_clip_norm=500.0,
-        # iPC or classic PC
-        update_weights_every_inference_step=False,
-        # Early stopping settings
-        use_early_stopping=True,
-        early_stopping_patience=3,
-        early_stopping_min_delta=0.001,
-        save_reconstruction_images=True,
-        save_reconstruction_video=True,
-        video_fps=60,
-        reinitialize_model_for_each_epoch=False,
-        # New norm options
-        use_vode_state_layernorm=False,
-        use_vode_grad_norm=False,
-        vode_grad_norm_target=1.0,
-        hidden_momentum=0.4,
-        use_adamw_for_hidden_optimizer=False, # Default to SGD
-        lr_schedule_min_lr_factor=0.5, # Default factor
-        # use_lr_schedule was True, translating to:
-        use_lr_schedule_w=False, # Weights fixed
-        use_lr_schedule_h=True,   # Hidden scheduled
-        use_ssl_augmentations=True, # Enable SSL augmentations
-        early_stopping_metric="val_mse", # Default early stopping metric
-        use_cifar10_norm=True, # Default to CIFAR-10 specific norm
-        save_model_train_mse_threshold=0.006,
-        model_saving_metric="train_mse",
-    ),
-    "5block": ModelConfig(
-        name="5block",
-        # Dataset settings
-        dataset="cifar10",
-        dataset_img_shape=(3,32,32), # Added for cifar10
-        data_dir="../datasets/",
-        train_subset=50000,
-        test_subset=200,
-        target_class=None,
-        reconstruction_every_n_epochs=25,
-        validation_every_n_epochs=10,
-        use_corruption=False,
-        corrupt_ratio=0.25,
-        use_lower_half_mask=False,
-        inference_clamp_alpha=1.0,
-        # Visualization settings
-        num_images=2,
-        # Model architecture
-        hidden_size=64,
-        num_heads=1,
-        num_blocks=5,
-        mlp_ratio=4.0,
-        patch_size=4,
-        axes_dim=[16, 16],
-        theta=100,
-        act_fn=jax.nn.swish,
-        # Status init settings
-        use_status_init_in_training=False,
-        use_status_init_in_unmasking=False,
-        # Training settings
-        use_noise=True,
-        batch_size=200,
-        epochs=75,
-        inference_steps=20,
-        eval_inference_steps=[20],
-        reconstruction_steps=[20],
-        peak_lr_weights=0.001,
-        peak_lr_hidden=0.095,
-        update_weights_during_unmasking=False,
-        hidden_lr_inference=0.1,
-        weight_decay=2e-4,
-        warmup_steps=0, # Explicitly set for 5block
-        seed=42,
-        # Layer-specific inference LR scaling
-        use_inference_lr_scaling=True,
-        inference_lr_scale_base=1.25,
-        # Grad clipping
-        h_grad_clip_norm=5000.0,
-        w_grad_clip_norm=500.0,
-        # iPC or classic PC
-        update_weights_every_inference_step=False,
-        # Early stopping settings
-        use_early_stopping=True,
-        early_stopping_patience=3,
-        early_stopping_min_delta=0.001,
-        save_reconstruction_images=True,
-        save_reconstruction_video=True,
-        video_fps=60,
-        reinitialize_model_for_each_epoch=False,
-        # New norm options
-        use_vode_state_layernorm=False,
-        use_vode_grad_norm=False,
-        vode_grad_norm_target=1.0,
-        hidden_momentum=0.3,
-        use_adamw_for_hidden_optimizer=False, # Default to SGD
-        lr_schedule_min_lr_factor=0.5, # Default factor
-        # use_lr_schedule was True, translating to:
-        use_lr_schedule_w=False, # Weights fixed (as per recent changes)
-        use_lr_schedule_h=True,   # Hidden scheduled
-        use_ssl_augmentations=True, # Enable SSL augmentations
-        early_stopping_metric="val_mse", # Default early stopping metric
-        use_cifar10_norm=True, # Default to CIFAR-10 specific norm
-        save_model_train_mse_threshold=0.006,
-        model_saving_metric="train_mse",
-    ),
-    "6block": ModelConfig(
-        name="6block",
-        # Dataset settings
-        dataset="cifar10",
-        dataset_img_shape=(3,32,32), # Added for cifar10
-        data_dir="../datasets/",
-        train_subset=50000,
-        test_subset=200,
-        target_class=None,
-        reconstruction_every_n_epochs=10,
-        validation_every_n_epochs=5,
-        use_corruption=False,
-        corrupt_ratio=0.25,
-        use_lower_half_mask=False,
-        inference_clamp_alpha=1.0,
-        # Visualization settings
-        num_images=2,
-        # Model architecture
-        hidden_size=64,
-        num_heads=1,
-        num_blocks=6,
-        mlp_ratio=4.0,
-        patch_size=4,
-        axes_dim=[16, 16],
-        theta=100,
-        act_fn=jax.nn.swish,
-        # Status init settings
-        use_status_init_in_training=False,
-        use_status_init_in_unmasking=False,
-        # Training settings
-        use_noise=True,
-        batch_size=200,
-        epochs=75,
-        inference_steps=20,
-        eval_inference_steps=[20],
-        reconstruction_steps=[20],
-        peak_lr_weights=0.001,
-        peak_lr_hidden=0.095,
-        update_weights_during_unmasking=False,
-        hidden_lr_inference=0.095,
-        weight_decay=2e-4,
-        warmup_steps=0, # Explicitly set for 6block
-        seed=42,
-        # Layer-specific inference LR scaling
-        use_inference_lr_scaling=True,
-        inference_lr_scale_base=1.25,
-        # Grad clipping
-        h_grad_clip_norm=2000.0,
-        w_grad_clip_norm=500.0,
-        # iPC or classic PC
-        update_weights_every_inference_step=False,
-        # Early stopping settings
-        use_early_stopping=True,
-        early_stopping_patience=3,
-        early_stopping_min_delta=0.001,
-        save_reconstruction_images=True,
-        save_reconstruction_video=True,
-        video_fps=60,
-        reinitialize_model_for_each_epoch=False,
-        # New norm options
-        use_vode_state_layernorm=False,
-        use_vode_grad_norm=False,
-        vode_grad_norm_target=1.0,
-        hidden_momentum=0.4,
-        use_adamw_for_hidden_optimizer=False, # Default to SGD
-        lr_schedule_min_lr_factor=0.5, # Default factor
-        # use_lr_schedule was True, translating to:
-        use_lr_schedule_w=False, # Weights fixed
-        use_lr_schedule_h=True,   # Hidden scheduled
-        use_ssl_augmentations=True, # Enable SSL augmentations
-        early_stopping_metric="val_mse", # Default early stopping metric
-        use_cifar10_norm=True, # Default to CIFAR-10 specific norm
-        save_model_train_mse_threshold=0.006,
-        model_saving_metric="train_mse",
-    )
-}
-
-# Default configuration to use
-DEFAULT_CONFIG = "debug_tiny" # Changed to run the new specific settings
-
-
-def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
-                 mlp_ratio=4.0, patch_size=4, axes_dim=None, theta=10_000, use_noise=True, use_lower_half_mask=False,
-                 use_inference_lr_scaling=False, 
-                 inference_lr_scale_base=1.1,
-                 inference_clamp_alpha=1.0, update_weights_during_unmasking=False,
-                 use_status_init_in_training: bool = True, use_status_init_in_unmasking: bool = True,
-                 update_weights_every_inference_step=False,
-                 use_vode_state_layernorm: bool = False, # New
-                 use_vode_grad_norm: bool = False,       # New
-                 vode_grad_norm_target: float = 1.0,      # New
-                 hidden_momentum: float = 0.1 # New parameter for create_config, not directly used by TransformerConfig
-                 ):
-    """Create a TransformerConfig based on the dataset name and parameters."""
-    axes_dim = axes_dim or [16, 16]
-    
-    if dataset == "cifar10":
-        return TransformerConfig(
-            image_shape=(3, 32, 32),
-            num_frames=16,
-            is_video=False,
-            hidden_size=hidden_size,
-            num_heads=num_heads,
-            num_blocks=num_blocks,
-            mlp_ratio=mlp_ratio,
-            patch_size=patch_size,
-            axes_dim=axes_dim,
-            theta=theta,
-            use_noise=use_noise,
-            use_lower_half_mask=use_lower_half_mask,
-            use_inference_lr_scaling=use_inference_lr_scaling,
-            inference_lr_scale_base=inference_lr_scale_base,
-            inference_clamp_alpha=inference_clamp_alpha,
-            update_weights_during_unmasking=update_weights_during_unmasking,
-            use_status_init_in_training=use_status_init_in_training,
-            use_status_init_in_unmasking=use_status_init_in_unmasking,
-            update_weights_every_inference_step=update_weights_every_inference_step,
-            use_vode_state_layernorm=use_vode_state_layernorm, # New
-            use_vode_grad_norm=use_vode_grad_norm,             # New
-            vode_grad_norm_target=vode_grad_norm_target        # New
-        )
-    else:
-        raise ValueError(f"Unsupported dataset: {dataset}")
+try:
+    import kornia.augmentation as K
+    KORNIA_AVAILABLE = True
+except ImportError:
+    KORNIA_AVAILABLE = False
+    print("Kornia not available. Install with: pip install kornia")
 
 
 def str_to_bool(value):
@@ -621,14 +83,66 @@ def parse_args():
                         help='Number of epochs to train for')
     parser.add_argument('--num_blocks', type=int, default=None,
                         help='Number of transformer blocks')
+    parser.add_argument('--hidden_size', type=int, default=None,
+                        help='Hidden size of transformer')
+    parser.add_argument('--num_heads', type=int, default=None,
+                        help='Number of attention heads')
+    parser.add_argument('--seed', type=int, default=None,
+                        help='Random seed')
     parser.add_argument('--peak_lr_weights', type=float, default=None,
                         help='Peak learning rate for weights')
     parser.add_argument('--peak_lr_hidden', type=float, default=None,
                         help='Peak learning rate for hidden states')
+    parser.add_argument('--inference_lr_scale_base', type=float, default=None,
+                        help='Base scaling factor for inference learning rates')
+    parser.add_argument('--hidden_momentum', type=float, default=None,
+                        help='Momentum for hidden state optimizer')
+    parser.add_argument('--h_grad_clip_norm', type=float, default=None,
+                        help='Gradient clipping norm for hidden states')
+    parser.add_argument('--w_grad_clip_norm', type=float, default=None,
+                        help='Gradient clipping norm for weights')
+    parser.add_argument('--inference_steps', type=int, default=None,
+                        help='Number of inference steps')
+    parser.add_argument('--warmup_steps', type=int, default=None,
+                        help='Number of warmup steps for learning rate schedule')
+    parser.add_argument('--use_ssl_augmentations', type=str_to_bool, nargs='?', const=True, default=None,
+                        help='Use SSL data augmentations (true/false)')
+    parser.add_argument('--use_cifar10_norm', type=str_to_bool, nargs='?', const=True, default=None,
+                        help='Use CIFAR-10 specific normalization (true/false)')
+    parser.add_argument('--use_lr_schedule_h', type=str_to_bool, nargs='?', const=True, default=None,
+                        help='Use learning rate schedule for hidden states (true/false)')
+    parser.add_argument('--use_lr_schedule_w', type=str_to_bool, nargs='?', const=True, default=None,
+                        help='Use learning rate schedule for weights (true/false)')
+    parser.add_argument('--corrupt_ratio', type=float, default=None,
+                        help='Ratio of corruption for masking')
+    parser.add_argument('--use_lower_half_mask', type=str_to_bool, nargs='?', const=True, default=None,
+                        help='Use lower half masking strategy (true/false)')
+    parser.add_argument('--early_stopping_patience', type=int, default=None,
+                        help='Early stopping patience')
+    parser.add_argument('--linear_probe_every_n_epochs', type=int, default=None,
+                        help='Run linear probe every N epochs')
+    parser.add_argument('--linear_probe_epochs', type=int, default=None,
+                        help='Number of epochs for linear probe training')
+    parser.add_argument('--linear_probe_lr', type=float, default=None,
+                        help='Learning rate for linear probe')
+    parser.add_argument('--linear_probe_wd', type=float, default=None,
+                        help='Weight decay for linear probe')
+    parser.add_argument('--test_subset', type=int, default=None,
+                        help='Size of test subset')
+    parser.add_argument('--train_subset', type=int, default=None,
+                        help='Size of training subset')
+    parser.add_argument('--num_images', type=int, default=None,
+                        help='Number of images for visualization')
     parser.add_argument('--save_reconstruction_images', type=str_to_bool, nargs='?', const=True, default=None,
                         help='Save reconstruction images (true/false)')
     parser.add_argument('--save_reconstruction_video', type=str_to_bool, nargs='?', const=True, default=None,
                         help='Save reconstruction video (true/false)')
+    parser.add_argument('--intermediate_l1_coeff', type=float, default=None,
+                        help='L1 regularization coefficient for intermediate layers')
+    parser.add_argument('--intermediate_l2_coeff', type=float, default=None,
+                        help='L2 regularization coefficient for intermediate layers')
+    parser.add_argument('--sweep', action='store_true',
+                        help='Run as part of a wandb sweep (gets config from wandb.config)')
     # Add any other parameters from ModelConfig you want to control via CLI here
     return parser.parse_args()
 
@@ -693,15 +207,9 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
     height, width = 32, 32
 
     if use_ssl_augmentations: # For now, this flag will enable the ViT script's augmentations
-        print("Using data augmentations from vision_transformer_script.py for training.")
+        print("Using minimal CPU augmentations - heavy augmentations will be done on GPU.")
         train_transform_list = [
-            transforms.RandomCrop(32, padding=4),
-            transforms.Resize((height, width)), # Ensure this matches expected input if different from crop
-            transforms.RandomHorizontalFlip(),
-            # transforms.RandomResizedCrop(size=32, scale=(0.2, 1.0)), # SSL Aug: Commented out
-            # transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1), # SSL Aug: Commented out
-            # transforms.GaussianBlur(kernel_size=3), # SSL Aug: Commented out
-        transforms.ToTensor(),
+            transforms.ToTensor(),
             transforms.Normalize(mean, std) # Use selected normalization
         ]
     else:
@@ -719,7 +227,13 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
         transforms.Normalize(mean, std) # Use selected normalization
     ])
     
-    dataset_root = '../' + root_path + "/cifar10/"
+    # Fix dataset path to work regardless of where script is run from
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    # Go up one level from examples/ to project root, then add datasets path
+    project_root = os.path.dirname(script_dir)
+    dataset_root = os.path.join(project_root, "datasets", "cifar10")
+    print(f"Using dataset root: {dataset_root}")
+    
     train_dataset = torchvision.datasets.CIFAR10(
         root=dataset_root,
         transform=train_transform,
@@ -771,6 +285,76 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
             return len(self.dataloader)
     
     return TorchDataloader(train_dataloader), TorchDataloader(test_dataloader)
+
+
+def setup_gpu_augmentations(use_ssl_augmentations=True):
+    """Setup GPU-accelerated augmentations using Kornia."""
+    if not use_ssl_augmentations or not KORNIA_AVAILABLE:
+        return None
+    
+    # GPU augmentations using Kornia
+    gpu_augmentations = K.AugmentationSequential(
+        K.RandomHorizontalFlip(p=0.5),
+        K.RandomResizedCrop(size=(32, 32), scale=(0.8, 1.0), ratio=(0.9, 1.1)),
+        K.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
+        # Note: Kornia's GaussianBlur is much faster on GPU if needed
+        # K.RandomGaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0), p=0.3),
+        same_on_batch=False
+    )
+    return gpu_augmentations
+
+
+def apply_gpu_augmentations(batch_tensor, gpu_augmentations):
+    """Apply GPU augmentations to a batch of images."""
+    if gpu_augmentations is None:
+        return batch_tensor
+    
+    # Ensure tensor is on GPU and in float format
+    if not batch_tensor.is_cuda:
+        batch_tensor = batch_tensor.cuda()
+    
+    # Apply augmentations
+    with torch.no_grad():  # Don't track gradients for augmentations
+        augmented = gpu_augmentations(batch_tensor)
+    
+    return augmented
+
+
+def apply_cpu_fallback_augmentations(x):
+    """Apply CPU-based augmentations when GPU augmentations fail."""
+    import torch
+    import torchvision.transforms as transforms
+    
+    # Convert to PyTorch tensor if needed
+    if not isinstance(x, torch.Tensor):
+        x_tensor = torch.from_numpy(x.numpy()) if hasattr(x, 'numpy') else torch.tensor(x)
+    else:
+        x_tensor = x
+    
+    # Ensure tensor is float
+    x_tensor = x_tensor.float()
+    
+    # Define CPU augmentations (same as GPU but using torchvision)
+    cpu_augmentations = transforms.Compose([
+        transforms.RandomHorizontalFlip(p=0.5),
+        transforms.RandomResizedCrop(size=32, scale=(0.8, 1.0), ratio=(0.9, 1.1)),
+        transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
+    ])
+    
+    # Apply augmentations batch-wise
+    augmented_batch = []
+    for i in range(x_tensor.shape[0]):
+        # Convert single image from [C, H, W] to PIL format for transforms
+        img = x_tensor[i]  # Shape: [C, H, W]
+        # torchvision transforms expect [C, H, W] tensor, which we have
+        augmented_img = cpu_augmentations(img)
+        augmented_batch.append(augmented_img)
+    
+    # Stack back into batch
+    augmented_tensor = torch.stack(augmented_batch)
+    
+    # Convert back to numpy for JAX
+    return augmented_tensor.numpy()
 
 
 def create_reconstruction_images(intermediate_recons, T_values, orig_images, masked_images, labels_list, num_images, image_shape, wandb_run, epoch, reconstruction_mses=None):
@@ -852,7 +436,8 @@ def visualize_reconstruction(model, model_config, optim_h, dataloader, config, w
     # Extract static info from config
     image_shape = model.config.image_shape
     num_channels = image_shape[0]
-    num_images = config.num_images
+    # num_images = config.num_images # This is the requested number
+    requested_num_images = config.num_images # Rename for clarity
     use_corruption = config.use_corruption
     corrupt_ratio = config.corrupt_ratio
     T_values = config.reconstruction_steps # Use T_values from config
@@ -866,18 +451,24 @@ def visualize_reconstruction(model, model_config, optim_h, dataloader, config, w
     reconstruction_mses = [] # New: Store MSE for each reconstruction
     dataloader_iter = iter(dataloader)
 
+    actual_num_images_visualized = 0 # Counter for images actually visualized
+
     # Get the single batch
     try:
-        x, label = next(dataloader_iter)
-        x = jnp.array(x)
+        x_batch, label_batch = next(dataloader_iter) # x_batch.shape[0] is batch_size
+        x_batch = jnp.array(x_batch)
+
+        # Determine how many images to actually visualize from this single batch
+        num_to_visualize_from_this_batch = min(requested_num_images, x_batch.shape[0])
 
         # Process each image in the batch separately
-        for i in range(num_images):
-            single_x = x[i:i+1]
+        for i in range(num_to_visualize_from_this_batch): # Modified loop range
+            actual_num_images_visualized += 1
+            single_x = x_batch[i:i+1] # This is now safe
             orig_images.append(jnp.reshape(single_x[0], image_shape))
             
-            if hasattr(label, 'item'):
-                labels_list.append(label[i].item() if len(label.shape) > 0 else label.item())
+            if hasattr(label_batch, 'item'): # Use label_batch here
+                labels_list.append(label_batch[i].item() if len(label_batch.shape) > 0 else label_batch.item())
             else:
                 labels_list.append(None)
                 
@@ -923,15 +514,20 @@ def visualize_reconstruction(model, model_config, optim_h, dataloader, config, w
                         recon_images_at_T[T_step].append(x_hat_single)
 
     except StopIteration:
-        print("Warning: No data available in dataloader")
-        return None, {} # Return None for path, empty dict for logs
+        print("Warning: No data available in dataloader for visualization.")
+        # actual_num_images_visualized will remain 0
     
     # --- Create Visualizations based on config ---
     final_path = None
     combined_log_dict = {}
 
+    if actual_num_images_visualized == 0: # Check if any images were processed
+        print("No images were visualized from the batch.")
+        return None, {}
+
+
     # --- Process and log inference gradients ---
-    if all_inference_grads:
+    if all_inference_grads: # This list will have actual_num_images_visualized elements
         print("Logging inference gradients...")
         # Log grads for the first image only for simplicity
         first_image_inference_grads = all_inference_grads[0]
@@ -981,7 +577,7 @@ def visualize_reconstruction(model, model_config, optim_h, dataloader, config, w
             orig_images=orig_images,
             masked_images=masked_images_list,
             labels_list=labels_list,
-            num_images=num_images,
+            num_images=actual_num_images_visualized, # Pass the actual number processed
             image_shape=image_shape,
             wandb_run=wandb_run,
             epoch=epoch,
@@ -992,7 +588,7 @@ def visualize_reconstruction(model, model_config, optim_h, dataloader, config, w
 
     # Create video if requested
     if config.save_reconstruction_video:
-        if not all_reconstruction_frames:
+        if not all_reconstruction_frames: # This list will have actual_num_images_visualized items
             print("Warning: No reconstruction frames generated for video.")
         else:
             video_path, video_log_dict = create_reconstruction_video(
@@ -1000,7 +596,7 @@ def visualize_reconstruction(model, model_config, optim_h, dataloader, config, w
                 orig_images=orig_images,
                 masked_images=masked_images_list, # Pass masked images
                 labels_list=labels_list,
-                num_images=num_images,
+                num_images=actual_num_images_visualized, # Pass the actual number processed
                 image_shape=image_shape,
                 wandb_run=wandb_run,
                 epoch=epoch,
@@ -1283,170 +879,13 @@ def extract_vode_gradient_norms(h_grad):
     # Return the actual calculated norms
     return vode_grad_norms
 
-def create_grouped_bar_chart(table_data, group_col, x_col, y_col, title):
-    """
-    Create a grouped bar chart for Weights & Biases using custom HTML.
-    
-    Args:
-        table_data: List of rows with data
-        group_col: Column name for grouping (e.g., "epoch")
-        x_col: Column name for x-axis (e.g., "vode_index")
-        y_col: Column name for y-values (e.g., "energy")
-        title: Chart title
-    
-    Returns:
-        wandb.Html object with the chart
-    """
-    # Organize data by group
-    groups = {}
-    x_values = set()
-    
-    for row in table_data:
-        group = row[0]  # epoch
-        x = row[1]      # vode_index
-        y = row[2]      # energy/grad_norm
-        
-        if group not in groups:
-            groups[group] = {}
-        
-        groups[group][x] = y
-        x_values.add(x)
-    
-    # Sort the x values
-    x_values = sorted(list(x_values))
-    group_keys = sorted(groups.keys())
-    
-    # Create vega-lite specification
-    vega_spec = {
-        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-        "title": title,
-        "width": 500,
-        "height": 300,
-        "data": {"values": []},
-        "mark": "bar",
-        "encoding": {
-            "x": {"field": x_col, "type": "ordinal", "title": x_col},
-            "y": {"field": y_col, "type": "quantitative", "title": y_col},
-            "color": {"field": group_col, "type": "nominal", "title": group_col},
-            "tooltip": [
-                {"field": x_col, "type": "ordinal"},
-                {"field": y_col, "type": "quantitative"},
-                {"field": group_col, "type": "nominal"}
-            ]
-        }
-    }
-    
-    # Add data points
-    for group in group_keys:
-        for x in x_values:
-            if x in groups[group]:
-                vega_spec["data"]["values"].append({
-                    x_col: f"Vode {x}",
-                    y_col: groups[group][x],
-                    group_col: f"Epoch {group}"
-                })
-    
-    # Create HTML with vega-lite
-    html = f"""
-    <html>
-    <head>
-        <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
-        <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
-        <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
-    </head>
-    <body>
-        <div id="vis"></div>
-        <script type="text/javascript">
-            const spec = {json.dumps(vega_spec)};
-            vegaEmbed('#vis', spec);
-        </script>
-    </body>
-    </html>
-    """
-    
-    return wandb.Html(html)
-
-def create_multi_line_chart(table_data, x_col, y_col, series_col, title):
-    """
-    Create a multi-line chart for Weights & Biases using custom HTML.
-    
-    Args:
-        table_data: List of rows with data
-        x_col: Column name for x-axis (e.g., "epoch")
-        y_col: Column name for y-values (e.g., "energy")
-        series_col: Column name for different lines (e.g., "vode_index")
-        title: Chart title
-    
-    Returns:
-        wandb.Html object with the chart
-    """
-    # Organize data by series
-    series_map = {}
-    
-    for row in table_data:
-        x = row[0]      # epoch or inference_step
-        series = row[2]  # Corrected: vode_index or series label is the 3rd element
-        y = row[1]      # Corrected: energy/grad_norm is the 2nd element
-        
-        if series not in series_map:
-            series_map[series] = []
-        
-        series_map[series].append({"x": x, "y": y})
-    
-    # Create vega-lite specification
-    vega_spec = {
-        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-        "title": title,
-        "width": 500,
-        "height": 300,
-        "data": {"values": []},
-        "mark": "line",
-        "encoding": {
-            "x": {"field": x_col, "type": "quantitative", "title": x_col},
-            "y": {"field": y_col, "type": "quantitative", "title": y_col},
-            "color": {"field": series_col, "type": "nominal", "title": series_col},
-            "tooltip": [
-                {"field": x_col, "type": "quantitative"},
-                {"field": y_col, "type": "quantitative"},
-                {"field": series_col, "type": "nominal"}
-            ]
-        }
-    }
-    
-    # Add data points
-    for series, points in series_map.items():
-        for point in points:
-            vega_spec["data"]["values"].append({
-                x_col: point["x"],
-                y_col: point["y"],
-                series_col: series # Use the actual series label directly
-            })
-    
-    # Create HTML with vega-lite
-    html = f"""
-    <html>
-    <head>
-        <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
-        <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
-        <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
-    </head>
-    <body>
-        <div id="vis"></div>
-        <script type="text/javascript">
-            const spec = {json.dumps(vega_spec)};
-            vegaEmbed('#vis', spec);
-        </script>
-    </body>
-    </html>
-    """
-    
-    return wandb.Html(html)
 
 def run_experiment(base_config_name: str = DEFAULT_CONFIG,
                      config_overrides: Optional[Dict[str, Any]] = None,
                      wandb_project_name: str = "debug-transformer-search",
                      wandb_run_name: Optional[str] = None,
-                     wandb_mode: str = "online"):
+                     wandb_mode: str = "online",
+                     wandb_run: Optional[Any] = None):
     """Main function to run the debugging process with W&B logging."""
     
     # --- Seed everything FIRST for reproducibility ---
@@ -1463,14 +902,10 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     torch.manual_seed(current_seed)
     random.seed(current_seed)
     RKG.seed(current_seed) # Re-seed the pcx global RandomKeyGenerator
-    # For PyTorch CUDA ops (optional, uncomment to try if GPU non-determinism is suspected)
-    # torch.cuda.manual_seed(current_seed)
-    # torch.cuda.manual_seed_all(current_seed) # if using multiple GPUs
-    # torch.backends.cudnn.deterministic = True
-    # torch.backends.cudnn.benchmark = False
     
     # Master JAX key for this experiment run - operations in run_experiment will derive from this
     master_key = jax.random.PRNGKey(current_seed) 
+    best_linear_probe_accuracy_overall = 0.0 # Initialize best probe accuracy
     # --- End Seeding ---
     
     # Load the base configuration
@@ -1489,14 +924,6 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
             else:
                 print(f"Warning: Key '{key}' not found in ModelConfig. Skipping override.")
 
-    # Override with any command-line arguments if needed (though typically covered by config_overrides for programmatic calls)
-    # This part is mostly for when this function is adapted to be called from a CLI-driven main()
-    # For pure programmatic calls, config_overrides is the primary way.
-    # args = parse_args() # We'll handle CLI args in a separate main()
-    # for arg_name, arg_value in vars(args).items():
-    #     if arg_value is not None and arg_name != 'config': # 'config' here refers to the base_config_name
-    #         if hasattr(config, arg_name):
-    #             setattr(config, arg_name, arg_value)
     
     # Print the effective configuration
     print(f"\nUsing base configuration '{config.name}' with effective settings:")
@@ -1505,10 +932,6 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
             print(f"  {key}: {value}")
     print()
     
-    # Set random seed for reproducibility
-    # np.random.seed(config.seed) # Moved to the top
-    # torch.manual_seed(config.seed) # Moved to the top
-    # key = jax.random.PRNGKey(config.seed) # Master key is now 'master_key', initialized at the top
     
     # Determine run name for WandB
     effective_wandb_run_name = wandb_run_name
@@ -1524,14 +947,19 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         
         effective_wandb_run_name = f"{config.name}_{nb_str}_{hs_str}_{lr_w_str}_{lr_h_str}_{scale_base_str}_{hclip_str}_{wclip_str}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
-    # Initialize Weights & Biases
-    run = wandb.init(
-        entity="neural-machines", # Replace with your entity or remove if not needed
-        project=wandb_project_name,
-        name=effective_wandb_run_name,
-        config=vars(config),
-        mode=wandb_mode  # Allows disabling for search
-    )
+    # Initialize Weights & Biases (only if not provided)
+    if wandb_run is None:
+        run = wandb.init(
+            entity="neural-machines", # Replace with your entity or remove if not needed
+            project=wandb_project_name,
+            name=effective_wandb_run_name,
+            config=vars(config),
+            mode=wandb_mode  # Allows disabling for search
+        )
+    else:
+        run = wandb_run
+        # Update the config in the existing run
+        wandb.config.update(vars(config))
     
     # Upload code artifacts to W&B if an active run exists and not disabled
     if wandb.run and wandb.run.mode != "disabled":
@@ -1567,7 +995,7 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
             import traceback
             traceback.print_exc()
     
-    print(f"Creating configuration for debugging CIFAR-10 transformer...")
+    print(f"Creating configuration for CIFAR-10 transformer...")
     model_config = create_config(
         dataset=config.dataset,
         hidden_size=config.hidden_size,
@@ -1586,9 +1014,11 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         use_status_init_in_training=config.use_status_init_in_training,
         use_status_init_in_unmasking=config.use_status_init_in_unmasking,
         update_weights_every_inference_step=config.update_weights_every_inference_step,
-        use_vode_state_layernorm=config.use_vode_state_layernorm, # Pass through
-        use_vode_grad_norm=config.use_vode_grad_norm,             # Pass through
-        vode_grad_norm_target=config.vode_grad_norm_target        # Pass through
+        use_vode_state_layernorm=config.use_vode_state_layernorm, # New
+        use_vode_grad_norm=config.use_vode_grad_norm,             # New
+        vode_grad_norm_target=config.vode_grad_norm_target,        # New
+        intermediate_l1_coeff=config.intermediate_l1_coeff, # ADDED
+        intermediate_l2_coeff=config.intermediate_l2_coeff  # ADDED
     )
     
     print(f"Creating debug dataloaders for CIFAR-10...")
@@ -1712,6 +1142,15 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     
     print(f"Training for {config.epochs} epochs with W&B logging...")
 
+    # Setup GPU augmentations if enabled
+    gpu_augmentations = setup_gpu_augmentations(config.use_ssl_augmentations)
+    if gpu_augmentations is not None and KORNIA_AVAILABLE:
+        print("GPU augmentations enabled using Kornia.")
+    elif config.use_ssl_augmentations and not KORNIA_AVAILABLE:
+        print("Warning: SSL augmentations requested but Kornia not available. Using simple CPU augmentations.")
+    else:
+        print("No augmentations will be applied.")
+
     # Initialize best_train_mse_this_run to track the minimum training MSE for the current run
     best_train_mse_this_run = float('inf')
 
@@ -1721,12 +1160,6 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     x_init = jnp.zeros(init_shape, dtype=jnp.float32) # Use float32 or model's dtype
     print(f"Initializing Vode states using dummy tensor with shape: {init_shape}")
 
-    # It's good practice to ensure model parameter initialization uses a JAX key derived 
-    # from your master_key for this run, rather than relying solely on pcx.RKG 
-    # if pcx.RKG was already used by pcx modules during their class definition/import time.
-    # However, pcx.nn.Linear and other layers in pcx might directly use pcx.RKG internally by default.
-    # Re-seeding RKG (done above) is the primary way to control its behavior for the current run.
-    # For model initialization itself, if it explicitly takes a key, use a split from master_key.
     model_init_key, main_train_key = jax.random.split(master_key) # Split master key
 
     with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache): # Removed key=model_init_key
@@ -1735,6 +1168,7 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     for epoch in range(config.epochs):
         epoch_start = time.time()
         new_train_mse_milestone_reached_this_epoch = False # New flag for triggering val/recon
+        training_nan_detected = False # Initialize here
 
         if model_config.use_inference_lr_scaling:
             print(f"Current inference_lr_scale_base: {model_config.inference_lr_scale_base}")
@@ -1765,7 +1199,7 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         
         # Train for one epoch
         avg_train_w_energy, avg_train_mse, h_grad, w_grad = train(
-            train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch
+            train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch, gpu_augmentations=gpu_augmentations
         )
         
         avg_train_w_energy = float(avg_train_w_energy) if not jnp.isnan(avg_train_w_energy) else float('nan')
@@ -1862,7 +1296,6 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
 
 
         # --- Run validation and other epoch-end tasks only if training was successful --- 
-        # <<< --- ADD CHECK: Only proceed if no NaN and not already early stopped normally --- >>>
         # Trigger validation if it's a validation epoch OR if the MSE threshold was met
         trigger_validation_event = (
             ((epoch + 1) % config.validation_every_n_epochs == 0) or \
@@ -1870,7 +1303,6 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
             (early_stopped and epoch == early_stopped_epoch) or \
             (new_train_mse_milestone_reached_this_epoch and can_save_model_now) 
         )
-        # mse_threshold_met is no longer used to trigger validation here
         
         if not training_nan_detected and trigger_validation_event and not (early_stopped and early_stop_reason == 'TrainMetric' and not ((epoch + 1) % config.validation_every_n_epochs == 0 or epoch == config.epochs -1)):
             # If early stopping was due to train metric, we might not need to run validation again,
@@ -1999,6 +1431,56 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         # Log metrics collected so far for this epoch (includes train loss, potentially val metrics)
         run.log(epoch_metrics, step=epoch+1)  # Use epoch+1 to start from step 1
 
+        # --- Linear Probing ---
+        if config.linear_probe_every_n_epochs > 0 and (epoch + 1) % config.linear_probe_every_n_epochs == 0:
+            print(f"--- Running Linear Probe at Epoch {epoch+1} ---")
+            # Create dataloaders specifically for probing (no SSL augmentations)
+            train_loader_probe, test_loader_probe = get_debug_dataloaders(
+                dataset_name=config.dataset,
+                batch_size=config.batch_size, # Use MAIN training batch size for feature extraction
+                root_path=config.data_dir,
+                train_subset_n=config.train_subset, # Can be full dataset or a subset
+                test_subset_n=config.test_subset,   # Can be full dataset or a subset
+                target_class=config.target_class,
+                use_ssl_augmentations=False, # IMPORTANT: Turn off augmentations for probing
+                use_cifar10_norm=config.use_cifar10_norm # Keep original norm
+            )
+            print(f"Probe Dataloaders: Train size {len(train_loader_probe.dataset)}, Test size {len(test_loader_probe.dataset)}")
+
+            probe_config_overrides_dict = {
+                "linear_probe_vode_indices": config.linear_probe_vode_indices,
+                "linear_probe_concatenate_features": config.linear_probe_concatenate_features,
+                "linear_probe_use_gap": config.linear_probe_use_gap,
+                "linear_probe_lr": config.linear_probe_lr,
+                "linear_probe_wd": config.linear_probe_wd,
+                "linear_probe_epochs": config.linear_probe_epochs,
+                "linear_probe_batch_size": config.linear_probe_batch_size,
+                "linear_probe_h_lr": config.linear_probe_h_lr if config.linear_probe_h_lr is not None else config.hidden_lr_inference,
+                "linear_probe_inference_steps": config.linear_probe_inference_steps if config.linear_probe_inference_steps is not None else config.inference_steps,
+                "linear_probe_seed": config.linear_probe_seed
+            }
+            
+            # Ensure the model passed to probing is the current state of the model
+            # The 'model' variable in this scope is the one being trained.
+            # The 'model_config' is the TransformerConfig for architecture.
+            current_probe_accuracy = run_linear_probe_evaluation(
+                model=model,
+                model_config_obj=config, # Pass the main ModelConfig
+                transformer_arch_config=model_config, # Pass the TransformerConfig
+                probe_config_overrides=probe_config_overrides_dict,
+                train_loader=train_loader_probe,
+                test_loader=test_loader_probe,
+                current_epoch=epoch + 1
+            )
+            print(f"Linear Probe Accuracy at Epoch {epoch+1}: {current_probe_accuracy:.4f}")
+            if wandb.run and wandb.run.mode != "disabled":
+                wandb.log({f"Metrics/LinearProbe_Accuracy": current_probe_accuracy}, step=epoch+1)
+            
+            if current_probe_accuracy > best_linear_probe_accuracy_overall:
+                best_linear_probe_accuracy_overall = current_probe_accuracy
+                print(f"New best overall linear probe accuracy: {best_linear_probe_accuracy_overall:.4f}")
+        # --- End Linear Probing ---
+
         # Generate reconstructions every N epochs (and for the final epoch)
         # Base the condition on one of the new validation metrics if available and valid
         # Use the most recently calculated validation metric if available
@@ -2124,11 +1606,11 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         })
         
     # Close W&B after all logging is complete
-    wandb.finish()
+    if wandb_run is None:  # Only finish if we created the run ourselves
+        wandb.finish()
     
     print("Debug run completed!")
     # Return the average training MSE of the last epoch, or infinity if NaN occurred
-    # <<< --- MODIFY FINAL RETURN VALUE --- >>>
     final_avg_train_mse = float('inf') # Default to infinity
     if 'epoch_metrics' in locals() and 'Losses/train_mse_avg' in epoch_metrics:
         # epoch_metrics now guaranteed to contain Python float or NaN
@@ -2140,11 +1622,9 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     # If a NaN was detected during training, explicitly set final_avg_train_mse to NaN for clarity
     if early_stop_reason == 'NaN':
         final_avg_train_mse = float('nan') # Use NaN to be distinct from other high MSEs
-    # <<< --- END MODIFICATION --- >>>
     
     print(f"Run {effective_wandb_run_name} finished with final avg_train_mse: {final_avg_train_mse}")
     
-    # <<< DEBUG PRINT >>>
     print(f"DEBUG: Returning from run_experiment - final_mse: {final_avg_train_mse}, Type: {type(final_avg_train_mse)}, Reason: {early_stop_reason}")
     # Ensure best_val_loss_for_overall_best_model is defined even if validation never runs or fails
     if 'best_val_loss_for_overall_best_model' not in locals():
@@ -2159,7 +1639,44 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     else:
         best_val_loss_for_overall_best_model = float(best_val_loss_for_overall_best_model) # Ensure it's a float otherwise
 
-    return best_val_loss_for_overall_best_model, best_train_mse_this_run, final_avg_train_mse, early_stop_reason
+    return best_val_loss_for_overall_best_model, best_train_mse_this_run, final_avg_train_mse, early_stop_reason, best_linear_probe_accuracy_overall
+
+def run_sweep():
+    """Main function for running with wandb sweeps."""
+    # Initialize wandb first to get access to wandb.config
+    run = wandb.init()
+    
+    # Get base config name from sweep config
+    base_config_name = wandb.config.get('config', DEFAULT_CONFIG)
+    
+    # Create config overrides from wandb.config
+    # Skip 'config' key as it's used for base config selection
+    config_overrides = {k: v for k, v in wandb.config.items() if k != 'config'}
+    
+    print(f"Running sweep with base config: {base_config_name}")
+    print(f"Sweep overrides: {config_overrides}")
+    
+    # Run the experiment with sweep parameters
+    best_val_mse, best_train_mse, final_train_mse, early_stop_reason, best_probe_acc = run_experiment(
+        base_config_name=base_config_name,
+        config_overrides=config_overrides,
+        wandb_project_name=None,  # Will use the sweep's project
+        wandb_run_name=None,      # Will use the sweep's run name
+        wandb_mode="online",      # Sweeps should always be online
+        wandb_run=run             # Pass the existing run
+    )
+    
+    # Log the final metrics that the sweep will optimize using the run object directly
+    run.log({
+        "best_val_mse": best_val_mse,
+        "best_train_mse": best_train_mse, 
+        "final_train_mse": final_train_mse,
+        "best_probe_accuracy": best_probe_acc,
+        "early_stop_reason": early_stop_reason
+    })
+    
+    print(f"Sweep run completed. Best val MSE: {best_val_mse:.6f}")
+    return best_val_mse
 
 if __name__ == "__main__":
     cli_args = parse_args()
@@ -2167,5 +1684,8 @@ if __name__ == "__main__":
     # Prepare config_overrides from CLI arguments, excluding 'config' which is used for base_config_name
     overrides = {k: v for k, v in vars(cli_args).items() if v is not None and k != 'config'}
     
-    run_experiment(base_config_name=cli_args.config, 
-                   config_overrides=overrides) 
+    if cli_args.sweep:
+        run_sweep()
+    else:
+        run_experiment(base_config_name=cli_args.config, 
+                       config_overrides=overrides) 

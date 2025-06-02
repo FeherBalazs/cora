@@ -1,6 +1,8 @@
 import jax
 import jax.numpy as jnp
 from typing import Tuple, List, Optional
+import json
+import wandb
 
 
 def get_sinusoidal_1d(positions, dim, theta=10000.0):
@@ -194,3 +196,162 @@ def create_positional_encoding(
             patch_size=patch_size,
             theta=theta
         ) 
+
+def create_grouped_bar_chart(table_data, group_col, x_col, y_col, title):
+    """
+    Create a grouped bar chart for Weights & Biases using custom HTML.
+    
+    Args:
+        table_data: List of rows with data
+        group_col: Column name for grouping (e.g., "epoch")
+        x_col: Column name for x-axis (e.g., "vode_index")
+        y_col: Column name for y-values (e.g., "energy")
+        title: Chart title
+    
+    Returns:
+        wandb.Html object with the chart
+    """
+    # Organize data by group
+    groups = {}
+    x_values = set()
+    
+    for row in table_data:
+        group = row[0]  # epoch
+        x = row[1]      # vode_index
+        y = row[2]      # energy/grad_norm
+        
+        if group not in groups:
+            groups[group] = {}
+        
+        groups[group][x] = y
+        x_values.add(x)
+    
+    # Sort the x values
+    x_values = sorted(list(x_values))
+    group_keys = sorted(groups.keys())
+    
+    # Create vega-lite specification
+    vega_spec = {
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "title": title,
+        "width": 500,
+        "height": 300,
+        "data": {"values": []},
+        "mark": "bar",
+        "encoding": {
+            "x": {"field": x_col, "type": "ordinal", "title": x_col},
+            "y": {"field": y_col, "type": "quantitative", "title": y_col},
+            "color": {"field": group_col, "type": "nominal", "title": group_col},
+            "tooltip": [
+                {"field": x_col, "type": "ordinal"},
+                {"field": y_col, "type": "quantitative"},
+                {"field": group_col, "type": "nominal"}
+            ]
+        }
+    }
+    
+    # Add data points
+    for group in group_keys:
+        for x in x_values:
+            if x in groups[group]:
+                vega_spec["data"]["values"].append({
+                    x_col: f"Vode {x}",
+                    y_col: groups[group][x],
+                    group_col: f"Epoch {group}"
+                })
+    
+    # Create HTML with vega-lite
+    html = f"""
+    <html>
+    <head>
+        <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
+        <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
+        <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
+    </head>
+    <body>
+        <div id="vis"></div>
+        <script type="text/javascript">
+            const spec = {json.dumps(vega_spec)};
+            vegaEmbed('#vis', spec);
+        </script>
+    </body>
+    </html>
+    """
+    
+    return wandb.Html(html)
+
+def create_multi_line_chart(table_data, x_col, y_col, series_col, title):
+    """
+    Create a multi-line chart for Weights & Biases using custom HTML.
+    
+    Args:
+        table_data: List of rows with data
+        x_col: Column name for x-axis (e.g., "epoch")
+        y_col: Column name for y-values (e.g., "energy")
+        series_col: Column name for different lines (e.g., "vode_index")
+        title: Chart title
+    
+    Returns:
+        wandb.Html object with the chart
+    """
+    # Organize data by series
+    series_map = {}
+    
+    for row in table_data:
+        x = row[0]      # epoch or inference_step
+        series = row[2]  # Corrected: vode_index or series label is the 3rd element
+        y = row[1]      # Corrected: energy/grad_norm is the 2nd element
+        
+        if series not in series_map:
+            series_map[series] = []
+        
+        series_map[series].append({"x": x, "y": y})
+    
+    # Create vega-lite specification
+    vega_spec = {
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "title": title,
+        "width": 500,
+        "height": 300,
+        "data": {"values": []},
+        "mark": "line",
+        "encoding": {
+            "x": {"field": x_col, "type": "quantitative", "title": x_col},
+            "y": {"field": y_col, "type": "quantitative", "title": y_col},
+            "color": {"field": series_col, "type": "nominal", "title": series_col},
+            "tooltip": [
+                {"field": x_col, "type": "quantitative"},
+                {"field": y_col, "type": "quantitative"},
+                {"field": series_col, "type": "nominal"}
+            ]
+        }
+    }
+    
+    # Add data points
+    for series, points in series_map.items():
+        for point in points:
+            vega_spec["data"]["values"].append({
+                x_col: point["x"],
+                y_col: point["y"],
+                series_col: series # Use the actual series label directly
+            })
+    
+    # Create HTML with vega-lite
+    html = f"""
+    <html>
+    <head>
+        <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
+        <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
+        <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
+    </head>
+    <body>
+        <div id="vis"></div>
+        <script type="text/javascript">
+            const spec = {json.dumps(vega_spec)};
+            vegaEmbed('#vis', spec);
+        </script>
+    </body>
+    </html>
+    """
+    
+    return wandb.Html(html)

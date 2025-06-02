@@ -26,11 +26,13 @@ from src.utils import create_positional_encoding
 from jax.typing import DTypeLike
 from einops import rearrange
 from pcx.core._parameter import get as param_get
+from pcx.predictive_coding import regularized_plus_se_energy, se_energy
 
 import matplotlib.pyplot as plt
 from datetime import datetime
 import time
 import math
+import functools
 
 STATUS_FORWARD = "forward"
 
@@ -91,6 +93,10 @@ class TransformerConfig:
     use_vode_grad_norm: bool = False       # Normalize Vode h-gradients before optimizer step
     vode_grad_norm_target: float = 1.0     # Target norm for h-gradient normalization
 
+    # New fields for regularization coefficients
+    intermediate_l1_coeff: float = 0.0
+    intermediate_l2_coeff: float = 0.0
+
     def __post_init__(self):
         # Determine if we're dealing with video based on the shape of image_shape
         if len(self.image_shape) == 4:
@@ -130,11 +136,12 @@ class TransformerDecoder(pxc.EnergyModule):
         print(f"Model initialized with {self.config.num_patches} patches, each with dimension {self.config.patch_dim}")
         print(f"Model initialized with {self.config.hidden_size} hidden_size, {self.config.mlp_hidden_dim} mlp_hidden_dim")
         print(f"Using {'video' if self.config.is_video else 'image'} mode with shape {self.config.image_shape}")
+        print(f"Regularization: IntL1={self.config.intermediate_l1_coeff}, IntL2={self.config.intermediate_l2_coeff}")
 
         # Define Vodes for predictive coding
         # Top-level latent Vode
         self.vodes = [pxc.Vode(
-            energy_fn=None,
+            energy_fn=None, # Vode 0 does not have local energy term for regularization
             ruleset={
                 pxc.STATUS.INIT: ("h, u <- u:to_init",)
                 },
@@ -145,15 +152,26 @@ class TransformerDecoder(pxc.EnergyModule):
             }
         )]
 
-        # Add a Vode for patch projection
+        # Intermediate Vodes energy function (Patch Projection Vode and Transformer Block Vodes)
+        # If intermediate_l1_coeff and intermediate_l2_coeff are 0, 
+        # regularized_plus_se_energy will effectively just compute its SE term.
+        intermediate_vodes_energy_fn = functools.partial(
+            regularized_plus_se_energy,
+            l1_coeff=self.config.intermediate_l1_coeff,
+            l2_coeff=self.config.intermediate_l2_coeff
+        )
+
+        # Add a Vode for patch projection (Vode 1)
         self.vodes.append(pxc.Vode(
+            energy_fn=intermediate_vodes_energy_fn, # Use the prepared partial function
                 ruleset={ 
                     STATUS_FORWARD: ("h -> u",)}
             ))
         
-        # Create Vodes for each transformer block output
+        # Create Vodes for each transformer block output (Vodes 2 to num_blocks + 1)
         for _ in range(config.num_blocks):
             self.vodes.append(pxc.Vode(
+                energy_fn=intermediate_vodes_energy_fn, # Use the same prepared partial function
                 ruleset={
                     STATUS_FORWARD: ("h -> u",)}
             ))
@@ -236,85 +254,6 @@ class TransformerDecoder(pxc.EnergyModule):
             self.vodes[-1].set("h", y)
         
         return self.vodes[-1].get("u")  # Return prediction
-
-
-# class TransformerDecoder(pxc.EnergyModule):
-#     def __init__(self, config: TransformerConfig) -> None:
-#         super().__init__()
-#         self.config = px.static(config)
-        
-#         # Initialize random key
-#         key = jax.random.PRNGKey(0)
-
-#         print(f"Model initialized with {self.config.num_patches} patches, each with dimension {self.config.patch_dim}")
-#         print(f"Model initialized with {self.config.hidden_size} hidden_size, {self.config.mlp_hidden_dim} mlp_hidden_dim")
-#         print(f"Using {'video' if self.config.is_video else 'image'} mode with shape {self.config.image_shape}")
-
-#         # Define Vodes for predictive coding
-#         # Top-level latent Vode
-#         self.vodes = [pxc.Vode(
-#             energy_fn=None,
-#             ruleset={
-#                 pxc.STATUS.INIT: ("h, u <- u:to_init",),
-#                 },
-#             tforms={
-#                 "to_init": lambda n, k, v, rkg: jax.random.normal(
-#                     px.RKG(), (config.hidden_size,)
-#                 ) * 0.01 if config.use_noise else jnp.zeros((config.hidden_size,))
-#             }
-#         )]
-        
-#         # Create Vodes for each transformer block output except final one where we want different ruleset
-#         for _ in range(config.num_blocks):
-#             self.vodes.append(pxc.Vode(
-#                 ruleset={
-#                     STATUS_FORWARD: ("h -> u",)}
-#             ))
-
-#         # Add final output Vode (sensory layer) - shape depends on whether we're handling video or images
-#         self.vodes.append(pxc.Vode())
-        
-#         # Freeze the output Vode's hidden state
-#         self.vodes[-1].h.frozen = True  
-
-#         # DEBUG: Try FC blocks instead of transformer blocks to see if it works better for reconstruction
-#         self.fc_blocks = []
-#         for i in range(config.num_blocks):
-#             self.fc_blocks.append(
-#                 pxnn.Linear(
-#                     in_features=config.hidden_size,
-#                     out_features=config.hidden_size
-#                 )
-#             )
-
-#         # Add output projection layer to map from hidden_size back to output_dim
-#         self.output_projection = pxnn.Linear(in_features=config.hidden_size, out_features=32 * 32 * 3)
-        
-    
-#     def __call__(self, y: jax.Array | None = None):        
-#         # Get the initial sequence of patch embeddings from Vode 0
-#         x = self.vodes[0](jnp.empty(()))
-
-#         # Process through FC blocks
-#         for i, block in enumerate(self.fc_blocks):
-#             x_after_block = block(x) 
-#             x = self.config.act_fn(x_after_block) 
-#             x = self.vodes[i+1](x) # Apply Vode
-
-#         # Apply output projection layer
-#         x = self.output_projection(x)
-        
-#         # Reshape to match the expected image dimensions (channels, height, width)
-#         x = jnp.reshape(x, (3, 32, 32))
-        
-#         # Apply sensory Vode
-#         x = self.vodes[-1](x)
-        
-#         # Set target if provided
-#         if y is not None:
-#             self.vodes[-1].set("h", y)
-        
-#         return self.vodes[-1].get("u")  # Return prediction
     
 
     def unpatchify(self, x, patch_size, image_size, channel_size):
@@ -659,16 +598,51 @@ def eval_pretext_metrics(dataloader, T_values, use_corruption, corrupt_ratio, *,
     return avg_metrics
 
 
-def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.Optim, epoch=None):
+def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.Optim, epoch=None, gpu_augmentations=None):
     batch_w_energies = []
     batch_train_mses = []
     step = 0
+    last_postfix_update_time = time.time() # For throttling postfix updates
     
-    # # Add tqdm progress bar
-    # pbar = tqdm(dl, desc=f"Epoch {epoch+1 if epoch is not None else 'N/A'}", leave=True)
+    # Add tqdm progress bar, visual refresh throttled by mininterval
+    pbar = tqdm(dl, desc=f"Epoch {epoch+1 if epoch is not None else 'N/A'}", leave=True, mininterval=1.0)
     
-    # for x, y in pbar:
-    for x, y in dl:
+    for x, y in pbar:
+    # for x, y in dl:
+        # Apply GPU augmentations if available
+        if gpu_augmentations is not None:
+            import torch
+            # Convert to PyTorch tensor if needed
+            if not isinstance(x, torch.Tensor):
+                x_tensor = torch.from_numpy(x.numpy()) if hasattr(x, 'numpy') else torch.tensor(x)
+            else:
+                x_tensor = x
+            
+            # Ensure tensor is float and on GPU
+            x_tensor = x_tensor.float()
+            if torch.cuda.is_available():
+                x_tensor = x_tensor.cuda()
+            
+            # Apply augmentations
+            try:
+                from examples.debug_transformer_wandb import apply_gpu_augmentations
+                x_tensor = apply_gpu_augmentations(x_tensor, gpu_augmentations)
+                # Convert back to JAX format
+                if torch.cuda.is_available():
+                    x_augmented = x_tensor.cpu().numpy()
+                else:
+                    x_augmented = x_tensor.numpy()
+                x = x_augmented
+            except Exception as e:
+                # Fallback to CPU augmentations
+                try:
+                    from examples.debug_transformer_wandb import apply_cpu_fallback_augmentations
+                    x = apply_cpu_fallback_augmentations(x)
+                except Exception as fallback_e:
+                    # if step == 0:  # Only print once per epoch
+                        # print(f"Warning: Both GPU and CPU augmentations failed, using original batch. GPU error: {e}, CPU error: {fallback_e}")
+                    pass
+        
         # Now returns train_mse as the 5th element
         h_energy, w_energy, h_grad, w_grad, train_mse = train_on_batch(
             T, jnp.array(x), model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch, step=step
@@ -684,14 +658,24 @@ def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.
         else:
              print(f"Warning: train_mse is None for batch {step}")
 
-        # # Update progress bar with current metrics
-        # if batch_train_mses:
-        #     current_mse = batch_train_mses[-1]
-        #     current_energy = batch_w_energies[-1] if batch_w_energies else 0.0
-        #     pbar.set_postfix({
-        #         'MSE': f'{current_mse:.4f}',
-        #         'Energy': f'{current_energy:.4f}'
-        #     })
+        # Update progress bar postfix, throttled to once per second
+        current_time = time.time()
+        if current_time - last_postfix_update_time >= 1.0:
+            metrics_to_display = {}
+            if batch_train_mses:
+                # Calculate average of last 100 (or fewer if not enough entries)
+                mse_to_avg = batch_train_mses[-100:]
+                avg_recent_mse = jnp.mean(jnp.array(mse_to_avg))
+                metrics_to_display['Avg_MSE_100'] = f'{avg_recent_mse:.4f}'
+            if batch_w_energies:
+                # Calculate average of last 100 (or fewer if not enough entries)
+                energy_to_avg = batch_w_energies[-100:]
+                avg_recent_energy = jnp.mean(jnp.array(energy_to_avg))
+                metrics_to_display['Avg_Energy_100'] = f'{avg_recent_energy:.4f}'
+            
+            if metrics_to_display: # Only call set_postfix if there are metrics
+                pbar.set_postfix(metrics_to_display)
+                last_postfix_update_time = current_time
 
         step += 1
 
@@ -705,41 +689,6 @@ def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.
     return avg_train_w_energy, avg_train_mse, h_grad, w_grad
 
 
-# @pxf.jit(static_argnums=0)
-def eval_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim):
-    model.eval()
-    optim_h.clear()
-    optim_h.init(pxu.M_hasnot(pxc.VodeParam, frozen=True)(model))
-
-    inference_step = pxf.value_and_grad(pxu.M_hasnot(pxc.VodeParam, frozen=True).to([False, True]), has_aux=True)(
-        energy
-    )
-
-    # Init step
-    with pxu.step(model, clear_params=pxc.VodeParam.Cache):
-        forward(x, model=model)
-
-    # Inference steps (then we start to refine our guess)
-    for t in range(T):
-        with pxu.step(model, clear_params=pxc.VodeParam.Cache):
-            (h_energy, y_), h_grad = inference_step(model=model)
-            print("h_energy:", h_energy, "at step t:", t)
-
-        optim_h.step(model, h_grad["model"])
-    
-    optim_h.clear()
-
-    # Final step (we make our final guess with our refined activations per layer)
-    # with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
-    # We do not clear the cache here as we want to keep the energy for logging
-    with pxu.step(model, STATUS_FORWARD):
-        x_hat = forward(None, model=model)
-
-    loss = jnp.square(x_hat.flatten() - x.flatten()).mean()
-
-    return loss, x_hat
-
-
 def eval(dl, T, *, model: TransformerDecoder, optim_h: pxu.Optim):
     losses = []
 
@@ -751,6 +700,7 @@ def eval(dl, T, *, model: TransformerDecoder, optim_h: pxu.Optim):
     return jnp.mean(jnp.array(losses))
 
 
+# @pxf.jit(static_argnums=0)
 def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, target_T_values: List[int], x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim):
     """
     Runs inference on a batch (x), potentially corrupted, and returns the final loss

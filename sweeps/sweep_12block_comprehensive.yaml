@@ -1,0 +1,207 @@
+program: ../examples/debug_transformer_wandb.py
+method: random  # Use random sampling for extensive exploration of the large hyperparameter space
+metric:
+  goal: maximize
+  name: best_probe_accuracy
+parameters:
+  # Base configuration - create a new 12block config
+  config:
+    value: "6block"  # Use 6block as base and override num_blocks
+  
+  # ARCHITECTURAL SEARCH SPACE - Focus on 12 blocks
+  num_blocks:
+    values: [12]
+  
+  batch_size:
+    values: [200]  # Smaller batch sizes might help with deeper models
+  
+  hidden_size:
+    values: [64, 96, 128]  # Explore larger hidden sizes for deeper models
+  
+  num_heads:
+    values: [1, 2, 4]  # More heads might help with deeper architectures
+  
+  # LEARNING RATE SEARCH SPACE - Critical for deep models
+  peak_lr_hidden:
+    values: [0.05, 0.07, 0.08, 0.085, 0.09, 0.095, 0.1, 0.11]  # Broader range around known good values
+  
+  peak_lr_weights:
+    values: [0.0005, 0.001, 0.002, 0.003]  # Slightly higher weight LRs for deeper models
+  
+  inference_lr_scale_base:
+    values: [1.15, 1.2, 1.22, 1.24, 1.25, 1.27, 1.3, 1.35]  # More aggressive scaling for 12 blocks
+  
+  # MOMENTUM AND OPTIMIZATION
+  hidden_momentum:
+    values: [0.3, 0.35, 0.4, 0.45, 0.5]  # Higher momentum might help with deeper models
+  
+  # GRADIENT CLIPPING - Critical for stability with 12 blocks
+  h_grad_clip_norm:
+    values: [1000, 1500, 2000, 2500, 3000, 4000, 5000]  # Higher clipping for deeper models
+  
+  w_grad_clip_norm:
+    values: [300, 500, 750, 1000, 1500]  # More options for weight gradient clipping
+  
+  # INFERENCE SETTINGS
+  inference_steps:
+    values: [20, 25, 30, 35, 40]  # More inference steps might be needed for deeper models
+  
+  # WARMUP - Important for deep model stability
+  warmup_steps:
+    values: [0, 50, 100, 150, 200]  # Explore warmup for stability
+  
+  # NORMALIZATION - Might be critical for 12 blocks
+  use_vode_state_layernorm:
+    values: [false]  # Test if layer norm helps with deep models
+  
+  # REGULARIZATION SEARCH SPACE - Very important for deep models
+  intermediate_l1_coeff:
+    values: [0.0, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01]
+  
+  intermediate_l2_coeff:
+    values: [0.0, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01]
+  
+  # TRAINING SETTINGS
+  epochs:
+    value: 100  # More epochs for deeper models
+  
+  # EARLY STOPPING - Adjusted for deeper models
+  early_stopping_patience:
+    values: [5]  # More patience for deeper models
+  
+  early_stopping_min_delta:
+    values: [0.001]  # More sensitive stopping criteria
+  
+  early_stopping_metric:
+    values: ["train_mse"]  # Test both metrics
+  
+  # LEARNING RATE SCHEDULE
+  lr_schedule_min_lr_factor:
+    values: [0.1, 0.3, 0.5, 0.7]  # More aggressive decay options
+  
+  # VALIDATION FREQUENCY - More frequent for deep models
+  validation_every_n_epochs:
+    values: [25]
+  
+  reconstruction_every_n_epochs:
+    value: 25
+  
+  # SEEDS for statistical significance
+  seed:
+    values: [10]
+  
+  # FIXED SETTINGS (proven to work)
+  theta:
+    value: 10000
+  
+  use_ssl_augmentations:
+    value: false  # Enable augmentations for better representations
+  
+  use_cifar10_norm:
+    value: true
+  
+  num_images:
+    value: 1
+  
+  test_subset:
+    value: 1000
+  
+  train_subset:
+    value: 50000
+  
+  use_inference_lr_scaling:
+    value: true
+  
+  use_lr_schedule_w:
+    value: true
+  
+  use_lr_schedule_h:
+    value: true
+  
+  weight_decay:
+    value: 0.0002
+  
+  mlp_ratio:
+    value: 4.0
+  
+  patch_size:
+    value: 4
+  
+  use_noise:
+    value: true
+  
+  update_weights_every_inference_step:
+    value: false
+  
+  use_early_stopping:
+    value: true
+  
+  save_model_train_mse_threshold:
+    value: 0.0008  # Higher threshold for deeper models
+  
+  model_saving_metric:
+    value: "train_mse"
+  
+  use_vode_grad_norm:
+    value: false
+  
+  use_adamw_for_hidden_optimizer:
+    value: false
+  
+  corrupt_ratio:
+    value: 0.25
+  
+  use_lower_half_mask:
+    value: false
+  
+  inference_clamp_alpha:
+    value: 1.0
+  
+  save_reconstruction_images:
+    value: true
+  
+  save_reconstruction_video:
+    value: false  # Disable to save compute for large sweep
+  
+  video_fps:
+    value: 5
+  
+  reinitialize_model_for_each_epoch:
+    value: false
+  
+  use_status_init_in_training:
+    value: false
+  
+  use_status_init_in_unmasking:
+    value: false
+  
+  # LINEAR PROBING SETTINGS
+  linear_probe_every_n_epochs:
+    value: 1  # Less frequent to save compute in large sweep
+  
+  linear_probe_vode_indices:
+    value: "0"  # Focus on top-level features initially
+  
+  linear_probe_concatenate_features:
+    value: true
+  
+  linear_probe_use_gap:
+    value: true
+  
+  linear_probe_lr:
+    value: 0.001
+  
+  linear_probe_wd:
+    value: 0.0001
+  
+  linear_probe_epochs:
+    value: 1  # Quick probing for sweep
+  
+  linear_probe_batch_size:
+    value: 200
+  
+  linear_probe_seed:
+    value: 123
+
+# Sweep configuration
+count: 500  # Large number of runs to explore the extensive space 
