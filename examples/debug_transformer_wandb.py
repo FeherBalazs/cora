@@ -264,13 +264,17 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
+        # prefetch_factor=2,
         num_workers=0,
+        pin_memory=True   # ADD THIS
     )
     test_dataloader = DataLoader(
         test_dataset,
         batch_size=batch_size,
         shuffle=False,
+        # prefetch_factor=2,
         num_workers=0,
+        pin_memory=True   # ADD THIS (good practice, less critical if test data not GPU processed)
     )
     
     class TorchDataloader:
