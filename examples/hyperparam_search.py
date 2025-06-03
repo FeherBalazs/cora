@@ -22,6 +22,7 @@ def perform_hyperparameter_search():
         "use_cifar10_norm": True,
         "num_images": 3,
         "test_subset": 1000,
+        "validation_subset": 200,
         "train_subset": 50000,
         "peak_lr_weights": 0.001,
         "hidden_lr_inference": 0.095,

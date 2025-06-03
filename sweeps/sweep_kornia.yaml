@@ -14,9 +14,9 @@ parameters:
   batch_size:
     values: [200]
   hidden_size:
-    values: [64, 32]
+    values: [64]
   num_heads:
-    values: [1, 2]
+    values: [1]
   peak_lr_hidden: # Mapped from lr_hidden_candidates
     values: [0.095]
   inference_lr_scale_base:
@@ -43,6 +43,8 @@ parameters:
   # Fixed Parameters (from fixed_overrides, not in search)
   epochs:
     value: 75
+  validation_subset:
+    value: 200
   theta:
     value: 10000
   use_ssl_augmentations:
@@ -52,7 +54,7 @@ parameters:
   num_images:
     value: 3
   test_subset:
-    values: [1000]
+    values: [10000]
   train_subset:
     value: 50000
   peak_lr_weights:
@@ -82,7 +84,7 @@ parameters:
   use_early_stopping:
     value: True
   early_stopping_patience:
-    value: 3
+    value: 1
   early_stopping_min_delta:
     value: 0.001
   early_stopping_metric:
@@ -120,7 +122,7 @@ parameters:
   linear_probe_every_n_epochs:
     value: 25
   linear_probe_vode_indices:
-    value: "0"
+    value: "0,1,4,7"
   linear_probe_concatenate_features:
     value: True
   linear_probe_use_gap:
@@ -130,7 +132,7 @@ parameters:
   linear_probe_wd:
     value: 0.0001
   linear_probe_epochs:
-    value: 40
+    value: 100
   linear_probe_batch_size:
     value: 200
   linear_probe_seed:

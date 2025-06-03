@@ -133,6 +133,8 @@ def parse_args():
                         help='Size of training subset')
     parser.add_argument('--num_images', type=int, default=None,
                         help='Number of images for visualization')
+    parser.add_argument('--validation_subset', type=int, default=None,
+                        help='Size of subset for faster validation pretext task evaluation')
     parser.add_argument('--save_reconstruction_images', type=str_to_bool, nargs='?', const=True, default=None,
                         help='Save reconstruction images (true/false)')
     parser.add_argument('--save_reconstruction_video', type=str_to_bool, nargs='?', const=True, default=None,
@@ -190,7 +192,7 @@ def create_learning_rate_schedule(base_lr, warmup_steps, total_steps, min_lr_fac
     return lr_schedule
 
 
-def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=None, test_subset_n=None, target_class=None, use_ssl_augmentations=True, use_cifar10_norm=True):
+def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=None, test_subset_n=None, validation_subset_n=None, target_class=None, use_ssl_augmentations=True, use_cifar10_norm=True):
     """Get data loaders with simple augmentation for debugging."""
     
     # Define a common normalization (from vision_transformer_script.py)
@@ -258,18 +260,47 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
         train_dataset = Subset(train_dataset, all_idx[:train_subset_n])
     if test_subset_n is not None:
         all_idx = list(range(len(test_dataset)))
-        test_dataset = Subset(test_dataset, all_idx[:test_subset_n])
-    
+        test_dataset_full = Subset(test_dataset, all_idx[:test_subset_n]) # Keep full test_dataset for probe
+    else:
+        test_dataset_full = test_dataset
+
+    # Create validation_subset_dataloader from the original test_dataset
+    val_subset_dataset_source = test_dataset # Use the original, un-subsetted test_dataset as source
+    if validation_subset_n is not None:
+        if validation_subset_n > len(val_subset_dataset_source):
+            print(f"Warning: validation_subset_n ({validation_subset_n}) is larger than the full test dataset size ({len(val_subset_dataset_source)}). Using full test set for validation subset.")
+            val_subset_for_pretext = val_subset_dataset_source
+        else:
+            all_val_idx = list(range(len(val_subset_dataset_source)))
+            # It's good practice to use a fixed set for this subset for consistency,
+            # so we don't shuffle and take the first N. If test_dataset is already shuffled once globally, this is fine.
+            # Or, use a fixed random seed here if you need varying but reproducible subsets.
+            val_subset_for_pretext = Subset(val_subset_dataset_source, all_val_idx[:validation_subset_n])
+    else:
+        # If validation_subset_n is not specified, use the same as test_subset_n (or full test set)
+        # This maintains backward compatibility if validation_subset is not set in config.
+        val_subset_for_pretext = test_dataset_full
+
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
         # prefetch_factor=2,
         num_workers=0,
-        pin_memory=True   # ADD THIS
+        pin_memory=True   # ADD THIS (good practice, less critical if test data not GPU processed)
     )
-    test_dataloader = DataLoader(
-        test_dataset,
+    
+    # This will be the loader for the (potentially smaller) validation subset for pretext task evaluation
+    val_subset_dataloader = DataLoader(
+        val_subset_for_pretext, # Use the specifically created subset for pretext eval
+        batch_size=batch_size,
+        shuffle=False, # No need to shuffle validation/test
+        num_workers=0, # Consistent with other loaders
+        pin_memory=True
+    )
+    
+    test_dataloader_full = DataLoader(
+        test_dataset_full,
         batch_size=batch_size,
         shuffle=False,
         # prefetch_factor=2,
@@ -288,7 +319,7 @@ def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=No
         def __len__(self):
             return len(self.dataloader)
     
-    return TorchDataloader(train_dataloader), TorchDataloader(test_dataloader)
+    return TorchDataloader(train_dataloader), TorchDataloader(test_dataloader_full), TorchDataloader(val_subset_dataloader)
 
 
 def setup_gpu_augmentations(use_ssl_augmentations=True):
@@ -298,11 +329,11 @@ def setup_gpu_augmentations(use_ssl_augmentations=True):
     
     # GPU augmentations using Kornia
     gpu_augmentations = K.AugmentationSequential(
+        K.RandomResizedCrop(size=(32, 32), scale=(0.4, 1.0), ratio=(0.75, 1.33)), # Stronger crop
         K.RandomHorizontalFlip(p=0.5),
-        K.RandomResizedCrop(size=(32, 32), scale=(0.8, 1.0), ratio=(0.9, 1.1)),
-        K.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
-        # Note: Kornia's GaussianBlur is much faster on GPU if needed
-        # K.RandomGaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0), p=0.3),
+        K.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1),
+        K.RandomGrayscale(p=0.2),
+        K.RandomGaussianBlur(kernel_size=(3,3), sigma=(0.1, 2.0), p=0.5), # Ensure kernel_size is tuple
         same_on_batch=False
     )
     return gpu_augmentations
@@ -1026,19 +1057,21 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     )
     
     print(f"Creating debug dataloaders for CIFAR-10...")
-    train_loader, val_loader = get_debug_dataloaders(
+    train_loader, val_loader, val_subset_loader = get_debug_dataloaders(
         dataset_name=config.dataset,
         batch_size=config.batch_size,
         root_path=config.data_dir,
         train_subset_n=config.train_subset,
         test_subset_n=config.test_subset,
+        validation_subset_n=config.validation_subset,
         target_class=config.target_class,
-        use_ssl_augmentations=config.use_ssl_augmentations, # Pass the flag
-        use_cifar10_norm=config.use_cifar10_norm # Pass the new flag
+        use_ssl_augmentations=config.use_ssl_augmentations,
+        use_cifar10_norm=config.use_cifar10_norm
     )
     
     print(f"Training on {len(train_loader.dataset)} samples")
-    print(f"Validating on {len(val_loader.dataset)} samples")
+    print(f"Validating (Linear Probe / Full Test Set) on {len(val_loader.dataset)} samples")
+    print(f"Validating (Pretext Metrics Subset) on {len(val_subset_loader.dataset)} samples")
     
     print("Initializing model...")
     model = TransformerDecoder(model_config)
@@ -1342,8 +1375,8 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
                 actual_optim_h_for_eval = optim_h_inference
 
             pretext_metrics = eval_pretext_metrics(
-                val_loader, # Use validation loader
-                T_values=config.eval_inference_steps, # Use eval_inference_steps
+                val_subset_loader, # <<< USE val_subset_loader HERE
+                T_values=config.eval_inference_steps, 
                 use_corruption=config.use_corruption, 
                 corrupt_ratio=config.corrupt_ratio,
                 model=model, 
@@ -1439,15 +1472,16 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         if config.linear_probe_every_n_epochs > 0 and (epoch + 1) % config.linear_probe_every_n_epochs == 0:
             print(f"--- Running Linear Probe at Epoch {epoch+1} ---")
             # Create dataloaders specifically for probing (no SSL augmentations)
-            train_loader_probe, test_loader_probe = get_debug_dataloaders(
+            train_loader_probe, test_loader_probe, _ = get_debug_dataloaders( # MODIFIED HERE
                 dataset_name=config.dataset,
-                batch_size=config.batch_size, # Use MAIN training batch size for feature extraction
+                batch_size=config.batch_size, 
                 root_path=config.data_dir,
-                train_subset_n=config.train_subset, # Can be full dataset or a subset
-                test_subset_n=config.test_subset,   # Can be full dataset or a subset
+                train_subset_n=config.train_subset, 
+                test_subset_n=config.test_subset,   # Probe uses the full test_subset
+                validation_subset_n=None, # Not needed for probe's own dataloaders
                 target_class=config.target_class,
-                use_ssl_augmentations=False, # IMPORTANT: Turn off augmentations for probing
-                use_cifar10_norm=config.use_cifar10_norm # Keep original norm
+                use_ssl_augmentations=False, 
+                use_cifar10_norm=config.use_cifar10_norm 
             )
             print(f"Probe Dataloaders: Train size {len(train_loader_probe.dataset)}, Test size {len(test_loader_probe.dataset)}")
 
@@ -1529,7 +1563,7 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
                 model, 
                 model_config, 
                 optim_h=optim_h, # <<< Use the correctly configured optimizer for recon
-                dataloader=val_loader, 
+                dataloader=val_loader, # Visualize on a sample from the full val_loader (test set)
                 config=config, 
                 wandb_run=run,
                 epoch=epoch+1,
