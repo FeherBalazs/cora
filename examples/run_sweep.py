@@ -58,6 +58,8 @@ def main():
                         help='Number of runs to execute (if not provided, runs indefinitely)')
     parser.add_argument('--create-only', action='store_true',
                         help='Only create the sweep, don\'t run agent')
+    parser.add_argument('--sweep-name', type=str, default=None,
+                        help='Custom name for the sweep (used if creating a new sweep)')
     
     args = parser.parse_args()
     
@@ -73,6 +75,12 @@ def main():
         # Load sweep configuration for creating new sweep
         sweep_config = load_sweep_config(args.sweep_config)
         print(f"Loaded sweep config from {args.sweep_config}")
+
+        # Add custom sweep name if provided
+        if args.sweep_name:
+            sweep_config['name'] = args.sweep_name
+            print(f"Using custom sweep name: {args.sweep_name}")
+
         sweep_id = create_sweep(sweep_config, args.project, args.entity)
         print(f"Created new sweep: {sweep_id}")
         print(f"W&B URL: https://wandb.ai/{args.entity or 'your-entity'}/{args.project}/sweeps/{sweep_id}")
