@@ -21,7 +21,7 @@ def perform_hyperparameter_search():
         "use_ssl_augmentations": True,
         "use_cifar10_norm": True,
         "num_images": 3,
-        "test_subset": 200,
+        "test_subset": 1000,
         "train_subset": 50000,
         "peak_lr_weights": 0.001,
         "hidden_lr_inference": 0.095,

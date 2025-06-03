@@ -15,6 +15,9 @@ examples/CIFAR
 examples/extracted_features
 results/linear_probe_results/extracted_features
 results/linear_probe_results/videos
+results/linear_probe_results
+results/hyperparam_search_results
+sweeps/sweep_logs
 datasets
 debug_logs
 

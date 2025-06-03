@@ -1,0 +1,137 @@
+program: examples/debug_transformer_wandb.py
+method: grid
+metric:
+  goal: maximize
+  name: best_probe_accuracy
+
+parameters:
+  config:
+    value: "6block"
+
+  # Searched Parameters (from _candidates lists)
+  num_blocks:
+    values: [6]
+  batch_size:
+    values: [200]
+  hidden_size:
+    values: [64, 32]
+  num_heads:
+    values: [1, 2]
+  peak_lr_hidden: # Mapped from lr_hidden_candidates
+    values: [0.095]
+  inference_lr_scale_base:
+    values: [1.25]
+  hidden_momentum:
+    values: [0.4]
+  h_grad_clip_norm:
+    values: [2000]
+  seed:
+    values: [20, 30, 40] # As per the last update in your hyperparam_search.py
+  inference_steps:
+    values: [20]
+  warmup_steps:
+    values: [0]
+  w_grad_clip_norm:
+    values: [500.0]
+  use_vode_state_layernorm:
+    values: [False]
+  intermediate_l1_coeff:
+    values: [0.0001]
+  intermediate_l2_coeff:
+    values: [0.0]
+
+  # Fixed Parameters (from fixed_overrides, not in search)
+  epochs:
+    value: 75
+  theta:
+    value: 10000
+  use_ssl_augmentations:
+    value: True
+  use_cifar10_norm:
+    value: True
+  num_images:
+    value: 3
+  test_subset:
+    values: [1000]
+  train_subset:
+    value: 50000
+  peak_lr_weights:
+    value: 0.001
+  hidden_lr_inference:
+    value: 0.095
+  reconstruction_every_n_epochs:
+    value: 25
+  validation_every_n_epochs:
+    value: 25
+  use_inference_lr_scaling:
+    value: True
+  use_lr_schedule_w:
+    value: True
+  use_lr_schedule_h:
+    value: True
+  weight_decay:
+    value: 0.0002
+  mlp_ratio:
+    value: 4.0
+  patch_size:
+    value: 4
+  use_noise:
+    value: True
+  update_weights_every_inference_step:
+    value: False
+  use_early_stopping:
+    value: True
+  early_stopping_patience:
+    value: 3
+  early_stopping_min_delta:
+    value: 0.001
+  early_stopping_metric:
+    value: "probe_accuracy"
+  save_model_train_mse_threshold:
+    value: 0.008
+  model_saving_metric:
+    value: "train_mse"
+  use_vode_grad_norm:
+    value: False
+  use_adamw_for_hidden_optimizer:
+    value: False
+  corrupt_ratio:
+    value: 0.25
+  use_lower_half_mask:
+    value: False
+  inference_clamp_alpha:
+    value: 1.0
+  save_reconstruction_images:
+    value: True
+  save_reconstruction_video:
+    value: True
+  video_fps:
+    value: 5
+  reinitialize_model_for_each_epoch:
+    value: False
+  use_status_init_in_training:
+    value: False
+  use_status_init_in_unmasking:
+    value: False
+  lr_schedule_min_lr_factor:
+    value: 0.5
+
+  # Fixed Linear Probing Parameters
+  linear_probe_every_n_epochs:
+    value: 25
+  linear_probe_vode_indices:
+    value: "0"
+  linear_probe_concatenate_features:
+    value: True
+  linear_probe_use_gap:
+    value: True
+  linear_probe_lr:
+    value: 0.001
+  linear_probe_wd:
+    value: 0.0001
+  linear_probe_epochs:
+    value: 40
+  linear_probe_batch_size:
+    value: 200
+  linear_probe_seed:
+    value: 123
