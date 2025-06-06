@@ -57,9 +57,14 @@ from src.config import MODEL_CONFIGS, ModelConfig, DEFAULT_CONFIG, create_config
 
 try:
     import kornia.augmentation as K
+    try:
+        from kornia.utils import set_rng_seed
+    except ImportError:
+        set_rng_seed = None # For older kornia versions
     KORNIA_AVAILABLE = True
 except ImportError:
     KORNIA_AVAILABLE = False
+    set_rng_seed = None
     print("Kornia not available. Install with: pip install kornia")
 
 
@@ -935,6 +940,9 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     print(f"Using master seed: {current_seed}")
     np.random.seed(current_seed)
     torch.manual_seed(current_seed)
+    if KORNIA_AVAILABLE and set_rng_seed:
+        print(f"Setting Kornia RNG seed to {current_seed}")
+        set_rng_seed(current_seed)
     random.seed(current_seed)
     RKG.seed(current_seed) # Re-seed the pcx global RandomKeyGenerator
     
