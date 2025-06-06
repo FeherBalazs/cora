@@ -2,13 +2,14 @@
 
 # --- Configuration ---
 SWEEP_CONFIG_FILE="../sweeps/sweep_kornia.yaml"
-PROJECT_NAME="6-blocks-kornia-reproducibility"
+PROJECT_NAME="expanding-model-search"
 ENTITY_NAME="neural-machines"
 # Generate a unique name for the sweep to avoid conflicts
-SWEEP_NAME="kornia-repro-$(date +%Y%m%d-%H%M%S)"
+# SWEEP_NAME="multiple-heads-and-momentum-$(date +%Y%m%d-%H%M%S)"
+SWEEP_NAME="multiple-heads-and-momentum"
 
 NUM_AGENTS=10
-COUNT_PER_AGENT=1  # Each agent will try to run 1 config from the grid
+COUNT_PER_AGENT=10  # Each agent will try to run 1 config from the grid
 LOG_DIR="sweep_logs"
 # --- End Configuration ---
 
@@ -62,7 +63,7 @@ for i in $(seq 1 $NUM_AGENTS); do
     echo $! > "$LOG_DIR/agent_${i}.pid"
     
     # Staggered delay to prevent all agents from hitting the W&B API at once
-    sleep 5
+    sleep 120
     
     # Progress indicator
     if [ $((i % 5)) -eq 0 ]; then

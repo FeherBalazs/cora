@@ -1,5 +1,5 @@
 program: examples/debug_transformer_wandb.py
-method: grid
+method: bayes
 metric:
   goal: maximize
   name: best_probe_accuracy
@@ -16,17 +16,23 @@ parameters:
   hidden_size:
     values: [64]
   num_heads:
-    values: [1]
+    values: [4]
   peak_lr_hidden: # Mapped from lr_hidden_candidates
-    values: [0.095]
+    distribution: uniform
+    min: 0.01
+    max: 0.1
   inference_lr_scale_base:
-    values: [1.25]
+    distribution: uniform
+    min: 1.05
+    max: 1.25
   hidden_momentum:
-    values: [0.4]
+    distribution: uniform
+    min: 0.1
+    max: 0.95
   h_grad_clip_norm:
     values: [2000]
   seed:
-    values: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100] # As per the last update in your hyperparam_search.py
+    values: [20, 30] # As per the last update in your hyperparam_search.py
   inference_steps:
     values: [20]
   warmup_steps:
@@ -84,11 +90,11 @@ parameters:
   use_early_stopping:
     value: True
   early_stopping_patience:
-    value: 1
+    value: 25
   early_stopping_min_delta:
     value: 0.001
   early_stopping_metric:
-    value: "probe_accuracy"
+    value: "train_mse"
   save_model_train_mse_threshold:
     value: 0.008
   model_saving_metric:
@@ -132,7 +138,7 @@ parameters:
   linear_probe_wd:
     value: 0.0001
   linear_probe_epochs:
-    value: 100
+    value: 50
   linear_probe_batch_size:
     value: 200
   linear_probe_seed:
