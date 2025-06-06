@@ -65,6 +65,10 @@ RUN python -m uv pip install -r requirements.txt \
 # Install local package in development mode
 RUN python -m uv pip install -e ./
 
+# Install PyTorch 
+# WARNING: this has been changed recently from cpu to gpu to speed up dataloader with Kornia and has not been tested yet
+RUN python -m uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+
 # Remove any existing JAX installations
 RUN python -m uv pip uninstall -y jax jaxlib || true
 
@@ -76,9 +80,7 @@ RUN python -m uv pip install matplotlib==3.8.2 \
 # Install specific JAX versions for CUDA
 RUN python -m uv pip install "jax[cuda12]==0.4.33" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 
-# Install PyTorch 
-# WARNING: this has been changed recently from cpu to gpu to speed up dataloader with Kornia and has not been tested yet
-RUN python -m uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
 
 
 
