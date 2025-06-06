@@ -635,6 +635,7 @@ def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.
                 x = x_augmented
             except Exception as e:
                 # Fallback to CPU augmentations
+                print(f"!!! Kornia GPU augmentation failed with error: {e}. Falling back to CPU augmentations. !!!")
                 try:
                     from examples.debug_transformer_wandb import apply_cpu_fallback_augmentations
                     x = apply_cpu_fallback_augmentations(x)

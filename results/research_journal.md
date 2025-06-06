@@ -566,8 +566,132 @@
     - This needs to be pushed further to see how far probe accuracy can go. But away for the weekend, so for now just try to see if we can optimise params around this.
 
 
+- Experiment:
+  - Bayesian grid search around the best 6 block params above (but without data augmentation for speed). This ran for 2 days.
+  - `use_ssl_augmentations: False`
+  - `use_cifar10_norm: True`
+  - `linear_probe_epochs': 50`
+  - Run: [https://wandb.ai/neural-machines/refine-6blocks/sweeps/oq1mmadp?nw=nwusergradientracer](https://wandb.ai/neural-machines/refine-6blocks/sweeps/oq1mmadp?nw=nwusergradientracer)
+  - Results: 
+    - The top 4 setups reached even higher by epoch 25 (but diverged shortly after epoch 25). The rest did not diverge, started a bit lower by epoch 25 but still around 0.4 and going up to 0.45 by epoch 50. But then none of them finished as they were early stopped (divergence was not really present, but training was oscillatory as usual, and did not come down fast enough for given patience of 20). 
+      - Name                h_grad_clip_norm   hidden_momentum    inference_lr_scale_base    intermediate_l1_coeff    intermediate_l2_coeff    peak_lr_hidden    best_probe_accuracy
+        smart-sweep-53      2500.00            0.35               1.24                       0.00010                  0.00007                  0.10              0.470
+        graceful-sweep-64   2500.00            0.35               1.22                       0.00006                  0.00006                  0.10              0.465
+        clean-sweep-72      2000.00            0.35               1.21                       0.00007                  0.00004                  0.10              0.460
+        classic-sweep-11    2500.00            0.35               1.20                       0.00006                  0.00005                  0.10              0.455
+        wobbly-sweep-66     2500.00            0.35               1.24                       0.00008                  0.00000                  0.10              0.45
+        deep-sweep-24       2500.00            0.37               1.22                       0.00008                  0.00001                  0.10              0.45
+        driven-sweep-6      2500.00            0.35               1.24                       0.00007                  0.00001                  0.10              0.45
+        peachy-sweep-46     2000.00            0.37               1.22                       0.00012                  0.00000                  0.10              0.45
+        lunar-sweep-3       2500.00            0.38               1.20                       0.00007                  0.00001                  0.10              0.45
+        stilted-sweep-9     2500.00            0.36               1.21                       0.00008                  0.00001                  0.09              0.45
+        average                                0.36	              1.22	                     0.00008	                0.00003	                 0.10	             0.46
+  - Interpretation and next steps:
+    - we had the following search interval for momentum:
+      - hidden_momentum:
+          distribution: uniform
+          max: 0.45
+          min: 0.35
+    - it is possible that the runs could have benefited from lower momentum. maybe it would have helped to avoid divergence.
+    - inference_lr_scale_base still ranges from 1.20 to 1.24 with good results. can go with 1.22 as the average going forwards
+    - peak_lr_hidden of 0.10 seems optimal
+    - l1 and l2 coeff of 0.00008 and 0.00003 seems optimal average values
+    - Can data augmentation help stabilise training?
 
 
+
+
+TODO: 
+  - Try with one more head, maybe results are more robust. 
+  - Try with lower and higher hidden dim.
+  - search how much and what type of data augmentation would help with cifar10
+  - try best setting with same seed but with more test samples to see what is really expected. then refine ssl method and decrease learning rate, and extend over more epochs.
+  - how much time do I want to spend on tweaking current setup without proper regularisation?
+  - well, the hope is that probe accuracy goes up with most seeds. if we see consistent trend, then it would make sense to test for more epochs. 75 epochs is very little by SSL standards. but it would be better to speed up training first as data augmentation is taking much time.
+
+
+
+
+
+
+
+
+####################################
+Below experiments were done with refactored code that are now rolled back. 
+
+- Experiment:
+  - I have made some refactoring, using jax-dataloaders now to speed up augmentation runs
+  - Selected deep-sweep-72 from the above settings as it looked the most promising when looking at probe_accuracy and train_mse trends
+  - `use_ssl_augmentations: = [True, False]`
+  - `seed_candidates = [10, 42, 73]`
+  - `linear_probe_epochs': 50`
+  - Run: [https://wandb.ai/neural-machines/test-refine-6blocks/sweeps/hwtnh8yj?nw=nwusergradientracer](https://wandb.ai/neural-machines/test-refine-6blocks/sweeps/hwtnh8yj?nw=nwusergradientracer)
+  - Results:
+    - without data agumentation, although train_mse did not diverge, probe accuracy came down by 75 epochs
+    - with data augmentation one of the seeds diverged early. one of the remaining diverged by epoch 60. the last one did not diverge, and got probe accuracies of:
+      - 0.445 by epoch 25
+      - 0.425 by epoch 50
+      - 0.455 by epoch 75
+  - Interpretation and next steps:
+    - As mentioned I have selected deep-sweep-72 as it showed good trends, but looking at the params, momentum was on the higher end of 0.369, although inference_lr_scale_base was only 1.218
+    - Let's try with the averaged settings, with multiple seeds.
+
+
+- Experiment:
+  - Best averaged settings with multiple seeds:
+  - `seed_candidates = [10, 42, 73, 50, 60]`
+  - python examples/run_sweep.py --sweep-config sweeps/sweep_averaged_params.yaml --project "best-6blocks-multiseed" --create-only
+  - nohup python examples/run_sweep.py --sweep-id "hw9hruwh" --project "best-6blocks-multiseed" > sweep_agent.log 2>&1 &
+  - Run: [https://wandb.ai/neural-machines/best-6blocks-multiseed/sweeps/hw9hruwh](https://wandb.ai/neural-machines/best-6blocks-multiseed/sweeps/hw9hruwh)
+  - Results:
+    - the hope is that with data augmentation and better params the training become smoother, and train_mse comes down steadily, while probe accuracy improves over the run. with the multiple seeds lets check how much variability is there between runs
+    - note that I have increased the test set from 200 to 1000. I had it lower earlier for speeding up evaluation.
+    - all the seeds diverged by epoch 40 and so probe accuracy decreases. they also all start out lower than any of the grid searched combinations: 0.35-0.38. but note that I have significantly changed the number of test images.
+  
+####################################
+
+  
+
+
+
+- Experiment:
+  - This might be silly but running 12 block extensive search locally with 3 agents
+  - sweep_12block_comprehensive.yaml
+  - Run: [https://wandb.ai/neural-machines/12-blocks/sweeps/c1pmzydl?nw=nwusergradientracer](https://wandb.ai/neural-machines/12-blocks/sweeps/c1pmzydl?nw=nwusergradientracer)
+  - Results:
+    - It has crashed. I dont think it got far, but let's analyse.
+
+Current:
+
+  - run for 500 epochs - bayesian search around best params - with data augmentation - more test data => 1000 - ES based on probe accuracy checked every 10 epochs with 3 patience.
+    - https://wandb.ai/neural-machines/6blocks-long/sweeps/45zt6sl5?nw=nwusergradientracer
+
+TODO:
+smaller run locally with just block6 - but what settings?
+    
+
+              - Experiment:
+                - First large wandb sweep.
+                - Run: [https://wandb.ai/neural-machines/mse-vs-probe-search/sweeps/85slx9fu?nw=nwusergradientracer](https://wandb.ai/neural-machines/mse-vs-probe-search/sweeps/85slx9fu?nw=nwusergradientracer)
+                - Results:
+                  - I had to stop it because of ssl_augmentation bottleneck.
+
+              - Experiment:
+                - Second large sweep without SSL augmentation
+                - Run: [https://wandb.ai/neural-machines/6block-search/sweeps/6wrc9jid?nw=nwusergradientracer](https://wandb.ai/neural-machines/6block-search/sweeps/6wrc9jid?nw=nwusergradientracer)
+                Results:
+                  - I had to stop this as I added too many agents and memory bottlenecked.
+
+
+
+python examples/run_sweep.py --sweep-config sweeps/sweep_focused_search.yaml --project "refine-6blocks"
+
+nohup python examples/run_sweep.py --sweep-id "oq1mmadp" --project "refine-6blocks" > sweep_agent.log 2>&1 &
+
+
+python examples/run_sweep.py --sweep-config sweeps/sweep_averaged_params.yaml --project "best-6blocks-multiseed" --create-only
+
+nohup python examples/run_sweep.py --sweep-id "hw9hruwh" --project "best-6blocks-multiseed" > sweep_agent.log 2>&1 &
 
 
 Experiment:

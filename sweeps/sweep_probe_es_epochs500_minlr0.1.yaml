@@ -1,0 +1,139 @@
+program: examples/debug_transformer_wandb.py
+method: bayes
+metric:
+  goal: maximize
+  name: best_probe_accuracy
+
+parameters:
+  config:
+    value: "6block"
+  batch_size:
+    value: 200
+  corrupt_ratio:
+    value: 0.25
+  early_stopping_metric:
+    value: "probe_accuracy"
+  early_stopping_min_delta:
+    value: 0.001
+  early_stopping_patience:
+    value: 3
+  epochs:
+    value: 500
+  h_grad_clip_norm:
+    value: 2500
+  hidden_lr_inference:
+    value: 0.095
+  hidden_momentum:
+    distribution: uniform
+    min: 0.3
+    max: 0.5
+  hidden_size:
+    value: 64
+  inference_clamp_alpha:
+    value: 1
+  inference_lr_scale_base:
+    distribution: uniform
+    min: 1.15
+    max: 1.35
+  inference_steps:
+    value: 20
+  intermediate_l1_coeff:
+    value: 7.842723806399224e-05
+  intermediate_l2_coeff:
+    value: 7.526543536869568e-06
+  linear_probe_batch_size:
+    value: 200
+  linear_probe_concatenate_features:
+    value: true
+  linear_probe_epochs:
+    value: 10
+  linear_probe_every_n_epochs:
+    value: 10
+  linear_probe_lr:
+    value: 0.001
+  linear_probe_seed:
+    value: 123
+  linear_probe_use_gap:
+    value: true
+  linear_probe_vode_indices:
+    value: "0,1,4,7"
+  linear_probe_wd:
+    value: 0.0001
+  lr_schedule_min_lr_factor:
+    value: 0.1
+  mlp_ratio:
+    value: 4
+  model_saving_metric:
+    value: "train_mse"
+  num_blocks:
+    value: 6
+  num_heads:
+    value: 1
+  num_images:
+    value: 3
+  patch_size:
+    value: 4
+  peak_lr_hidden:
+    distribution: uniform
+    min: 0.08
+    max: 0.12
+  peak_lr_weights:
+    value: 0.001
+  reconstruction_every_n_epochs:
+    value: 25
+  reinitialize_model_for_each_epoch:
+    value: false
+  save_model_train_mse_threshold:
+    value: 0.008
+  save_reconstruction_images:
+    value: true
+  save_reconstruction_video:
+    value: true
+  seed:
+    values:
+      - 10
+      - 42
+  test_subset:
+    value: 1000
+  theta:
+    value: 10000
+  train_subset:
+    value: 50000
+  update_weights_every_inference_step:
+    value: false
+  use_adamw_for_hidden_optimizer:
+    value: false
+  use_cifar10_norm:
+    value: true
+  use_early_stopping:
+    value: true
+  use_inference_lr_scaling:
+    value: true
+  use_lower_half_mask:
+    value: false
+  use_lr_schedule_h:
+    value: true
+  use_lr_schedule_w:
+    value: true
+  use_noise:
+    value: true
+  use_ssl_augmentations:
+    value: true
+  use_status_init_in_training:
+    value: false
+  use_status_init_in_unmasking:
+    value: false
+  use_vode_grad_norm:
+    value: false
+  use_vode_state_layernorm:
+    value: false
+  validation_every_n_epochs:
+    value: 10
+  video_fps:
+    value: 5
+  w_grad_clip_norm:
+    value: 500
+  warmup_steps:
+    value: 0
+  weight_decay:
+    value: 0.0002 
