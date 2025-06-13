@@ -65,7 +65,7 @@ def perform_hyperparameter_search():
         "linear_probe_lr": 1e-3,
         "linear_probe_wd": 1e-4,
         "linear_probe_epochs": 20, # A shorter number of epochs for hyperparam search might be wise
-        "linear_probe_batch_size": 640,
+        "linear_probe_batch_size": 200,
         # "linear_probe_h_lr": None, # Will use main config's hidden_lr_inference
         "linear_probe_inference_steps": None, # Will use main config's inference_steps
         "linear_probe_seed": 123,
@@ -75,12 +75,13 @@ def perform_hyperparameter_search():
         # "mmcr_vode_indices": "0,1,2,3,4,5,6,7", # String format, will be parsed by run_experiment
         # "mmcr_projector_dim": 128,
         # "mmcr_lambda": 0.0,
-        "num_views_per_image": 20
+        "num_views_per_image": 20,
+        "mmcr_loss_scale_factor": 0.01,
     }
 
     # --- Architectural Search Space ---
     num_blocks_candidates = [6]
-    batch_size_candidates = [32]
+    batch_size_candidates = [10]
     hidden_size_candidates = [64]
     num_heads_candidates = [1]
 
@@ -101,7 +102,7 @@ def perform_hyperparameter_search():
 
     # --- NEW: MMCR Search Space ---
     use_mmcr_loss_candidates = [True]
-    mmcr_lambda_candidates = [0.05]
+    mmcr_lambda_candidates = [0.0]
     mmcr_vode_indices_candidates = ["0,1,2,3,4,5,6,7"] # Only on the final layer's features
 
     best_run_info = {

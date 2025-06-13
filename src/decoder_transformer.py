@@ -312,10 +312,12 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
                     )
                     mmcr_energy += mmcr_loss_i
         
-        total_energy = reconstruction_energy + mmcr_energy
+        scaled_mmcr_energy = mmcr_energy * model.config.mmcr_loss_scale_factor
+        
+        total_energy = reconstruction_energy + scaled_mmcr_energy
         
         # We need an aux output to see the components
-        return total_energy, (reconstruction_energy, mmcr_energy)
+        return total_energy, (reconstruction_energy, scaled_mmcr_energy)
 
     # Define functions to get energies and gradients for hidden states (h) and weights (w)
     def get_energies_and_grads_h(model_for_grad):

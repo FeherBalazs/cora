@@ -62,6 +62,7 @@ class TransformerConfig:
 
     # MMCR settings
     use_mmcr_loss: bool = False
+    mmcr_loss_scale_factor: float = 0.01
     # List of Vode indices to apply MMCR loss to. E.g., [1, 3, 5] for vodes 1, 3, 5
     mmcr_vode_indices: Optional[List[int]] = None
     # Dimension of the projector MLP output
@@ -214,6 +215,7 @@ class ModelConfig:
 
     # MMCR settings
     use_mmcr_loss: bool = False
+    mmcr_loss_scale_factor: float = 0.01
     mmcr_vode_indices: Optional[List[int]] = None
     mmcr_projector_dim: int = 128
     mmcr_lambda: float = 0.05
@@ -641,6 +643,7 @@ def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
                  intermediate_l1_coeff: float = 0.0, # ADDED
                  intermediate_l2_coeff: float = 0.0,  # ADDED
                  use_mmcr_loss: bool = False,
+                 mmcr_loss_scale_factor: float = 0.01,
                  mmcr_vode_indices: Optional[List[int]] = None,
                  mmcr_projector_dim: int = 128,
                  mmcr_lambda: float = 0.05,
@@ -676,6 +679,7 @@ def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
             intermediate_l1_coeff=intermediate_l1_coeff,
             intermediate_l2_coeff=intermediate_l2_coeff,
             use_mmcr_loss=use_mmcr_loss,
+            mmcr_loss_scale_factor=mmcr_loss_scale_factor,
             mmcr_vode_indices=mmcr_vode_indices,
             mmcr_projector_dim=mmcr_projector_dim,
             mmcr_lambda=mmcr_lambda,
