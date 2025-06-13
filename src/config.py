@@ -224,7 +224,7 @@ class ModelConfig:
     num_views_per_image: int = 40
 
     # Dataloader arguments
-    num_workers: int = 5
+    num_workers: int = 4
 
 
 MODEL_CONFIGS = {

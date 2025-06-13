@@ -1,15 +1,15 @@
 #!/bin/bash
 
 # --- Configuration ---
-SWEEP_CONFIG_FILE="../sweeps/sweep_kornia.yaml"
-PROJECT_NAME="expanding-model-search"
+SWEEP_CONFIG_FILE="../sweeps/sweep_mmcr.yaml"
+PROJECT_NAME="mmcr-model-search"
 ENTITY_NAME="neural-machines"
 # Generate a unique name for the sweep to avoid conflicts
 # SWEEP_NAME="multiple-heads-and-momentum-$(date +%Y%m%d-%H%M%S)"
-SWEEP_NAME="multiple-heads-and-momentum"
+SWEEP_NAME="mmcr-broad-search"
 
-NUM_AGENTS=10
-COUNT_PER_AGENT=10  # Each agent will try to run 1 config from the grid
+NUM_AGENTS=1
+COUNT_PER_AGENT=1000  # Each agent will try to run 1 config from the grid
 LOG_DIR="sweep_logs"
 # --- End Configuration ---
 

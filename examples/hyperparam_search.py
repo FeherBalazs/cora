@@ -16,18 +16,18 @@ def perform_hyperparameter_search():
 
     # Fixed overrides: Non-searched parameters, taking cues from the "6block" base
     fixed_overrides = {
-        "epochs": 75,
+        "epochs": 2,
         "theta": 10_000,
         "use_ssl_augmentations": True,
         "use_cifar10_norm": True,
         "num_images": 3,
-        "test_subset": 1000,
-        "validation_subset": 1000,
-        "train_subset": 10000,
+        "test_subset": 2000,
+        "validation_subset": 2000,
+        "train_subset": 50000,
         "peak_lr_weights": 0.001,
         "hidden_lr_inference": 0.095,
-        "reconstruction_every_n_epochs": 25,
-        "validation_every_n_epochs": 25,
+        "reconstruction_every_n_epochs": 2,
+        "validation_every_n_epochs": 2,
         "use_inference_lr_scaling": True,
         "use_lr_schedule_w": True,
         "use_lr_schedule_h": True,
@@ -58,14 +58,14 @@ def perform_hyperparameter_search():
         "lr_schedule_min_lr_factor": 0.5,
 
         # Linear Probing Defaults (can be overridden per run if made searchable)
-        "linear_probe_every_n_epochs": 5, # Disabled by default, enable for specific searches
+        "linear_probe_every_n_epochs": 2, # Disabled by default, enable for specific searches
         "linear_probe_vode_indices": "0,1,4,7", # Example: probe all layers
         "linear_probe_concatenate_features": True, # Example: concatenate all specified
         "linear_probe_use_gap": True,
         "linear_probe_lr": 1e-3,
         "linear_probe_wd": 1e-4,
         "linear_probe_epochs": 50, # A shorter number of epochs for hyperparam search might be wise
-        "linear_probe_batch_size": 250,
+        "linear_probe_batch_size": 512,
         # "linear_probe_h_lr": None, # Will use main config's hidden_lr_inference
         "linear_probe_inference_steps": None, # Will use main config's inference_steps
         "linear_probe_seed": 123,
@@ -75,13 +75,13 @@ def perform_hyperparameter_search():
         # "mmcr_vode_indices": "0,1,2,3,4,5,6,7", # String format, will be parsed by run_experiment
         # "mmcr_projector_dim": 128,
         # "mmcr_lambda": 0.0,
-        "num_views_per_image": 25,
+        "num_views_per_image": 8,
         "mmcr_loss_scale_factor": 0.1,
     }
 
     # --- Architectural Search Space ---
     num_blocks_candidates = [6]
-    batch_size_candidates = [10]
+    batch_size_candidates = [64]
     hidden_size_candidates = [64]
     num_heads_candidates = [1]
 
