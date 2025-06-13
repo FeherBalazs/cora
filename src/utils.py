@@ -3,6 +3,9 @@ import jax.numpy as jnp
 from typing import Tuple, List, Optional
 import json
 import wandb
+from src.config import TransformerConfig
+import jax.tree_util
+import time
 
 
 def get_sinusoidal_1d(positions, dim, theta=10000.0):
@@ -355,3 +358,104 @@ def create_multi_line_chart(table_data, x_col, y_col, series_col, title):
     """
     
     return wandb.Html(html)
+
+def apply_exponential_layer_scaling(model_grads, config: TransformerConfig):
+    """
+    Applies exponential scaling to Vode hidden state gradients (h).
+    The scaling factor doubles for each layer moving up the hierarchy
+    (away from the sensory layer).
+
+    Args:
+        model_grads: The PyTree of gradients for the model.
+        config: The model configuration object.
+
+    Returns:
+        The gradient PyTree with scaled h gradients.
+    """
+    num_blocks = config.num_blocks
+
+    # Total number of Vodes whose h gradients are computed (excluding frozen sensory)
+    num_vodes_with_grad = num_blocks + 2
+    # Index of the lowest layer (closest to sensory) whose h gradient is computed
+    base_layer_idx = num_vodes_with_grad - 1
+
+    def map_fn(path, leaf):
+
+        is_vode_h_grad_value = (
+            len(path) == 4 and
+            isinstance(path[0], jax.tree_util.GetAttrKey) and path[0].name == 'vodes' and
+            isinstance(path[1], jax.tree_util.SequenceKey) and
+            isinstance(path[2], jax.tree_util.GetAttrKey) and path[2].name == 'h' and
+            isinstance(path[3], jax.tree_util.GetAttrKey) and path[3].name == 'value'
+        )
+
+        if is_vode_h_grad_value:
+            vode_idx = path[1].idx
+            scale_base = config.inference_lr_scale_base if config.inference_lr_scale_base is not None else 1.0
+            scale = jnp.power(scale_base, float(base_layer_idx - vode_idx))
+
+            if isinstance(leaf, jax.Array):
+                 return leaf * scale
+            else:
+                 return leaf
+        else:
+            return leaf
+
+    return jax.tree_util.tree_map_with_path(map_fn, model_grads)
+
+
+def normalize_vode_h_gradients(model_grads, config: TransformerConfig):
+    """
+    Applies L2 normalization to each Vode's hidden state gradients (h).
+    The gradients are scaled to have a norm of `config.vode_grad_norm_target`.
+
+    Args:
+        model_grads: The PyTree of gradients for the model's Vode hidden states.
+                     Expected to be the part of the grads relevant to Vodes, e.g., h_grad["model"].
+        config: The model configuration object.
+
+    Returns:
+        The gradient PyTree with normalized h gradients for Vodes.
+    """
+    if not config.use_vode_grad_norm: # Check if normalization is enabled
+        return model_grads
+
+    def map_fn_vode_grad_norm(path, leaf_grad_value):
+        # Check if the current leaf is a Vode's h-gradient value
+        # Path structure: ('vodes', SequenceKey(idx=i), GetAttrKey(name='h'), GetAttrKey(name='value'))
+        is_vode_h_grad_value = (
+            len(path) == 4 and
+            isinstance(path[0], jax.tree_util.GetAttrKey) and path[0].name == 'vodes' and
+            isinstance(path[1], jax.tree_util.SequenceKey) and # Index of the Vode in the list
+            isinstance(path[2], jax.tree_util.GetAttrKey) and path[2].name == 'h' and
+            isinstance(path[3], jax.tree_util.GetAttrKey) and path[3].name == 'value'
+        )
+
+        if is_vode_h_grad_value and isinstance(leaf_grad_value, jax.Array):
+            norm = jnp.linalg.norm(leaf_grad_value)
+            epsilon = 1e-8  # To prevent division by zero
+            # Normalize and scale to the target norm
+            normalized_grad = (leaf_grad_value / (norm + epsilon)) * config.vode_grad_norm_target
+            return normalized_grad
+        else:
+            return leaf_grad_value # Return other leaves unchanged
+
+    return jax.tree_util.tree_map_with_path(map_fn_vode_grad_norm, model_grads)
+
+
+def calculate_psnr(img1, img2, data_range=1.0, epsilon=1e-8):
+    """Calculates Peak Signal-to-Noise Ratio between two images."""
+    mse = jnp.mean((img1 - img2) ** 2)
+    # Handle potential division by zero or very small MSE
+    safe_mse = jnp.maximum(mse, epsilon)
+    psnr = 10 * jnp.log10((data_range ** 2) / safe_mse)
+    # Clamp PSNR for the case where mse is exactly zero (perfect match)
+    # Infinite PSNR isn't practical, often capped at a high value, e.g., 100 dB
+    # JAX doesn't directly support inf, so we'll rely on the epsilon or cap if needed.
+    # For now, epsilon handles the near-zero case. Perfect zero might still cause issues
+    # depending on floating point precision, but epsilon helps.
+    # A simpler alternative might be:
+    # if mse == 0: return 100.0 # Or some large number
+    # return 10 * jnp.log10((data_range ** 2) / mse)
+    # However, JAX prefers numerical stability via epsilon.
+    return psnr

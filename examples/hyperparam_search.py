@@ -16,14 +16,14 @@ def perform_hyperparameter_search():
 
     # Fixed overrides: Non-searched parameters, taking cues from the "6block" base
     fixed_overrides = {
-        "epochs": 75,
+        "epochs": 1,
         "theta": 10_000,
         "use_ssl_augmentations": True,
         "use_cifar10_norm": True,
         "num_images": 3,
-        "test_subset": 10000,
+        "test_subset": 200,
         "validation_subset": 200,
-        "train_subset": 50000,
+        "train_subset": 1000,
         "peak_lr_weights": 0.001,
         "hidden_lr_inference": 0.095,
         "reconstruction_every_n_epochs": 25,
@@ -58,22 +58,29 @@ def perform_hyperparameter_search():
         "lr_schedule_min_lr_factor": 0.5,
 
         # Linear Probing Defaults (can be overridden per run if made searchable)
-        "linear_probe_every_n_epochs": 25, # Disabled by default, enable for specific searches
-        "linear_probe_vode_indices": "0,1,4,7", # Example: probe all layers
+        "linear_probe_every_n_epochs": 1, # Disabled by default, enable for specific searches
+        "linear_probe_vode_indices": "0", # Example: probe all layers
         "linear_probe_concatenate_features": True, # Example: concatenate all specified
         "linear_probe_use_gap": True,
         "linear_probe_lr": 1e-3,
         "linear_probe_wd": 1e-4,
-        "linear_probe_epochs": 100, # A shorter number of epochs for hyperparam search might be wise
+        "linear_probe_epochs": 20, # A shorter number of epochs for hyperparam search might be wise
         "linear_probe_batch_size": 200,
         # "linear_probe_h_lr": None, # Will use main config's hidden_lr_inference
-        # "linear_probe_inference_steps": None, # Will use main config's inference_steps
-        "linear_probe_seed": 123
+        "linear_probe_inference_steps": None, # Will use main config's inference_steps
+        "linear_probe_seed": 123,
+
+        # MMCR Defaults
+        "use_mmcr_loss": False,
+        "mmcr_vode_indices": "0", # String format, will be parsed by run_experiment
+        "mmcr_projector_dim": 128,
+        "mmcr_lambda": 0.0,
+        "num_views_per_image": 40
     }
 
     # --- Architectural Search Space ---
-    num_blocks_candidates = [6]
-    batch_size_candidates = [200]
+    num_blocks_candidates = [0]
+    batch_size_candidates = [5]
     hidden_size_candidates = [64]
     num_heads_candidates = [1]
 
@@ -89,8 +96,13 @@ def perform_hyperparameter_search():
     use_vode_state_layernorm_candidates = [False]
 
     # --- NEW: Regularization Search Space ---
-    intermediate_l1_coeff_candidates = [0.0001]
+    intermediate_l1_coeff_candidates = [0.0]
     intermediate_l2_coeff_candidates = [0.0]
+
+    # --- NEW: MMCR Search Space ---
+    use_mmcr_loss_candidates = [True]
+    mmcr_lambda_candidates = [0.0]
+    mmcr_vode_indices_candidates = ["0"] # Only on the final layer's features
 
     best_run_info = {
         "num_blocks": None,
@@ -109,6 +121,9 @@ def perform_hyperparameter_search():
         "seed": None,
         "intermediate_l1_coeff": None, # New
         "intermediate_l2_coeff": None, # New
+        "use_mmcr_loss": None,         # New
+        "mmcr_lambda": None,           # New
+        "mmcr_vode_indices": None,     # New
         "overall_best_val_mse": float('inf'),
         "run_best_train_mse_of_best_val_run": float('inf'),
         "final_train_mse_of_best_val_run": float('inf'),
@@ -131,6 +146,9 @@ def perform_hyperparameter_search():
                  len(use_vode_state_layernorm_candidates) * \
                  len(intermediate_l1_coeff_candidates) * \
                  len(intermediate_l2_coeff_candidates) * \
+                 len(use_mmcr_loss_candidates) * \
+                 len(mmcr_lambda_candidates) * \
+                 len(mmcr_vode_indices_candidates) * \
                  len(seed_candidates)
     current_run = 0
 
@@ -144,7 +162,7 @@ def perform_hyperparameter_search():
         creative_name = f"{random.choice(adjectives)}-{random.choice(nouns)}"
 
     wandb_project = f"pc-arch-search-{creative_name}"
-    wandb_mode_for_runs = "online"
+    wandb_mode_for_runs = "offline"
 
     lr_w = fixed_overrides["peak_lr_weights"]
 
@@ -162,165 +180,187 @@ def perform_hyperparameter_search():
                                                 for vln_val in use_vode_state_layernorm_candidates: # New loop
                                                     for int_l1 in intermediate_l1_coeff_candidates: # New loop
                                                         for int_l2 in intermediate_l2_coeff_candidates: # New loop
-                                                            for seed_val in seed_candidates:
+                                                            for use_mmcr in use_mmcr_loss_candidates:
+                                                                for mmcr_lambda_val in mmcr_lambda_candidates:
+                                                                    for mmcr_indices_val in mmcr_vode_indices_candidates:
+                                                                        for seed_val in seed_candidates:
 
-                                                                current_run += 1
-                                                                start_time = time.time()
+                                                                            current_run += 1
+                                                                            start_time = time.time()
 
-                                                                print(f"\n--- Starting Run {current_run}/{total_runs} ---")
+                                                                            print(f"\n--- Starting Run {current_run}/{total_runs} ---")
 
-                                                                current_overrides = deepcopy(fixed_overrides)
-                                                                current_overrides["num_blocks"] = nb_val
-                                                                current_overrides["batch_size"] = bs_val
-                                                                current_overrides["hidden_size"] = hs_val
-                                                                current_overrides["num_heads"] = nh_val
-                                                                current_overrides["peak_lr_hidden"] = lr_h
-                                                                current_overrides["inference_lr_scale_base"] = scale_base
-                                                                current_overrides["inference_steps"] = inf_steps
-                                                                # current_overrides["eval_inference_steps"] = [inf_steps]
-                                                                # current_overrides["reconstruction_steps"] = [inf_steps]
-                                                                current_overrides["warmup_steps"] = ws_val
-                                                                current_overrides["h_grad_clip_norm"] = h_clip
-                                                                current_overrides["w_grad_clip_norm"] = w_clip
-                                                                current_overrides["hidden_momentum"] = hm_val
-                                                                current_overrides["use_vode_state_layernorm"] = vln_val # New
-                                                                current_overrides["seed"] = seed_val
-                                                                current_overrides["intermediate_l1_coeff"] = int_l1 # New
-                                                                current_overrides["intermediate_l2_coeff"] = int_l2 # New
+                                                                            current_overrides = deepcopy(fixed_overrides)
+                                                                            current_overrides["num_blocks"] = nb_val
+                                                                            current_overrides["batch_size"] = bs_val
+                                                                            current_overrides["hidden_size"] = hs_val
+                                                                            current_overrides["num_heads"] = nh_val
+                                                                            current_overrides["peak_lr_hidden"] = lr_h
+                                                                            current_overrides["inference_lr_scale_base"] = scale_base
+                                                                            current_overrides["inference_steps"] = inf_steps
+                                                                            # current_overrides["eval_inference_steps"] = [inf_steps]
+                                                                            # current_overrides["reconstruction_steps"] = [inf_steps]
+                                                                            current_overrides["warmup_steps"] = ws_val
+                                                                            current_overrides["h_grad_clip_norm"] = h_clip
+                                                                            current_overrides["w_grad_clip_norm"] = w_clip
+                                                                            current_overrides["hidden_momentum"] = hm_val
+                                                                            current_overrides["use_vode_state_layernorm"] = vln_val # New
+                                                                            current_overrides["seed"] = seed_val
+                                                                            current_overrides["intermediate_l1_coeff"] = int_l1 # New
+                                                                            current_overrides["intermediate_l2_coeff"] = int_l2 # New
+                                                                            current_overrides["use_mmcr_loss"] = use_mmcr
+                                                                            current_overrides["mmcr_lambda"] = mmcr_lambda_val
+                                                                            current_overrides["mmcr_vode_indices"] = mmcr_indices_val
 
-                                                                print(f"DEBUG_SEARCH: int_l1={int_l1}, int_l2={int_l2}") # ADDED DEBUG
-                                                                print(f"DEBUG_SEARCH: current_overrides entry for L1: {current_overrides.get('intermediate_l1_coeff')}") # ADDED DEBUG
-                                                                print(f"DEBUG_SEARCH: current_overrides entry for L2: {current_overrides.get('intermediate_l2_coeff')}") # ADDED DEBUG
+                                                                            print(f"DEBUG_SEARCH: int_l1={int_l1}, int_l2={int_l2}") # ADDED DEBUG
+                                                                            print(f"DEBUG_SEARCH: current_overrides entry for L1: {current_overrides.get('intermediate_l1_coeff')}") # ADDED DEBUG
+                                                                            print(f"DEBUG_SEARCH: current_overrides entry for L2: {current_overrides.get('intermediate_l2_coeff')}") # ADDED DEBUG
 
-                                                                nb_str = f"nb{nb_val}"
-                                                                bs_str = f"bs{bs_val}"
-                                                                hs_str = f"hs{hs_val}"
-                                                                nh_str = f"nh{nh_val}"
-                                                                lr_h_str = f"lrh{lr_h:.3f}".replace('.', 'p')
-                                                                scale_base_str = f"sb{scale_base:.2f}".replace('.', 'p') if current_overrides.get("use_inference_lr_scaling", False) else "sbOFF"
-                                                                inf_steps_str = f"is{inf_steps}"
-                                                                ws_str = f"ws{ws_val}"
-                                                                hm_str = f"hm{hm_val:.2f}".replace('.', 'p')
-                                                                h_clip_str = f"hclip{h_clip:.0f}" if h_clip is not None else "hclipNone"
-                                                                w_clip_str = f"wclip{w_clip:.0f}" if w_clip is not None else "wclipNone"
-                                                                vln_str = f"vln{'ON' if vln_val else 'OFF'}" # New
-                                                                int_l1_str = f"intl1{int_l1:.1e}" if int_l1 > 0 else "intl1OFF" # New
-                                                                int_l2_str = f"intl2{int_l2:.1e}" if int_l2 > 0 else "intl2OFF" # New
-                                                                
-                                                                wandb_run_name = f"{nb_str}_{bs_str}_{hs_str}_{nh_str}_{lr_h_str}_{scale_base_str}_{inf_steps_str}_{ws_str}_{hm_str}_{h_clip_str}_{w_clip_str}_{vln_str}_{int_l1_str}_{int_l2_str}_e{current_overrides['epochs']}_sd{seed_val}"
-                                                                
-                                                                print(f"Parameters: num_blocks={nb_val}, batch_size={bs_val}, hidden_size={hs_val}, num_heads={nh_val}, use_vode_state_layernorm={vln_val}, lr_h={lr_h}, scale={scale_base if current_overrides.get('use_inference_lr_scaling', False) else 'OFF'}, inf_steps={inf_steps}, warmup_steps={ws_val}, hidden_momentum={hm_val}, h_clip={h_clip}, w_clip={w_clip}, seed={seed_val}, int_l1={int_l1}, int_l2={int_l2}")
-                                                                if current_overrides.get("linear_probe_every_n_epochs", 0) > 0:
-                                                                    print(f"  Linear Probe: Every {current_overrides['linear_probe_every_n_epochs']} epochs, Vodes: {current_overrides['linear_probe_vode_indices']}, Concat: {current_overrides['linear_probe_concatenate_features']}")
+                                                                            nb_str = f"nb{nb_val}"
+                                                                            bs_str = f"bs{bs_val}"
+                                                                            hs_str = f"hs{hs_val}"
+                                                                            nh_str = f"nh{nh_val}"
+                                                                            lr_h_str = f"lrh{lr_h:.3f}".replace('.', 'p')
+                                                                            scale_base_str = f"sb{scale_base:.2f}".replace('.', 'p') if current_overrides.get("use_inference_lr_scaling", False) else "sbOFF"
+                                                                            inf_steps_str = f"is{inf_steps}"
+                                                                            ws_str = f"ws{ws_val}"
+                                                                            hm_str = f"hm{hm_val:.2f}".replace('.', 'p')
+                                                                            h_clip_str = f"hclip{h_clip:.0f}" if h_clip is not None else "hclipNone"
+                                                                            w_clip_str = f"wclip{w_clip:.0f}" if w_clip is not None else "wclipNone"
+                                                                            vln_str = f"vln{'ON' if vln_val else 'OFF'}" # New
+                                                                            int_l1_str = f"intl1{int_l1:.1e}" if int_l1 > 0 else "intl1OFF" # New
+                                                                            int_l2_str = f"intl2{int_l2:.1e}" if int_l2 > 0 else "intl2OFF" # New
+                                                                            mmcr_str = f"mmcr{'ON' if use_mmcr else 'OFF'}"
+                                                                            lambda_str = f"lam{mmcr_lambda_val}" if use_mmcr else ""
+                                                                            indices_str = f"idx{mmcr_indices_val.replace(',', '')}" if use_mmcr else ""
+                                                                            
+                                                                            wandb_run_name = f"{nb_str}_{bs_str}_{hs_str}_{nh_str}_{lr_h_str}_{scale_base_str}_{inf_steps_str}_{ws_str}_{hm_str}_{h_clip_str}_{w_clip_str}_{vln_str}_{int_l1_str}_{int_l2_str}_{mmcr_str}{lambda_str}{indices_str}_e{current_overrides['epochs']}_sd{seed_val}"
+                                                                            
+                                                                            print(f"Parameters: num_blocks={nb_val}, batch_size={bs_val}, hidden_size={hs_val}, num_heads={nh_val}, use_vode_state_layernorm={vln_val}, lr_h={lr_h}, scale={scale_base if current_overrides.get('use_inference_lr_scaling', False) else 'OFF'}, inf_steps={inf_steps}, warmup_steps={ws_val}, hidden_momentum={hm_val}, h_clip={h_clip}, w_clip={w_clip}, seed={seed_val}, int_l1={int_l1}, int_l2={int_l2}")
+                                                                            if use_mmcr:
+                                                                                print(f"  MMCR: lambda={mmcr_lambda_val}, indices='{mmcr_indices_val}'")
+                                                                            if current_overrides.get("linear_probe_every_n_epochs", 0) > 0:
+                                                                                print(f"  Linear Probe: Every {current_overrides['linear_probe_every_n_epochs']} epochs, Vodes: {current_overrides['linear_probe_vode_indices']}, Concat: {current_overrides['linear_probe_concatenate_features']}")
 
-                                                                try:
-                                                                    achieved_best_val_mse, run_best_train_mse, final_train_mse, early_stop_reason, achieved_best_probe_acc = run_experiment(
-                                                                        base_config_name=base_config_to_use,
-                                                                        config_overrides=current_overrides,
-                                                                        wandb_project_name=wandb_project,
-                                                                        wandb_run_name=wandb_run_name,
-                                                                        wandb_mode=wandb_mode_for_runs
-                                                                    )
-                                                                    print(f"Run {current_run} Result: Best Val MSE = {achieved_best_val_mse:.8f}, Run Best Train MSE = {run_best_train_mse:.8f}, Final Train MSE = {final_train_mse:.8f}, Stop Reason: {early_stop_reason}")
-                                                                    
-                                                                    is_valid_val_mse = isinstance(achieved_best_val_mse, (int, float)) and not np.isnan(achieved_best_val_mse) and achieved_best_val_mse != float('inf')
-                                                                    is_valid_run_best_train_mse = isinstance(run_best_train_mse, (int, float)) and not np.isnan(run_best_train_mse) and run_best_train_mse != float('inf')
-                                                                    is_valid_final_train_mse = isinstance(final_train_mse, (int, float)) and not np.isnan(final_train_mse) and final_train_mse != float('inf')
-                                                                    is_valid_probe_acc = isinstance(achieved_best_probe_acc, (int, float)) and not np.isnan(achieved_best_probe_acc)
+                                                                            try:
+                                                                                achieved_best_val_mse, run_best_train_mse, final_train_mse, early_stop_reason, achieved_best_probe_acc = run_experiment(
+                                                                                    base_config_name=base_config_to_use,
+                                                                                    config_overrides=current_overrides,
+                                                                                    wandb_project_name=wandb_project,
+                                                                                    wandb_run_name=wandb_run_name,
+                                                                                    wandb_mode=wandb_mode_for_runs
+                                                                                )
+                                                                                print(f"Run {current_run} Result: Best Val MSE = {achieved_best_val_mse:.8f}, Run Best Train MSE = {run_best_train_mse:.8f}, Final Train MSE = {final_train_mse:.8f}, Stop Reason: {early_stop_reason}")
+                                                                                
+                                                                                is_valid_val_mse = isinstance(achieved_best_val_mse, (int, float)) and not np.isnan(achieved_best_val_mse) and achieved_best_val_mse != float('inf')
+                                                                                is_valid_run_best_train_mse = isinstance(run_best_train_mse, (int, float)) and not np.isnan(run_best_train_mse) and run_best_train_mse != float('inf')
+                                                                                is_valid_final_train_mse = isinstance(final_train_mse, (int, float)) and not np.isnan(final_train_mse) and final_train_mse != float('inf')
+                                                                                is_valid_probe_acc = isinstance(achieved_best_probe_acc, (int, float)) and not np.isnan(achieved_best_probe_acc)
 
-                                                                    run_result_data = {
-                                                                        "run_number": current_run,
-                                                                        "num_blocks": nb_val,
-                                                                        "batch_size": bs_val,
-                                                                        "hidden_size": hs_val,
-                                                                        "num_heads": nh_val,
-                                                                        "use_vode_state_layernorm": vln_val, # New
-                                                                        "lr_weights": lr_w,
-                                                                        "lr_hidden": lr_h,
-                                                                        "inference_lr_scale_base": scale_base if current_overrides.get("use_inference_lr_scaling", False) else "N/A",
-                                                                        "inference_steps": inf_steps,
-                                                                        "warmup_steps": ws_val,
-                                                                        "h_grad_clip_norm": h_clip,
-                                                                        "w_grad_clip_norm": w_clip,
-                                                                        "hidden_momentum": hm_val,
-                                                                        "seed": seed_val,
-                                                                        "intermediate_l1_coeff": int_l1, # New
-                                                                        "intermediate_l2_coeff": int_l2, # New
-                                                                        "best_val_mse": achieved_best_val_mse if is_valid_val_mse else "Failed or Invalid",
-                                                                        "run_best_train_mse": run_best_train_mse if is_valid_run_best_train_mse else "Failed or Invalid",
-                                                                        "final_train_mse": final_train_mse if is_valid_final_train_mse else "Failed or Invalid",
-                                                                        "best_probe_accuracy": achieved_best_probe_acc if is_valid_probe_acc else 0.0, # New
-                                                                        "early_stop_reason": early_stop_reason,
-                                                                        "wandb_run_name": wandb_run_name
-                                                                    }
-                                                                    all_run_results.append(run_result_data)
+                                                                                run_result_data = {
+                                                                                    "run_number": current_run,
+                                                                                    "num_blocks": nb_val,
+                                                                                    "batch_size": bs_val,
+                                                                                    "hidden_size": hs_val,
+                                                                                    "num_heads": nh_val,
+                                                                                    "use_vode_state_layernorm": vln_val, # New
+                                                                                    "lr_weights": lr_w,
+                                                                                    "lr_hidden": lr_h,
+                                                                                    "inference_lr_scale_base": scale_base if current_overrides.get("use_inference_lr_scaling", False) else "N/A",
+                                                                                    "inference_steps": inf_steps,
+                                                                                    "warmup_steps": ws_val,
+                                                                                    "h_grad_clip_norm": h_clip,
+                                                                                    "w_grad_clip_norm": w_clip,
+                                                                                    "hidden_momentum": hm_val,
+                                                                                    "seed": seed_val,
+                                                                                    "intermediate_l1_coeff": int_l1, # New
+                                                                                    "intermediate_l2_coeff": int_l2, # New
+                                                                                    "use_mmcr_loss": use_mmcr,
+                                                                                    "mmcr_lambda": mmcr_lambda_val if use_mmcr else "N/A",
+                                                                                    "mmcr_vode_indices": mmcr_indices_val if use_mmcr else "N/A",
+                                                                                    "best_val_mse": achieved_best_val_mse if is_valid_val_mse else "Failed or Invalid",
+                                                                                    "run_best_train_mse": run_best_train_mse if is_valid_run_best_train_mse else "Failed or Invalid",
+                                                                                    "final_train_mse": final_train_mse if is_valid_final_train_mse else "Failed or Invalid",
+                                                                                    "best_probe_accuracy": achieved_best_probe_acc if is_valid_probe_acc else 0.0, # New
+                                                                                    "early_stop_reason": early_stop_reason,
+                                                                                    "wandb_run_name": wandb_run_name
+                                                                                }
+                                                                                all_run_results.append(run_result_data)
 
-                                                                    # Update best run based on a combined logic or primarily probe accuracy if available
-                                                                    new_best_found = False
-                                                                    if is_valid_probe_acc and achieved_best_probe_acc > best_run_info["best_linear_probe_accuracy"]:
-                                                                        new_best_found = True
-                                                                        print(f"*** New best linear_probe_accuracy: {achieved_best_probe_acc:.4f} ***")
-                                                                    elif not is_valid_probe_acc and is_valid_val_mse and achieved_best_val_mse < best_run_info["overall_best_val_mse"] and best_run_info["best_linear_probe_accuracy"] == 0.0:
-                                                                        # Fallback to MSE if probe isn't run or fails, and no probe best exists yet
-                                                                        new_best_found = True
-                                                                        print(f"*** New best overall_best_val_mse (probe not run/failed): {achieved_best_val_mse:.6f} ***")
+                                                                                # Update best run based on a combined logic or primarily probe accuracy if available
+                                                                                new_best_found = False
+                                                                                if is_valid_probe_acc and achieved_best_probe_acc > best_run_info["best_linear_probe_accuracy"]:
+                                                                                    new_best_found = True
+                                                                                    print(f"*** New best linear_probe_accuracy: {achieved_best_probe_acc:.4f} ***")
+                                                                                elif not is_valid_probe_acc and is_valid_val_mse and achieved_best_val_mse < best_run_info["overall_best_val_mse"] and best_run_info["best_linear_probe_accuracy"] == 0.0:
+                                                                                    # Fallback to MSE if probe isn't run or fails, and no probe best exists yet
+                                                                                    new_best_found = True
+                                                                                    print(f"*** New best overall_best_val_mse (probe not run/failed): {achieved_best_val_mse:.6f} ***")
 
-                                                                    if new_best_found:
-                                                                        best_run_info["num_blocks"] = nb_val
-                                                                        best_run_info["batch_size"] = bs_val
-                                                                        best_run_info["hidden_size"] = hs_val
-                                                                        best_run_info["num_heads"] = nh_val
-                                                                        best_run_info["use_vode_state_layernorm"] = vln_val # New
-                                                                        best_run_info["lr_weights"] = lr_w
-                                                                        best_run_info["lr_hidden"] = lr_h
-                                                                        best_run_info["inference_lr_scale_base"] = scale_base if current_overrides.get("use_inference_lr_scaling", False) else "N/A"
-                                                                        best_run_info["inference_steps"] = inf_steps
-                                                                        best_run_info["warmup_steps"] = ws_val
-                                                                        best_run_info["h_grad_clip_norm"] = h_clip
-                                                                        best_run_info["w_grad_clip_norm"] = w_clip
-                                                                        best_run_info["hidden_momentum"] = hm_val
-                                                                        best_run_info["seed"] = seed_val
-                                                                        best_run_info["intermediate_l1_coeff"] = int_l1 # New
-                                                                        best_run_info["intermediate_l2_coeff"] = int_l2 # New
-                                                                        best_run_info["overall_best_val_mse"] = achieved_best_val_mse
-                                                                        best_run_info["run_best_train_mse_of_best_val_run"] = run_best_train_mse if is_valid_run_best_train_mse else "N/A"
-                                                                        best_run_info["final_train_mse_of_best_val_run"] = final_train_mse if is_valid_final_train_mse else "N/A"
-                                                                        best_run_info["best_linear_probe_accuracy"] = achieved_best_probe_acc if is_valid_probe_acc else 0.0
-                                                                        print(f"    (Probe Acc: {best_run_info['best_linear_probe_accuracy']:.4f}, Val MSE: {best_run_info['overall_best_val_mse']:.6f}, Train MSE: {best_run_info['run_best_train_mse_of_best_val_run'] if isinstance(best_run_info['run_best_train_mse_of_best_val_run'], float) else 'N/A'})")
-                                                                        print(f"    Params: nb={nb_val}, bs={bs_val}, hs={hs_val}, nh={nh_val}, vln={vln_val}, lr_h={lr_h}, scale={scale_base if current_overrides.get('use_inference_lr_scaling', False) else 'OFF'}, inf_steps={inf_steps}, warmup_steps={ws_val}, hidden_momentum={hm_val}, h_clip={h_clip}, w_clip={w_clip}, seed={seed_val}, int_l1={int_l1}, int_l2={int_l2}")
+                                                                                if new_best_found:
+                                                                                    best_run_info["num_blocks"] = nb_val
+                                                                                    best_run_info["batch_size"] = bs_val
+                                                                                    best_run_info["hidden_size"] = hs_val
+                                                                                    best_run_info["num_heads"] = nh_val
+                                                                                    best_run_info["use_vode_state_layernorm"] = vln_val # New
+                                                                                    best_run_info["lr_weights"] = lr_w
+                                                                                    best_run_info["lr_hidden"] = lr_h
+                                                                                    best_run_info["inference_lr_scale_base"] = scale_base if current_overrides.get("use_inference_lr_scaling", False) else "N/A"
+                                                                                    best_run_info["inference_steps"] = inf_steps
+                                                                                    best_run_info["warmup_steps"] = ws_val
+                                                                                    best_run_info["h_grad_clip_norm"] = h_clip
+                                                                                    best_run_info["w_grad_clip_norm"] = w_clip
+                                                                                    best_run_info["hidden_momentum"] = hm_val
+                                                                                    best_run_info["seed"] = seed_val
+                                                                                    best_run_info["intermediate_l1_coeff"] = int_l1 # New
+                                                                                    best_run_info["intermediate_l2_coeff"] = int_l2 # New
+                                                                                    best_run_info["use_mmcr_loss"] = use_mmcr
+                                                                                    best_run_info["mmcr_lambda"] = mmcr_lambda_val
+                                                                                    best_run_info["mmcr_vode_indices"] = mmcr_indices_val
+                                                                                    best_run_info["overall_best_val_mse"] = achieved_best_val_mse
+                                                                                    best_run_info["run_best_train_mse_of_best_val_run"] = run_best_train_mse if is_valid_run_best_train_mse else "N/A"
+                                                                                    best_run_info["final_train_mse_of_best_val_run"] = final_train_mse if is_valid_final_train_mse else "N/A"
+                                                                                    best_run_info["best_linear_probe_accuracy"] = achieved_best_probe_acc if is_valid_probe_acc else 0.0
+                                                                                    print(f"    (Probe Acc: {best_run_info['best_linear_probe_accuracy']:.4f}, Val MSE: {best_run_info['overall_best_val_mse']:.6f}, Train MSE: {best_run_info['run_best_train_mse_of_best_val_run'] if isinstance(best_run_info['run_best_train_mse_of_best_val_run'], float) else 'N/A'})")
+                                                                                    print(f"    Params: nb={nb_val}, bs={bs_val}, hs={hs_val}, nh={nh_val}, vln={vln_val}, lr_h={lr_h}, scale={scale_base if current_overrides.get('use_inference_lr_scaling', False) else 'OFF'}, inf_steps={inf_steps}, warmup_steps={ws_val}, hidden_momentum={hm_val}, h_clip={h_clip}, w_clip={w_clip}, seed={seed_val}, int_l1={int_l1}, int_l2={int_l2}")
+                                                                                    if use_mmcr:
+                                                                                        print(f"    MMCR: lambda={mmcr_lambda_val}, indices='{mmcr_indices_val}'")
 
-                                                                except Exception as e:
-                                                                    print(f"!!!! Run {current_run} failed with Params: nb={nb_val}, bs={bs_val}, hs={hs_val}, nh={nh_val}, vln={vln_val}, lr_h={lr_h}, scale={scale_base if current_overrides.get('use_inference_lr_scaling', False) else 'OFF'}, inf_steps={inf_steps}, warmup_steps={ws_val}, hidden_momentum={hm_val}, h_clip={h_clip}, w_clip={w_clip}, seed={seed_val}, int_l1={int_l1}, int_l2={int_l2}. Error: {e} !!!!")
-                                                                    import traceback
-                                                                    traceback.print_exc()
-                                                                    all_run_results.append({
-                                                                        "run_number": current_run,
-                                                                        "num_blocks": nb_val,
-                                                                        "batch_size": bs_val,
-                                                                        "hidden_size": hs_val,
-                                                                        "num_heads": nh_val,
-                                                                        "use_vode_state_layernorm": vln_val, # New
-                                                                        "lr_weights": lr_w,
-                                                                        "lr_hidden": lr_h,
-                                                                        "inference_lr_scale_base": scale_base if current_overrides.get('use_inference_lr_scaling', False) else "N/A",
-                                                                        "inference_steps": inf_steps,
-                                                                        "warmup_steps": ws_val,
-                                                                        "h_grad_clip_norm": h_clip,
-                                                                        "w_grad_clip_norm": w_clip,
-                                                                        "hidden_momentum": hm_val,
-                                                                        "seed": seed_val,
-                                                                        "intermediate_l1_coeff": int_l1, # New
-                                                                        "intermediate_l2_coeff": int_l2, # New
-                                                                        "best_val_mse": "Exception",
-                                                                        "run_best_train_mse": "Exception",
-                                                                        "final_train_mse": "Exception",
-                                                                        "best_probe_accuracy": 0.0, # New
-                                                                        "early_stop_reason": "Exception",
-                                                                        "wandb_run_name": wandb_run_name
-                                                                    })
+                                                                            except Exception as e:
+                                                                                print(f"!!!! Run {current_run} failed with Params: nb={nb_val}, bs={bs_val}, hs={hs_val}, nh={nh_val}, vln={vln_val}, lr_h={lr_h}, scale={scale_base if current_overrides.get('use_inference_lr_scaling', False) else 'OFF'}, inf_steps={inf_steps}, warmup_steps={ws_val}, hidden_momentum={hm_val}, h_clip={h_clip}, w_clip={w_clip}, seed={seed_val}, int_l1={int_l1}, int_l2={int_l2}. Error: {e} !!!!")
+                                                                                import traceback
+                                                                                traceback.print_exc()
+                                                                                all_run_results.append({
+                                                                                    "run_number": current_run,
+                                                                                    "num_blocks": nb_val,
+                                                                                    "batch_size": bs_val,
+                                                                                    "hidden_size": hs_val,
+                                                                                    "num_heads": nh_val,
+                                                                                    "use_vode_state_layernorm": vln_val, # New
+                                                                                    "lr_weights": lr_w,
+                                                                                    "lr_hidden": lr_h,
+                                                                                    "inference_lr_scale_base": scale_base if current_overrides.get('use_inference_lr_scaling', False) else "N/A",
+                                                                                    "inference_steps": inf_steps,
+                                                                                    "warmup_steps": ws_val,
+                                                                                    "h_grad_clip_norm": h_clip,
+                                                                                    "w_grad_clip_norm": w_clip,
+                                                                                    "hidden_momentum": hm_val,
+                                                                                    "seed": seed_val,
+                                                                                    "intermediate_l1_coeff": int_l1, # New
+                                                                                    "intermediate_l2_coeff": int_l2, # New
+                                                                                    "use_mmcr_loss": use_mmcr,
+                                                                                    "mmcr_lambda": mmcr_lambda_val if use_mmcr else "N/A",
+                                                                                    "mmcr_vode_indices": mmcr_indices_val if use_mmcr else "N/A",
+                                                                                    "best_val_mse": "Exception",
+                                                                                    "run_best_train_mse": "Exception",
+                                                                                    "final_train_mse": "Exception",
+                                                                                    "best_probe_accuracy": 0.0, # New
+                                                                                    "early_stop_reason": "Exception",
+                                                                                    "wandb_run_name": wandb_run_name
+                                                                                })
 
-                                                                end_time = time.time()
-                                                                print(f"Run {current_run} took {end_time - start_time:.2f} seconds.")
+                                                                            end_time = time.time()
+                                                                            print(f"Run {current_run} took {end_time - start_time:.2f} seconds.")
 
     print("\n--- Hyperparameter Search Complete ---")
     if best_run_info["lr_hidden"] is not None:
@@ -340,6 +380,9 @@ def perform_hyperparameter_search():
         print(f"  w_grad_clip_norm: {best_run_info['w_grad_clip_norm']}")
         print(f"  intermediate_l1_coeff: {best_run_info['intermediate_l1_coeff']}") # New
         print(f"  intermediate_l2_coeff: {best_run_info['intermediate_l2_coeff']}") # New
+        print(f"  use_mmcr_loss: {best_run_info.get('use_mmcr_loss', 'N/A')}")
+        print(f"  mmcr_lambda: {best_run_info.get('mmcr_lambda', 'N/A')}")
+        print(f"  mmcr_vode_indices: '{best_run_info.get('mmcr_vode_indices', 'N/A')}'")
         print(f"  seed: {best_run_info['seed']}")
         print(f"  Achieved Overall Best Validation MSE: {best_run_info['overall_best_val_mse']:.6f}")
         print(f"  Achieved Best Linear Probe Accuracy: {best_run_info['best_linear_probe_accuracy']:.4f}") # New
@@ -366,7 +409,8 @@ def perform_hyperparameter_search():
             'peak_lr_hidden', 'inference_lr_scale_base', 'inference_steps',
             'warmup_steps',
             'h_grad_clip_norm', 'w_grad_clip_norm', 'hidden_momentum', 'seed',
-            'intermediate_l1_coeff', 'intermediate_l2_coeff' # New
+            'intermediate_l1_coeff', 'intermediate_l2_coeff', # New
+            'use_mmcr_loss', 'mmcr_lambda', 'mmcr_vode_indices' # New
         ]
         
         fixed_to_print = {k: v for k, v in fixed_overrides.items() if k not in searched_keys}
@@ -379,13 +423,13 @@ def perform_hyperparameter_search():
         
         header_parts = [
             "Run", "NB", "BS", "HS", "NH", "VodeLN", "LR Hid", "Scale", "Inf Steps", "Warmup", "Hid Mom", "H Clip", "W Clip", "Seed",
-            "IntL1", "IntL2",
+            "IntL1", "IntL2", "MMCR", "Lambda", "Indices",
             "Best Val MSE", "Best Probe Acc", "Run Best Train MSE", "Final Train MSE", "Status", "W&B Run Name"
         ]
         col_widths = {
             "Run": 3, "NB": 2, "BS": 4, "HS": 4, "NH": 2, "VodeLN": 6, "LR Hid": 9, "Scale": 7, "Inf Steps": 9, "Warmup": 6,
             "Hid Mom": 7, "H Clip": 6, "W Clip": 6, "Seed": 4,
-            "IntL1": 7, "IntL2": 7,
+            "IntL1": 7, "IntL2": 7, "MMCR": 4, "Lambda": 6, "Indices": 7,
             "Best Val MSE": 14, "Best Probe Acc": 14, "Run Best Train MSE": 18 , "Final Train MSE": 15, "Status": 8, "W&B Run Name": 60
         }
         
@@ -459,6 +503,9 @@ def perform_hyperparameter_search():
 
             int_l1_log_str = f"{result.get('intermediate_l1_coeff', 0.0):.1e}" if result.get('intermediate_l1_coeff', 0.0) > 0 else "OFF" # New
             int_l2_log_str = f"{result.get('intermediate_l2_coeff', 0.0):.1e}" if result.get('intermediate_l2_coeff', 0.0) > 0 else "OFF" # New
+            mmcr_log_str = "ON" if result.get('use_mmcr_loss') else ("OFF" if result.get('use_mmcr_loss') is False else "N/A")
+            lambda_log_str = f"{result.get('mmcr_lambda', 'N/A'):.2f}" if isinstance(result.get('mmcr_lambda'), float) else "N/A"
+            indices_log_str = str(result.get('mmcr_vode_indices', 'N/A'))
 
             log_line_parts = {
                 "Run": result['run_number'],
@@ -477,6 +524,9 @@ def perform_hyperparameter_search():
                 "Seed": seed_str,
                 "IntL1": int_l1_log_str, # New
                 "IntL2": int_l2_log_str, # New
+                "MMCR": mmcr_log_str,
+                "Lambda": lambda_log_str,
+                "Indices": indices_log_str,
                 "Best Val MSE": best_val_mse_str,
                 "Best Probe Acc": probe_acc_str, # New
                 "Run Best Train MSE": run_best_train_mse_str,
@@ -498,6 +548,7 @@ def perform_hyperparameter_search():
 
             f.write(f"Best Params: num_blocks={best_run_info['num_blocks']}, batch_size={best_run_info['batch_size']}, hidden_size={best_run_info['hidden_size']}, num_heads={best_run_info['num_heads']}, use_vode_state_layernorm={vln_best_str}, peak_lr_hidden={best_run_info['lr_hidden']:.3e}, inference_lr_scale_base={best_scale_str}, inference_steps={best_run_info['inference_steps']}, warmup_steps={best_run_info['warmup_steps']}, hidden_momentum={hm_best_str}, h_grad_clip_norm={h_clip_best_str}, w_grad_clip_norm={w_clip_best_str}, seed={best_run_info['seed']}\n")
             f.write(f"Regularization: Intermediate L1={best_run_info['intermediate_l1_coeff']:.1e}, Intermediate L2={best_run_info['intermediate_l2_coeff']:.1e}\n") # New
+            f.write(f"MMCR: use_mmcr_loss={best_run_info.get('use_mmcr_loss', 'N/A')}, mmcr_lambda={best_run_info.get('mmcr_lambda', 'N/A')}, mmcr_vode_indices='{best_run_info.get('mmcr_vode_indices', 'N/A')}'\n")
             f.write(f"Achieved Overall Best Validation MSE: {best_run_info['overall_best_val_mse']:.6f}\n")
             f.write(f"Achieved Best Linear Probe Accuracy: {best_run_info['best_linear_probe_accuracy']:.4f}\n") # New
             f.write(f"Run Best Train MSE of Best Val Run: {best_run_info['run_best_train_mse_of_best_val_run'] if isinstance(best_run_info['run_best_train_mse_of_best_val_run'], float) else 'N/A'}\n")

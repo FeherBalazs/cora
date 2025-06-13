@@ -22,7 +22,6 @@ import pcx.predictive_coding as pxc
 import pcx.nn as pxnn
 import pcx.utils as pxu
 import pcx.functional as pxf
-from src.utils import create_positional_encoding
 from jax.typing import DTypeLike
 from einops import rearrange
 from pcx.core._parameter import get as param_get
@@ -41,88 +40,25 @@ key = jrandom.PRNGKey(42)
 
 import jax.tree_util
 
+from src.mmcr_loss import calculate_mmcr_loss_for_vode
+from src.utils import create_positional_encoding, apply_exponential_layer_scaling, normalize_vode_h_gradients, calculate_psnr
 
-@dataclass
-class TransformerConfig:
-    """Configuration for the TransformerDecoder model."""
-    # Input/output dimensions
-    latent_dim: int = 512
-    # Image shape format: For images: (channels, height, width)
-    # For videos: (frames, channels, height, width)
-    image_shape: tuple = (3, 32, 32)
-    
-    # Video settings
-    num_frames: int = 16  # Default number of frames for video
-    is_video: bool = False  # Whether to use 3D positional encoding for video
-    
-    # Architecture settings
-    hidden_size: int = 256
-    num_heads: int = 8
-    num_blocks: int = 3
-    mlp_ratio: float = 4.0
-    dropout_rate: float = 0.1
-    mlp_hidden_dim: int = 256
-    act_fn: Callable = jax.nn.swish # Default activation function
-    
-    # Patch settings
-    patch_size: int = 4
-    
-    # Positional embedding settings
-    axes_dim: list[int] = field(default_factory=lambda: [16, 16, 16])  # Default to [temporal_dim, height_dim, width_dim]
-    theta: int = 10_000
-    
-    # Training settings
-    use_noise: bool = False
-    use_lower_half_mask: bool = False
-    param_dtype: DTypeLike = jnp.float32
+# Import moved to avoid circular dependency
+# from src.utils import create_positional_encoding
 
-    # Layer-specific inference LR scaling
-    use_inference_lr_scaling: bool = False # Enable/disable scaling
-    inference_lr_scale_base: Optional[float] = 1.1
-    
-    inference_clamp_alpha: float = 1.0     # Blending factor for soft clamping (1.0 = full clamp, <1.0 = blend)
-    update_weights_during_unmasking: bool = False # New flag
-    update_weights_every_inference_step: bool = True # New flag
-    
-    # Status init settings
-    use_status_init_in_training: bool = True
-    use_status_init_in_unmasking: bool = True
+# Import TransformerConfig from a separate config file to avoid circular imports
+try:
+    from src.config import TransformerConfig
+except ImportError as e:
+    print(f"Error importing TransformerConfig: {e}")
+    raise
 
-    # New normalization options
-    use_vode_state_layernorm: bool = False # Apply LayerNorm to Vode hidden states (h)
-    use_vode_grad_norm: bool = False       # Normalize Vode h-gradients before optimizer step
-    vode_grad_norm_target: float = 1.0     # Target norm for h-gradient normalization
-
-    # New fields for regularization coefficients
-    intermediate_l1_coeff: float = 0.0
-    intermediate_l2_coeff: float = 0.0
-
-    def __post_init__(self):
-        # Determine if we're dealing with video based on the shape of image_shape
-        if len(self.image_shape) == 4:
-            self.is_video = True
-            self.num_frames, c, h, w = self.image_shape
-        else:
-            c, h, w = self.image_shape
-            
-        # Calculate patch dimensions
-        h_patches = h // self.patch_size
-        w_patches = w // self.patch_size
-        
-        # For video, include temporal dimension in patch count
-        if self.is_video:
-            self.num_patches = self.num_frames * h_patches * w_patches
-        else:
-            self.num_patches = h_patches * w_patches
-            
-        self.patch_dim = self.patch_size * self.patch_size * c
-        
-        # Set positional embedding dimensions based on whether we're using video
-        if not self.is_video and len(self.axes_dim) == 3:
-            # If not using video but axes_dim has 3 elements, use only the last 2
-            self.axes_dim = self.axes_dim[1:]
-        
-        self.mlp_hidden_dim = int(self.hidden_size * self.mlp_ratio)
+# Import utility functions after class definitions to avoid circular imports
+try:
+    from src.utils import create_positional_encoding, apply_exponential_layer_scaling, normalize_vode_h_gradients, calculate_psnr
+except ImportError as e:
+    print(f"Error importing utility functions: {e}")
+    raise
 
 
 class TransformerDecoder(pxc.EnergyModule):
@@ -197,6 +133,29 @@ class TransformerDecoder(pxc.EnergyModule):
         
         # Add output projection layer to map from hidden_size back to patch_dim
         self.output_projection = pxnn.Linear(in_features=config.hidden_size, out_features=config.patch_dim)
+        
+        # Add projector heads for MMCR loss
+        self.projection_heads = []
+        if self.config.use_mmcr_loss:
+            if self.config.mmcr_vode_indices is None:
+                raise ValueError("mmcr_vode_indices must be specified when use_mmcr_loss is True")
+
+            for i in range(config.num_blocks + 2):
+                if i in self.config.mmcr_vode_indices:
+                    # Determine input dimension for the projector
+                    if i == 0:
+                        in_dim = config.patch_dim
+                    else:
+                        in_dim = config.hidden_size
+                    
+                    # Use a linear layer for the projector; apply activation after call
+                    projector = pxnn.Linear(
+                        in_features=in_dim,
+                        out_features=config.mmcr_projector_dim
+                    )
+                    self.projection_heads.append(projector)
+                else:
+                    self.projection_heads.append(None)
         
         # Generate positional embedding from utils
         self.positional_embedding = create_positional_encoding(
@@ -305,107 +264,81 @@ def energy(*, model: TransformerDecoder):
     return jax.lax.psum(model.energy(), "batch"), y_
 
 
-def apply_exponential_layer_scaling(model_grads, config: TransformerConfig):
-    """
-    Applies exponential scaling to Vode hidden state gradients (h).
-    The scaling factor doubles for each layer moving up the hierarchy
-    (away from the sensory layer).
-
-    Args:
-        model_grads: The PyTree of gradients for the model.
-        config: The model configuration object.
-
-    Returns:
-        The gradient PyTree with scaled h gradients.
-    """
-    num_blocks = config.num_blocks
-
-    # Total number of Vodes whose h gradients are computed (excluding frozen sensory)
-    num_vodes_with_grad = num_blocks + 2
-    # Index of the lowest layer (closest to sensory) whose h gradient is computed
-    base_layer_idx = num_vodes_with_grad - 1
-
-    def map_fn(path, leaf):
-
-        is_vode_h_grad_value = (
-            len(path) == 4 and
-            isinstance(path[0], jax.tree_util.GetAttrKey) and path[0].name == 'vodes' and
-            isinstance(path[1], jax.tree_util.SequenceKey) and
-            isinstance(path[2], jax.tree_util.GetAttrKey) and path[2].name == 'h' and
-            isinstance(path[3], jax.tree_util.GetAttrKey) and path[3].name == 'value'
-        )
-
-        if is_vode_h_grad_value:
-            vode_idx = path[1].idx
-            scale_base = config.inference_lr_scale_base if config.inference_lr_scale_base is not None else 1.0
-            scale = jnp.power(scale_base, float(base_layer_idx - vode_idx))
-
-            if isinstance(leaf, jax.Array):
-                 return leaf * scale
-            else:
-                 return leaf
-        else:
-            return leaf
-
-    return jax.tree_util.tree_map_with_path(map_fn, model_grads)
+def batch_energy(*, model: TransformerDecoder):
+    y_ = forward(None, model=model)
+    e = energy(model=model)[0]
+    return jnp.mean(e), y_
 
 
-def normalize_vode_h_gradients(model_grads, config: TransformerConfig):
-    """
-    Applies L2 normalization to each Vode's hidden state gradients (h).
-    The gradients are scaled to have a norm of `config.vode_grad_norm_target`.
-
-    Args:
-        model_grads: The PyTree of gradients for the model's Vode hidden states.
-                     Expected to be the part of the grads relevant to Vodes, e.g., h_grad["model"].
-        config: The model configuration object.
-
-    Returns:
-        The gradient PyTree with normalized h gradients for Vodes.
-    """
-    if not config.use_vode_grad_norm: # Check if normalization is enabled
-        return model_grads
-
-    def map_fn_vode_grad_norm(path, leaf_grad_value):
-        # Check if the current leaf is a Vode's h-gradient value
-        # Path structure: ('vodes', SequenceKey(idx=i), GetAttrKey(name='h'), GetAttrKey(name='value'))
-        is_vode_h_grad_value = (
-            len(path) == 4 and
-            isinstance(path[0], jax.tree_util.GetAttrKey) and path[0].name == 'vodes' and
-            isinstance(path[1], jax.tree_util.SequenceKey) and # Index of the Vode in the list
-            isinstance(path[2], jax.tree_util.GetAttrKey) and path[2].name == 'h' and
-            isinstance(path[3], jax.tree_util.GetAttrKey) and path[3].name == 'value'
-        )
-
-        if is_vode_h_grad_value and isinstance(leaf_grad_value, jax.Array):
-            norm = jnp.linalg.norm(leaf_grad_value)
-            epsilon = 1e-8  # To prevent division by zero
-            # Normalize and scale to the target norm
-            normalized_grad = (leaf_grad_value / (norm + epsilon)) * config.vode_grad_norm_target
-            return normalized_grad
-        else:
-            return leaf_grad_value # Return other leaves unchanged
-
-    return jax.tree_util.tree_map_with_path(map_fn_vode_grad_norm, model_grads)
-
-
-@pxf.jit(static_argnums=0)
-def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.Optim, epoch=None, step=None):
+def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.Optim, epoch=None, step=None, b_orig: int = -1, n_views: int = -1):
     model.train()
 
-    inference_step_fn = pxf.value_and_grad(pxu.M_hasnot(pxc.VodeParam, frozen=True).to([False, True]), has_aux=True)(energy)
-    learning_step_fn = pxf.value_and_grad(pxu.M_hasnot(pxnn.LayerParam).to([False, True]), has_aux=True)(energy) # For weights
+    # Perform checks outside JIT-ted functions
+    if model.config.use_mmcr_loss and (b_orig == -1 or n_views == -1):
+        raise ValueError("b_orig and n_views must be provided when use_mmcr_loss is True")
 
-    # Initial forward pass and optimizer init (common to both modes)
+    # Define the total energy function, which now includes MMCR
+    def total_energy_fn(model):
+
+        # The model's forward pass populates all h and u states
+        # Base reconstruction energy (sum of all Vode energies)
+        reconstruction_energy, _ = batch_energy(model=model)
+
+        # MMCR Loss Calculation
+        mmcr_energy = jnp.array(0.0)
+        if model.config.use_mmcr_loss:
+            # The check for b_orig and n_views has been moved outside this function
+            for i, projector in enumerate(model.projection_heads):
+                if projector is not None:
+                    # Get the hidden state `h` from the corresponding Vode
+                    h_i = model.vodes[i].get("h")
+                    
+                    # Handle different possible shapes of h_i
+                    if h_i.ndim == 3:  # (B, num_patches, hidden_dim)
+                        # Average pooling over patches
+                        h_i_pooled = jnp.mean(h_i, axis=1)  # Shape: (B, hidden_dim)
+                    elif h_i.ndim == 2:  # (B, hidden_dim)
+                        h_i_pooled = h_i
+                    else:
+                        raise ValueError(f"Unexpected shape for h_i: {h_i.shape}")
+                    
+                    # Project to get 'z' and apply activation
+                    z_i = jax.vmap(projector)(h_i_pooled)
+                    z_i = jax.nn.relu(z_i)
+
+                    # Calculate MMCR loss for this layer
+                    mmcr_loss_i = calculate_mmcr_loss_for_vode(
+                        z_i,
+                        b_orig=model.config.batch_size,
+                        n_views=model.config.num_views_per_image,
+                        mmcr_lambda=model.config.mmcr_lambda
+                    )
+                    mmcr_energy += mmcr_loss_i
+        
+        total_energy = reconstruction_energy + mmcr_energy
+        
+        # We need an aux output to see the components
+        return total_energy, (reconstruction_energy, mmcr_energy)
+
+    # Define functions to get energies and gradients for hidden states (h) and weights (w)
+    def get_energies_and_grads_h(model_for_grad):
+        grad_fn = pxf.value_and_grad(pxu.M_hasnot(pxc.VodeParam, frozen=True).to([False, True]), has_aux=True)(total_energy_fn)
+        (total_and_aux, grads) = grad_fn(model=model_for_grad)
+        return total_and_aux, grads
+
+
+    def get_energies_and_grads_w(model_for_grad):
+        grad_fn = pxf.value_and_grad(pxu.M_hasnot(pxnn.LayerParam).to([False, True]), has_aux=True)(total_energy_fn)
+        (total_and_aux, grads) = grad_fn(model=model_for_grad)
+        return total_and_aux, grads
+
+
+    # Initial forward pass and optimizer init
     initial_status_train = pxc.STATUS.INIT if model.config.use_status_init_in_training else None
     with pxu.step(model, initial_status_train, clear_params=pxc.VodeParam.Cache):
         forward(x, model=model)
 
     # Ensure model status and individual Vode statuses are not INIT before entering scan
-    # if they were set by the above block. This makes the input carry to scan have status=None
-    # for both the model and its vodes.
-    # Inner pxu.step calls (with status=None implicitly) will then also result in status=None,
-    # preventing a change in the static part of the carry.
     if initial_status_train == pxc.STATUS.INIT:
         model.status = None
         for vode in model.vodes:
@@ -415,74 +348,47 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
 
     dummy_carry_init = None
 
-    if model.config.update_weights_every_inference_step:
-        # --- MODE 1: Update weights every inference step (current behavior) ---
-        def combined_training_iteration_for_scan(iter_idx_ignored, carry_dummy, *, model_closure, optim_w_closure, optim_h_closure, batch_x_shape_0_closure):
-            # Inference part (updates hidden states)
-            with pxu.step(model_closure, clear_params=pxc.VodeParam.Cache):
-                (h_energy_iter, _), h_grad_iter = inference_step_fn(model=model_closure)
-            optim_h_closure.step(model_closure, h_grad_iter["model"])
-            # Learning part (updates weights)
-            with pxu.step(model_closure, clear_params=pxc.VodeParam.Cache):
-                (w_energy_iter, _), w_grad_iter = learning_step_fn(model=model_closure)
-            optim_w_closure.step(model_closure, w_grad_iter["model"], scale_by=1.0/batch_x_shape_0_closure)
-            return carry_dummy, (h_energy_iter, w_energy_iter, h_grad_iter, w_grad_iter)
-
-        _, (h_energies_scanned, w_energies_scanned, h_grads_scanned, w_grads_scanned) = pxf.scan(
-            combined_training_iteration_for_scan,
-            xs=jnp.arange(T)
-        )(dummy_carry_init, model_closure=model, optim_w_closure=optim_w, optim_h_closure=optim_h, batch_x_shape_0_closure=x.shape[0])
-
-        final_h_energy = h_energies_scanned[-1]
-        final_w_energy = w_energies_scanned[-1]
-        final_h_grad = jax.tree_util.tree_map(lambda leaf: leaf[-1], h_grads_scanned)
-        final_w_grad = jax.tree_util.tree_map(lambda leaf: leaf[-1], w_grads_scanned)
-
-    else:
-        # --- MODE 2: T inference steps, then 1 weight update ---
-        def inference_only_iteration_for_scan(iter_idx_ignored, carry_dummy, *, model_closure, optim_h_closure):
-            with pxu.step(model_closure, clear_params=pxc.VodeParam.Cache):
-                (h_energy_iter, _), h_grad_iter = inference_step_fn(model=model_closure)
-            
-            # Apply scaling if enabled, directly modifying model_grads_to_apply
-            model_grads_to_apply = h_grad_iter["model"] 
-            if model_closure.config.use_inference_lr_scaling:
-                model_grads_to_apply = apply_exponential_layer_scaling(
-                    model_grads=model_grads_to_apply,
-                    config=model_closure.config
-                )
-            
-            # New: Apply Vode h-gradient normalization if enabled
-            if model_closure.config.use_vode_grad_norm:
-                model_grads_to_apply = normalize_vode_h_gradients(
-                    model_grads=model_grads_to_apply, # Pass the potentially already scaled grads
-                    config=model_closure.config
-                )
-
-            # Update hidden states using the (potentially scaled and/or normalized) gradients
-            optim_h_closure.step(model_closure, model_grads_to_apply)
-
-            # We need to return the full h_grad_iter structure but with potentially scaled model grads
-            final_grad_structure = h_grad_iter.copy() 
-            final_grad_structure["model"] = model_grads_to_apply # Directly use the applied grads
-
-            return carry_dummy, (h_energy_iter, final_grad_structure) 
-
-        _, (h_energies_scanned, h_grads_potentially_scaled_scanned) = pxf.scan(
-            inference_only_iteration_for_scan,
-            xs=jnp.arange(T)
-        )(dummy_carry_init, model_closure=model, optim_h_closure=optim_h)
-
-        final_h_energy = h_energies_scanned[-1]
-        # final_h_grad now contains the potentially scaled gradients from the last step T
-        final_h_grad = jax.tree_util.tree_map(lambda leaf: leaf[-1], h_grads_potentially_scaled_scanned)
+    def inference_only_iteration_for_scan(iter_idx_ignored, carry_dummy, *, model_closure, optim_h_closure):
+        with pxu.step(model_closure, clear_params=pxc.VodeParam.Cache):
+            (energies, h_grad) = get_energies_and_grads_h(model_closure)
+            total_h, _ = energies
         
-        # Single learning step after all T inference steps
-        # This uses the model state (hidden variables) as it is after T inference steps
-        with pxu.step(model, clear_params=pxc.VodeParam.Cache):
-            (final_w_energy, _), final_w_grad = learning_step_fn(model=model)
-        optim_w.step(model, final_w_grad["model"], scale_by=1.0/x.shape[0])
-        # final_w_energy and final_w_grad are from this single weight update step
+        # Apply scaling if enabled, directly modifying model_grads_to_apply
+        model_grads_to_apply = h_grad["model"] 
+        if model_closure.config.use_inference_lr_scaling:
+            model_grads_to_apply = apply_exponential_layer_scaling(
+                model_grads=model_grads_to_apply,
+                config=model_closure.config
+            )
+        
+        # New: Apply Vode h-gradient normalization if enabled
+        if model_closure.config.use_vode_grad_norm:
+            model_grads_to_apply = normalize_vode_h_gradients(
+                model_grads=model_grads_to_apply, # Pass the potentially already scaled grads
+                config=model_closure.config
+            )
+
+        # Update hidden states using the (potentially scaled and/or normalized) gradients
+        optim_h_closure.step(model_closure, model_grads_to_apply)
+
+        # We need to return the full h_grad structure but with potentially scaled model grads
+        final_grad_structure = h_grad.copy() 
+        final_grad_structure["model"] = model_grads_to_apply # Directly use the applied grads
+
+        return carry_dummy, (total_h, final_grad_structure) 
+
+    _, (h_energies_scanned, h_grads_potentially_scaled_scanned) = pxf.scan(inference_only_iteration_for_scan, xs=jnp.arange(T)
+    )(dummy_carry_init, model_closure=model, optim_h_closure=optim_h)
+
+    final_h_energy = h_energies_scanned[-1]
+
+    final_h_grad = jax.tree_util.tree_map(lambda leaf: leaf[-1], h_grads_potentially_scaled_scanned)
+    
+    # Single learning step after all T inference steps
+    with pxu.step(model, clear_params=pxc.VodeParam.Cache):
+        (energies, final_w_grad) = get_energies_and_grads_w(model)
+        final_w_energy, ((final_recons_energy, final_mmcr_energy),) = energies
+    optim_w.step(model, final_w_grad["model"], scale_by=1.0/x.shape[0])
     
     # Common post-loop steps (MSE calculation, etc.)
     with pxu.step(model, STATUS_FORWARD):
@@ -496,7 +402,7 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
     optim_h.clear()
 
     # Return energies, gradients, and the calculated training MSE
-    return final_h_energy, final_w_energy, final_h_grad, final_w_grad, train_mse
+    return final_h_energy, final_w_energy, final_recons_energy, final_mmcr_energy, final_h_grad, final_w_grad, train_mse
 
 
 def eval_pretext_metrics(dataloader, T_values, use_corruption, corrupt_ratio, *, model: TransformerDecoder, optim_h: pxu.Optim, optim_w: Optional[pxu.Optim] = None, data_range=1.0):
@@ -598,236 +504,194 @@ def eval_pretext_metrics(dataloader, T_values, use_corruption, corrupt_ratio, *,
     return avg_metrics
 
 
-def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.Optim, epoch=None, gpu_augmentations=None):
+def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.Optim, epoch=None):
     batch_w_energies = []
+    batch_recons_energies = []
+    batch_mmcr_energies = []
     batch_train_mses = []
     step = 0
     last_postfix_update_time = time.time() # For throttling postfix updates
     
-    # Add tqdm progress bar, visual refresh throttled by mininterval
+    # Initialize gradients to None in case the dataloader is empty
+    h_grad, w_grad = None, None
+
     pbar = tqdm(dl, desc=f"Epoch {epoch+1 if epoch is not None else 'N/A'}", leave=True, mininterval=1.0)
     
     for x, y in pbar:
-    # for x, y in dl:
-        # Apply GPU augmentations if available
-        if gpu_augmentations is not None:
-            import torch
-            # Convert to PyTorch tensor if needed
-            if not isinstance(x, torch.Tensor):
-                x_tensor = torch.from_numpy(x.numpy()) if hasattr(x, 'numpy') else torch.tensor(x)
-            else:
-                x_tensor = x
-            
-            # Ensure tensor is float and on GPU
-            x_tensor = x_tensor.float()
-            if torch.cuda.is_available():
-                x_tensor = x_tensor.cuda()
-            
-            # Apply augmentations
-            try:
-                from examples.debug_transformer_wandb import apply_gpu_augmentations
-                x_tensor = apply_gpu_augmentations(x_tensor, gpu_augmentations)
-                # Convert back to JAX format
-                if torch.cuda.is_available():
-                    x_augmented = x_tensor.cpu().numpy()
-                else:
-                    x_augmented = x_tensor.numpy()
-                x = x_augmented
-            except Exception as e:
-                # Fallback to CPU augmentations
-                print(f"!!! Kornia GPU augmentation failed with error: {e}. Falling back to CPU augmentations. !!!")
-                try:
-                    from examples.debug_transformer_wandb import apply_cpu_fallback_augmentations
-                    x = apply_cpu_fallback_augmentations(x)
-                except Exception as fallback_e:
-                    # if step == 0:  # Only print once per epoch
-                        # print(f"Warning: Both GPU and CPU augmentations failed, using original batch. GPU error: {e}, CPU error: {fallback_e}")
-                    pass
+        # x is now a batch of multi-view augmentations, shape (b_orig, n_views, C, H, W)
+        b_orig, n_views, c, h, w = x.shape
+        # Reshape for the model: (b_orig * n_views, C, H, W)
+        x_reshaped = x.reshape((b_orig * n_views, c, h, w))
         
-        # Now returns train_mse as the 5th element
-        h_energy, w_energy, h_grad, w_grad, train_mse = train_on_batch(
-            T, jnp.array(x), model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch, step=step
+        # The new train_on_batch returns more energy components
+        h_energy, w_energy, recons_energy, mmcr_energy, h_grad, w_grad, train_mse = train_on_batch(
+            T, jnp.array(x_reshaped), model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch, step=step,
+            b_orig=b_orig, n_views=n_views
         )
         
         if w_energy is not None:
-            batch_w_energies.append(w_energy) 
-        else:
-            print(f"Warning: w_energy is None for batch {step}")
-        
+            batch_w_energies.append(w_energy)
+        if recons_energy is not None:
+            batch_recons_energies.append(recons_energy)
+        if mmcr_energy is not None:
+            batch_mmcr_energies.append(mmcr_energy)
         if train_mse is not None:
              batch_train_mses.append(train_mse)
-        else:
-             print(f"Warning: train_mse is None for batch {step}")
 
         # Update progress bar postfix, throttled to once per second
         current_time = time.time()
         if current_time - last_postfix_update_time >= 1.0:
             metrics_to_display = {}
             if batch_train_mses:
-                # Calculate average of last 100 (or fewer if not enough entries)
                 mse_to_avg = batch_train_mses[-100:]
                 avg_recent_mse = jnp.mean(jnp.array(mse_to_avg))
                 metrics_to_display['Avg_MSE_100'] = f'{avg_recent_mse:.4f}'
-            if batch_w_energies:
-                # Calculate average of last 100 (or fewer if not enough entries)
-                energy_to_avg = batch_w_energies[-100:]
-                avg_recent_energy = jnp.mean(jnp.array(energy_to_avg))
-                metrics_to_display['Avg_Energy_100'] = f'{avg_recent_energy:.4f}'
+            if batch_recons_energies:
+                energy_to_avg = batch_recons_energies[-100:]
+                avg_recent_recons = jnp.mean(jnp.array(energy_to_avg))
+                metrics_to_display['Avg_Recons_100'] = f'{avg_recent_recons:.2f}'
+            if batch_mmcr_energies:
+                energy_to_avg = batch_mmcr_energies[-100:]
+                avg_recent_mmcr = jnp.mean(jnp.array(energy_to_avg))
+                metrics_to_display['Avg_MMCR_100'] = f'{avg_recent_mmcr:.2f}'
             
-            if metrics_to_display: # Only call set_postfix if there are metrics
+            if metrics_to_display:
                 pbar.set_postfix(metrics_to_display)
                 last_postfix_update_time = current_time
 
         step += 1
 
     avg_train_w_energy = jnp.mean(jnp.array(batch_w_energies)) if batch_w_energies else 0.0
+    avg_recons_energy = jnp.mean(jnp.array(batch_recons_energies)) if batch_recons_energies else 0.0
+    avg_mmcr_energy = jnp.mean(jnp.array(batch_mmcr_energies)) if batch_mmcr_energies else 0.0
     avg_train_mse = jnp.mean(jnp.array(batch_train_mses)) if batch_train_mses else 0.0
     
-    print(f"Epoch {epoch+1} Average Training w_energy: {avg_train_w_energy}")
-    print(f"Epoch {epoch+1} Average Training MSE: {avg_train_mse}")
+    print(f"Epoch {epoch+1} Avg Total Energy: {avg_train_w_energy:.4f}, Avg Recons Energy: {avg_recons_energy:.4f}, Avg MMCR Energy: {avg_mmcr_energy:.4f}, Avg Train MSE: {avg_train_mse:.4f}")
     
-    # Return average w_energy, average mse, last gradients
-    return avg_train_w_energy, avg_train_mse, h_grad, w_grad
+    # Return all relevant metrics
+    return avg_train_w_energy, avg_recons_energy, avg_mmcr_energy, avg_train_mse, h_grad, w_grad
 
 
-def eval(dl, T, *, model: TransformerDecoder, optim_h: pxu.Optim):
-    losses = []
+# def eval(dl, T, *, model: TransformerDecoder, optim_h: pxu.Optim):
+#     losses = []
 
-    # TODO: think how having multiple batches modifies training dynamics. The lack of clear params for logging potentialy leads to issues.
-    for x, y in dl:
-        e, y_hat = unmask_on_batch(use_corruption=False, corrupt_ratio=0.0, target_T_values=T, x=jnp.array(x), model=model, optim_h=optim_h)
-        losses.append(e)
+#     # TODO: think how having multiple batches modifies training dynamics. The lack of clear params for logging potentialy leads to issues.
+#     for x, y in dl:
+#         e, y_hat = unmask_on_batch(use_corruption=False, corrupt_ratio=0.0, target_T_values=T, x=jnp.array(x), model=model, optim_h=optim_h)
+#         losses.append(e)
 
-    return jnp.mean(jnp.array(losses))
+#     return jnp.mean(jnp.array(losses))
 
 
-# @pxf.jit(static_argnums=0)
-def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, target_T_values: List[int], x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim):
-    """
-    Runs inference on a batch (x), potentially corrupted, and returns the final loss
-    and reconstructed outputs at specified T values.
-    """
-    model.eval()
-    # TODO: in other scripts optim_h is not cleared and not initialised each time, only once. Check behavior.
-    optim_h.clear()
-    optim_h.init(pxu.M_hasnot(pxc.VodeParam, frozen=True)(model))
+# # @pxf.jit(static_argnums=0)
+# def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, target_T_values: List[int], x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim):
+#     """
+#     Runs inference on a batch (x), potentially corrupted, and returns the final loss
+#     and reconstructed outputs at specified T values.
+#     """
+#     model.eval()
+#     # TODO: in other scripts optim_h is not cleared and not initialised each time, only once. Check behavior.
+#     optim_h.clear()
+#     optim_h.init(pxu.M_hasnot(pxc.VodeParam, frozen=True)(model))
 
-    # Define inference step with the regular energy function
-    inference_step = pxf.value_and_grad(pxu.M_hasnot(pxc.VodeParam, frozen=True).to([False, True]), has_aux=True)(energy)
+#     # Define inference step with the regular energy function
+#     inference_step = pxf.value_and_grad(pxu.M_hasnot(pxc.VodeParam, frozen=True).to([False, True]), has_aux=True)(energy)
 
-    max_T = max(target_T_values) if target_T_values else 0
-    # Store reconstructions at target T values (step t corresponds to T=t+1)
-    save_steps = {t - 1 for t in target_T_values if t > 0} 
-    intermediate_recons = {}
+#     max_T = max(target_T_values) if target_T_values else 0
+#     # Store reconstructions at target T values (step t corresponds to T=t+1)
+#     save_steps = {t - 1 for t in target_T_values if t > 0} 
+#     intermediate_recons = {}
 
-    expected_bs = 1
-    for vode in model.vodes:
-        if vode.h._value is not None:
-            expected_bs = vode.h._value.shape[0]
-            break
+#     expected_bs = 1
+#     for vode in model.vodes:
+#         if vode.h._value is not None:
+#             expected_bs = vode.h._value.shape[0]
+#             break
 
-    # Adjust batch size if needed
-    if x.shape[0] != expected_bs:
-        x_batch = jnp.repeat(x, expected_bs, axis=0)
-    else:
-        x_batch = x
+#     # Adjust batch size if needed
+#     if x.shape[0] != expected_bs:
+#         x_batch = jnp.repeat(x, expected_bs, axis=0)
+#     else:
+#         x_batch = x
 
-    batch_size, channels, H, W = x_batch.shape
-    assert model.config.image_shape == (channels, H, W), "Image shape mismatch"
+#     batch_size, channels, H, W = x_batch.shape
+#     assert model.config.image_shape == (channels, H, W), "Image shape mismatch"
 
-    if use_corruption:
-        # Create masked image
-        x_c = x_batch.reshape((-1, 3, 32, 32)).copy()
-        x_c = x_c.at[:, :, 16:].set(0)
-        x_c = x_c.reshape((-1, 3, 32, 32))
+#     if use_corruption:
+#         # Create masked image
+#         x_c = x_batch.reshape((-1, 3, 32, 32)).copy()
+#         x_c = x_c.at[:, :, 16:].set(0)
+#         x_c = x_c.reshape((-1, 3, 32, 32))
         
-        # Initialize the model with the masked input
-        with pxu.step(model, clear_params=pxc.VodeParam.Cache):
-            forward(x_c, model=model)
-    else:
-        # Initialize the model with the input
-        with pxu.step(model, clear_params=pxc.VodeParam.Cache):
-            forward(x_batch, model=model)
+#         # Initialize the model with the masked input
+#         with pxu.step(model, clear_params=pxc.VodeParam.Cache):
+#             forward(x_c, model=model)
+#     else:
+#         # Initialize the model with the input
+#         with pxu.step(model, clear_params=pxc.VodeParam.Cache):
+#             forward(x_batch, model=model)
 
-    # Inference iterations
-    for t in range(max_T):
-        if use_corruption:
-            if t in save_steps:
-                # with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
-                with pxu.step(model, STATUS_FORWARD):
-                    intermediate_recons[t + 1] = forward(None, model=model)
-                print(f"Saved intermediate reconstruction at T={t+1}")
+#     # Inference iterations
+#     for t in range(max_T):
+#         if use_corruption:
+#             if t in save_steps:
+#                 # with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
+#                 with pxu.step(model, STATUS_FORWARD):
+#                     intermediate_recons[t + 1] = forward(None, model=model)
+#                 print(f"Saved intermediate reconstruction at T={t+1}")
 
-            # Unfreeze sensory layer for inference
-            model.vodes[-1].h.frozen = False
+#             # Unfreeze sensory layer for inference
+#             model.vodes[-1].h.frozen = False
 
-            # Run inference step
-            # with pxu.step(model, clear_params=pxc.VodeParam.Cache):
-            with pxu.step(model):
-                h_energy, h_grad = inference_step(model=model)
+#             # Run inference step
+#             # with pxu.step(model, clear_params=pxc.VodeParam.Cache):
+#             with pxu.step(model):
+#                 h_energy, h_grad = inference_step(model=model)
             
-            # Update states
-            optim_h.step(model, h_grad["model"])
+#             # Update states
+#             optim_h.step(model, h_grad["model"])
 
-            model.vodes[-1].h.set(
-                model.vodes[-1].h.reshape((-1, 3, 32, 32))
-                .at[:, :, :16].set(
-                    x_batch.reshape((-1, 3, 32, 32))
-                    [:, :, :16]
-                )
-            )
+#             model.vodes[-1].h.set(
+#                 model.vodes[-1].h.reshape((-1, 3, 32, 32))
+#                 .at[:, :, :16].set(
+#                     x_batch.reshape((-1, 3, 32, 32))
+#                     [:, :, :16]
+#                 )
+#             )
 
-        else:
-            # Standard inference step
-            # with pxu.step(model, clear_params=pxc.VodeParam.Cache):
-            with pxu.step(model):
-                h_energy, h_grad = inference_step(model=model)
+#         else:
+#             # Standard inference step
+#             # with pxu.step(model, clear_params=pxc.VodeParam.Cache):
+#             with pxu.step(model):
+#                 h_energy, h_grad = inference_step(model=model)
 
-            # Update states
-            optim_h.step(model, h_grad["model"])
+#             # Update states
+#             optim_h.step(model, h_grad["model"])
 
-            if t in save_steps:
-                #   with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
-                with pxu.step(model, STATUS_FORWARD):
-                    intermediate_recons[t + 1] = forward(None, model=model)
+#             if t in save_steps:
+#                 #   with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
+#                 with pxu.step(model, STATUS_FORWARD):
+#                     intermediate_recons[t + 1] = forward(None, model=model)
 
-    optim_h.clear()
+#     optim_h.clear()
 
-    # Final forward pass to get reconstruction
-    # with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
-    # WARNING: Switched to this for vode grad and energy logging
-    with pxu.step(model, STATUS_FORWARD):
-        x_hat_batch = forward(None, model=model)
+#     # Final forward pass to get reconstruction
+#     # with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
+#     # WARNING: Switched to this for vode grad and energy logging
+#     with pxu.step(model, STATUS_FORWARD):
+#         x_hat_batch = forward(None, model=model)
 
-    loss = jnp.square(jnp.clip(x_hat_batch.reshape(-1), 0.0, 1.0) - x_batch.reshape(-1)).mean()
+#     loss = jnp.square(jnp.clip(x_hat_batch.reshape(-1), 0.0, 1.0) - x_batch.reshape(-1)).mean()
 
-    # Refreeze sensory layer
-    model.vodes[-1].h.frozen = True
+#     # Refreeze sensory layer
+#     model.vodes[-1].h.frozen = True
 
-    # WARNING: Commented out for vode grad and energy logging
-    # # Reset model as the inference could mess up the model state if diverged
-    # with pxu.step(model, clear_params=pxc.VodeParam.Cache):
-    #     forward(None, model=model)
+#     # WARNING: Commented out for vode grad and energy logging
+#     # # Reset model as the inference could mess up the model state if diverged
+#     # with pxu.step(model, clear_params=pxc.VodeParam.Cache):
+#     #     forward(None, model=model)
 
-    return loss, intermediate_recons
-
-
-def calculate_psnr(img1, img2, data_range=1.0, epsilon=1e-8):
-    """Calculates Peak Signal-to-Noise Ratio between two images."""
-    mse = jnp.mean((img1 - img2) ** 2)
-    # Handle potential division by zero or very small MSE
-    safe_mse = jnp.maximum(mse, epsilon)
-    psnr = 10 * jnp.log10((data_range ** 2) / safe_mse)
-    # Clamp PSNR for the case where mse is exactly zero (perfect match)
-    # Infinite PSNR isn't practical, often capped at a high value, e.g., 100 dB
-    # JAX doesn't directly support inf, so we'll rely on the epsilon or cap if needed.
-    # For now, epsilon handles the near-zero case. Perfect zero might still cause issues
-    # depending on floating point precision, but epsilon helps.
-    # A simpler alternative might be:
-    # if mse == 0: return 100.0 # Or some large number
-    # return 10 * jnp.log10((data_range ** 2) / mse)
-    # However, JAX prefers numerical stability via epsilon.
-    return psnr
+#     return loss, intermediate_recons
 
 
 def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_T_values: List[int], x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim, optim_w: Optional[pxu.Optim] = None, log_inference_grads: bool = False) -> Tuple[jnp.ndarray, List[jnp.ndarray], jnp.ndarray, Dict[int, Dict[str, float]]]:
@@ -1046,47 +910,5 @@ def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_
     return loss, all_reconstructions, mask, inference_grad_norms_log
 
 
-def create_config_by_dataset(dataset_name: str, latent_dim: int = 512, num_blocks: int = 6):
-    """Create a TransformerConfig based on the dataset name."""
-    # Define image_shape and other dataset-specific settings
-    if dataset_name == "fashionmnist":
-        return TransformerConfig(
-            latent_dim=latent_dim,
-            image_shape=(1, 28, 28),
-            hidden_size=256,
-            num_heads=8,
-            num_blocks=num_blocks,
-            patch_size=4
-        )
-    elif dataset_name == "cifar10":
-        return TransformerConfig(
-            latent_dim=latent_dim,
-            image_shape=(3, 32, 32),
-            hidden_size=256,
-            num_heads=8,
-            num_blocks=num_blocks,
-            patch_size=4
-        )
-    elif dataset_name == "imagenet":
-        return TransformerConfig(
-            latent_dim=latent_dim,
-            image_shape=(3, 224, 224),
-            hidden_size=384,
-            num_heads=8,
-            num_blocks=num_blocks,
-            patch_size=16
-        )
-    else:
-        raise ValueError(f"Unsupported dataset: {dataset_name}")
-
-
-if __name__ == "__main__":
-    # Just an example of how to use the configuration system
-    config = create_config_by_dataset(
-        dataset_name="cifar10",
-        latent_dim=512,
-        num_blocks=6
-    )
-    
-    # Create model with config
-    model = TransformerDecoder(config)
+if __name__ == "__main__":    
+    pass

@@ -29,6 +29,7 @@ from datetime import datetime
 from typing import Callable
 import imageio
 import equinox as eqx
+from tqdm import tqdm
 
 # Add the src directory to the path
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
@@ -38,13 +39,12 @@ from src.decoder_transformer import (
     TransformerDecoder, 
     TransformerConfig,
     train, # Returns avg_loss, h_grad, w_grad
-    # eval, # Replaced by eval_pretext_metrics
-    unmask_on_batch,
     unmask_on_batch_enhanced, # Returns loss, recons, mask
     forward,
     eval_pretext_metrics, # New evaluation function
     calculate_psnr # Import if needed elsewhere, though eval_pretext_metrics uses it internally
 )
+from src.data import get_datasets
 
 from src.utils import create_grouped_bar_chart, create_multi_line_chart
 
@@ -54,18 +54,6 @@ import random # Import Python's random module
 from examples.linear_probe import run_linear_probe_evaluation
 
 from src.config import MODEL_CONFIGS, ModelConfig, DEFAULT_CONFIG, create_config
-
-try:
-    import kornia.augmentation as K
-    try:
-        from kornia.utils import set_rng_seed
-    except ImportError:
-        set_rng_seed = None # For older kornia versions
-    KORNIA_AVAILABLE = True
-except ImportError:
-    KORNIA_AVAILABLE = False
-    set_rng_seed = None
-    print("Kornia not available. Install with: pip install kornia")
 
 
 def str_to_bool(value):
@@ -150,6 +138,17 @@ def parse_args():
                         help='L2 regularization coefficient for intermediate layers')
     parser.add_argument('--sweep', action='store_true',
                         help='Run as part of a wandb sweep (gets config from wandb.config)')
+    # MMCR arguments
+    parser.add_argument('--use_mmcr_loss', type=str_to_bool, nargs='?', const=True, default=None,
+                        help='Enable MMCR loss.')
+    parser.add_argument('--mmcr_vode_indices', type=str, default=None,
+                        help='Comma-separated string of Vode indices for MMCR loss.')
+    parser.add_argument('--mmcr_projector_dim', type=int, default=None,
+                        help='Dimension of the MMCR projector MLP output.')
+    parser.add_argument('--mmcr_lambda', type=float, default=None,
+                        help='Lambda weight for the MMCR loss regularization term.')
+    parser.add_argument('--num_views_per_image', type=int, default=None,
+                        help='Number of augmented views per image for MMCR.')
     # Add any other parameters from ModelConfig you want to control via CLI here
     return parser.parse_args()
 
@@ -197,204 +196,79 @@ def create_learning_rate_schedule(base_lr, warmup_steps, total_steps, min_lr_fac
     return lr_schedule
 
 
-def get_debug_dataloaders(dataset_name, batch_size, root_path, train_subset_n=None, test_subset_n=None, validation_subset_n=None, target_class=None, use_ssl_augmentations=True, use_cifar10_norm=True):
-    """Get data loaders with simple augmentation for debugging."""
+def get_dataloaders(config: ModelConfig):
+    """Get data loaders using the new data.py pipeline."""
     
-    # Define a common normalization (from vision_transformer_script.py)
-    if use_cifar10_norm:
-        print("Using CIFAR-10 specific normalization.")
-        mean = (0.4914, 0.4822, 0.4465)
-        std = (0.2023, 0.1994, 0.2010)
-    else:
-        print("Using generic (0.5, 0.5, 0.5) normalization.")
-        mean = (0.5, 0.5, 0.5)
-        std = (0.5, 0.5, 0.5)
-    
-    # Image dimensions (assuming 32x32 for CIFAR-10)
-    height, width = 32, 32
-
-    if use_ssl_augmentations: # For now, this flag will enable the ViT script's augmentations
-        print("Using minimal CPU augmentations - heavy augmentations will be done on GPU.")
-        train_transform_list = [
-            transforms.ToTensor(),
-            transforms.Normalize(mean, std) # Use selected normalization
-        ]
-    else:
-        print("Using basic ToTensor and Normalize for training (CIFAR-10 specific).")
-        train_transform_list = [
-            transforms.ToTensor(),
-            transforms.Normalize(mean, std) # Use selected normalization
-        ]
-    
-    train_transform = transforms.Compose(train_transform_list)
-    
-    test_transform = transforms.Compose([
-        transforms.Resize((height, width)), # From vision_transformer_script.py
-        transforms.ToTensor(),
-        transforms.Normalize(mean, std) # Use selected normalization
-    ])
-    
-    # Fix dataset path to work regardless of where script is run from
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    # Go up one level from examples/ to project root, then add datasets path
-    project_root = os.path.dirname(script_dir)
-    dataset_root = os.path.join(project_root, "datasets", "cifar10")
-    print(f"Using dataset root: {dataset_root}")
-    
-    train_dataset = torchvision.datasets.CIFAR10(
-        root=dataset_root,
-        transform=train_transform,
-        download=True,
-        train=True,
-    )
-    test_dataset = torchvision.datasets.CIFAR10(
-        root=dataset_root,
-        transform=test_transform,
-        download=True,
-        train=False,
+    train_data, memory_data, test_data = get_datasets(
+        dataset=config.dataset,
+        n_aug=config.num_views_per_image,
+        batch_transform=True, # For training, we want batches of augmentations
+        supervised=False # Assuming unsupervised learning
     )
     
-    if target_class is not None:
-        target_indices = (train_dataset.targets == target_class).nonzero(as_tuple=True)[0].tolist()
-        train_dataset = Subset(train_dataset, target_indices)
-        target_indices = (test_dataset.targets == target_class).nonzero(as_tuple=True)[0].tolist()
-        test_dataset = Subset(test_dataset, target_indices)
-    
-    if train_subset_n is not None:
-        all_idx = list(range(len(train_dataset)))
-        train_dataset = Subset(train_dataset, all_idx[:train_subset_n])
-    if test_subset_n is not None:
-        all_idx = list(range(len(test_dataset)))
-        test_dataset_full = Subset(test_dataset, all_idx[:test_subset_n]) # Keep full test_dataset for probe
-    else:
-        test_dataset_full = test_dataset
+    # For validation and probing, we want single views, not batches of augmentations
+    _, _, val_data_single_view = get_datasets(
+        dataset=config.dataset,
+        n_aug=1,
+        batch_transform=False, # Get single images
+        supervised=False
+    )
 
-    # Create validation_subset_dataloader from the original test_dataset
-    val_subset_dataset_source = test_dataset # Use the original, un-subsetted test_dataset as source
-    if validation_subset_n is not None:
-        if validation_subset_n > len(val_subset_dataset_source):
-            print(f"Warning: validation_subset_n ({validation_subset_n}) is larger than the full test dataset size ({len(val_subset_dataset_source)}). Using full test set for validation subset.")
-            val_subset_for_pretext = val_subset_dataset_source
-        else:
-            all_val_idx = list(range(len(val_subset_dataset_source)))
-            # It's good practice to use a fixed set for this subset for consistency,
-            # so we don't shuffle and take the first N. If test_dataset is already shuffled once globally, this is fine.
-            # Or, use a fixed random seed here if you need varying but reproducible subsets.
-            val_subset_for_pretext = Subset(val_subset_dataset_source, all_val_idx[:validation_subset_n])
+    # Subsetting logic
+    if config.train_subset is not None:
+        all_idx = list(range(len(train_data)))
+        train_data = Subset(train_data, all_idx[:config.train_subset])
+    
+    if config.test_subset is not None:
+        all_idx = list(range(len(test_data)))
+        test_data_subset = Subset(test_data, all_idx[:config.test_subset])
     else:
-        # If validation_subset_n is not specified, use the same as test_subset_n (or full test set)
-        # This maintains backward compatibility if validation_subset is not set in config.
-        val_subset_for_pretext = test_dataset_full
+        test_data_subset = test_data
+
+    if config.validation_subset is not None:
+        all_idx = list(range(len(val_data_single_view)))
+        val_subset = Subset(val_data_single_view, all_idx[:config.validation_subset])
+    else:
+        val_subset = val_data_single_view
 
     train_dataloader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
+        train_data,
+        batch_size=config.batch_size, # This is now b_orig
         shuffle=True,
-        # prefetch_factor=2,
-        num_workers=0,
-        pin_memory=True   # ADD THIS (good practice, less critical if test data not GPU processed)
+        num_workers=2, # Can increase if I/O is a bottleneck
+        pin_memory=True,
+        drop_last=True # Important for MMCR to have consistent batch sizes
     )
     
-    # This will be the loader for the (potentially smaller) validation subset for pretext task evaluation
+    # Calculate the batch size for the validation subset loader.
+    # It must match the effective batch size used to initialize the model's Vode states,
+    # which is config.batch_size * config.num_views_per_image when MMCR is used.
+    effective_val_batch_size = config.batch_size
+    if config.use_mmcr_loss:
+        effective_val_batch_size *= config.num_views_per_image
+
     val_subset_dataloader = DataLoader(
-        val_subset_for_pretext, # Use the specifically created subset for pretext eval
-        batch_size=batch_size,
-        shuffle=False, # No need to shuffle validation/test
-        num_workers=0, # Consistent with other loaders
-        pin_memory=True
-    )
-    
-    test_dataloader_full = DataLoader(
-        test_dataset_full,
-        batch_size=batch_size,
+        val_subset,
+        batch_size=effective_val_batch_size,
         shuffle=False,
-        # prefetch_factor=2,
-        num_workers=0,
-        pin_memory=True   # ADD THIS (good practice, less critical if test data not GPU processed)
+        num_workers=2,
+        pin_memory=True,
+        drop_last=True
     )
     
-    class TorchDataloader:
-        def __init__(self, dataloader):
-            self.dataloader = dataloader
-            self.dataset = dataloader.dataset
-        
-        def __iter__(self):
-            return iter(self.dataloader)
-        
-        def __len__(self):
-            return len(self.dataloader)
-    
-    return TorchDataloader(train_dataloader), TorchDataloader(test_dataloader_full), TorchDataloader(val_subset_dataloader)
-
-
-def setup_gpu_augmentations(use_ssl_augmentations=True):
-    """Setup GPU-accelerated augmentations using Kornia."""
-    if not use_ssl_augmentations or not KORNIA_AVAILABLE:
-        return None
-    
-    # GPU augmentations using Kornia
-    gpu_augmentations = K.AugmentationSequential(
-        K.RandomResizedCrop(size=(32, 32), scale=(0.4, 1.0), ratio=(0.75, 1.33)), # Stronger crop
-        K.RandomHorizontalFlip(p=0.5),
-        K.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1),
-        K.RandomGrayscale(p=0.2),
-        K.RandomGaussianBlur(kernel_size=(3,3), sigma=(0.1, 2.0), p=0.5), # Ensure kernel_size is tuple
-        same_on_batch=False
+    # This loader is for the full test set (for linear probing, etc.)
+    # Keep its batch size small, as visualization processes images one by one.
+    test_dataloader_full = DataLoader(
+        test_data_subset, # Use the subsetted or full test data
+        batch_size=effective_val_batch_size,
+        shuffle=False,
+        num_workers=2,
+        pin_memory=True,
+        drop_last=True 
     )
-    return gpu_augmentations
-
-
-def apply_gpu_augmentations(batch_tensor, gpu_augmentations):
-    """Apply GPU augmentations to a batch of images."""
-    if gpu_augmentations is None:
-        return batch_tensor
     
-    # Ensure tensor is on GPU and in float format
-    if not batch_tensor.is_cuda:
-        batch_tensor = batch_tensor.cuda()
-    
-    # Apply augmentations
-    with torch.no_grad():  # Don't track gradients for augmentations
-        augmented = gpu_augmentations(batch_tensor)
-    
-    return augmented
-
-
-def apply_cpu_fallback_augmentations(x):
-    """Apply CPU-based augmentations when GPU augmentations fail."""
-    import torch
-    import torchvision.transforms as transforms
-    
-    # Convert to PyTorch tensor if needed
-    if not isinstance(x, torch.Tensor):
-        x_tensor = torch.from_numpy(x.numpy()) if hasattr(x, 'numpy') else torch.tensor(x)
-    else:
-        x_tensor = x
-    
-    # Ensure tensor is float
-    x_tensor = x_tensor.float()
-    
-    # Define CPU augmentations (same as GPU but using torchvision)
-    cpu_augmentations = transforms.Compose([
-        transforms.RandomHorizontalFlip(p=0.5),
-        transforms.RandomResizedCrop(size=32, scale=(0.8, 1.0), ratio=(0.9, 1.1)),
-        transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
-    ])
-    
-    # Apply augmentations batch-wise
-    augmented_batch = []
-    for i in range(x_tensor.shape[0]):
-        # Convert single image from [C, H, W] to PIL format for transforms
-        img = x_tensor[i]  # Shape: [C, H, W]
-        # torchvision transforms expect [C, H, W] tensor, which we have
-        augmented_img = cpu_augmentations(img)
-        augmented_batch.append(augmented_img)
-    
-    # Stack back into batch
-    augmented_tensor = torch.stack(augmented_batch)
-    
-    # Convert back to numpy for JAX
-    return augmented_tensor.numpy()
+    # Wrapper class for consistency if needed, but returning raw is fine
+    return train_dataloader, test_dataloader_full, val_subset_dataloader
 
 
 def create_reconstruction_images(intermediate_recons, T_values, orig_images, masked_images, labels_list, num_images, image_shape, wandb_run, epoch, reconstruction_mses=None):
@@ -940,9 +814,7 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     print(f"Using master seed: {current_seed}")
     np.random.seed(current_seed)
     torch.manual_seed(current_seed)
-    if KORNIA_AVAILABLE and set_rng_seed:
-        print(f"Setting Kornia RNG seed to {current_seed}")
-        set_rng_seed(current_seed)
+
     random.seed(current_seed)
     RKG.seed(current_seed) # Re-seed the pcx global RandomKeyGenerator
     
@@ -963,6 +835,14 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     if config_overrides:
         for key, value in config_overrides.items():
             if hasattr(config, key):
+                # Special handling for comma-separated string to list of ints
+                if key == 'mmcr_vode_indices' and isinstance(value, str):
+                    try:
+                        value = [int(i.strip()) for i in value.split(',')]
+                    except (ValueError, AttributeError):
+                        print(f"Warning: Could not parse mmcr_vode_indices '{value}'. Please provide a comma-separated string of integers. Disabling MMCR.")
+                        setattr(config, 'use_mmcr_loss', False)
+                        value = None # Set to None to avoid further errors
                 setattr(config, key, value)
             else:
                 print(f"Warning: Key '{key}' not found in ModelConfig. Skipping override.")
@@ -1061,23 +941,18 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         use_vode_grad_norm=config.use_vode_grad_norm,             # New
         vode_grad_norm_target=config.vode_grad_norm_target,        # New
         intermediate_l1_coeff=config.intermediate_l1_coeff, # ADDED
-        intermediate_l2_coeff=config.intermediate_l2_coeff  # ADDED
+        intermediate_l2_coeff=config.intermediate_l2_coeff,  # ADDED
+        use_mmcr_loss=config.use_mmcr_loss,
+        mmcr_vode_indices=config.mmcr_vode_indices,
+        mmcr_projector_dim=config.mmcr_projector_dim,
+        mmcr_lambda=config.mmcr_lambda,
+        num_views_per_image=config.num_views_per_image
     )
     
-    print(f"Creating debug dataloaders for CIFAR-10...")
-    train_loader, val_loader, val_subset_loader = get_debug_dataloaders(
-        dataset_name=config.dataset,
-        batch_size=config.batch_size,
-        root_path=config.data_dir,
-        train_subset_n=config.train_subset,
-        test_subset_n=config.test_subset,
-        validation_subset_n=config.validation_subset,
-        target_class=config.target_class,
-        use_ssl_augmentations=config.use_ssl_augmentations,
-        use_cifar10_norm=config.use_cifar10_norm
-    )
+    print(f"Creating dataloaders...")
+    train_loader, val_loader, val_subset_loader = get_dataloaders(config)
     
-    print(f"Training on {len(train_loader.dataset)} samples")
+    print(f"Training on {len(train_loader.dataset)} samples ({len(train_loader)} batches of size {config.batch_size})")
     print(f"Validating (Linear Probe / Full Test Set) on {len(val_loader.dataset)} samples")
     print(f"Validating (Pretext Metrics Subset) on {len(val_subset_loader.dataset)} samples")
     
@@ -1187,21 +1062,18 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
     
     print(f"Training for {config.epochs} epochs with W&B logging...")
 
-    # Setup GPU augmentations if enabled
-    gpu_augmentations = setup_gpu_augmentations(config.use_ssl_augmentations)
-    if gpu_augmentations is not None and KORNIA_AVAILABLE:
-        print("GPU augmentations enabled using Kornia.")
-    elif config.use_ssl_augmentations and not KORNIA_AVAILABLE:
-        print("Warning: SSL augmentations requested but Kornia not available. Using simple CPU augmentations.")
-    else:
-        print("No augmentations will be applied.")
-
     # Initialize best_train_mse_this_run to track the minimum training MSE for the current run
     best_train_mse_this_run = float('inf')
 
     # Initialize the model (set h values of the Vodes) using a dummy batch shape
+    # If using MMCR, the effective batch size is batch_size * num_views_per_image
+    effective_batch_size = config.batch_size
+    if config.use_mmcr_loss:
+        effective_batch_size *= config.num_views_per_image
+        print(f"MMCR is enabled. Using effective batch size for initialization: {effective_batch_size}")
+
     # Determine expected input shape: (batch_size, channels, height, width)
-    init_shape = (config.batch_size, *model_config.image_shape)
+    init_shape = (effective_batch_size, *model_config.image_shape)
     x_init = jnp.zeros(init_shape, dtype=jnp.float32) # Use float32 or model's dtype
     print(f"Initializing Vode states using dummy tensor with shape: {init_shape}")
 
@@ -1243,12 +1115,15 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
                 forward(x_init, model=model)
         
         # Train for one epoch
-        avg_train_w_energy, avg_train_mse, h_grad, w_grad = train(
-            train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch, gpu_augmentations=gpu_augmentations
+        # The imported train function is now used, which handles the multi-view batch logic
+        avg_train_w_energy, avg_recons_energy, avg_mmcr_energy, avg_train_mse, h_grad, w_grad = train(
+            train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch
         )
         
         avg_train_w_energy = float(avg_train_w_energy) if not jnp.isnan(avg_train_w_energy) else float('nan')
         avg_train_mse = float(avg_train_mse) if not jnp.isnan(avg_train_mse) else float('nan')
+        avg_recons_energy = float(avg_recons_energy) if not jnp.isnan(avg_recons_energy) else float('nan')
+        avg_mmcr_energy = float(avg_mmcr_energy) if not jnp.isnan(avg_mmcr_energy) else float('nan')
         
         # Check if train MSE is below threshold for enabling model saving
         if not can_save_model_now and config.save_model_train_mse_threshold is not None and \
@@ -1310,6 +1185,8 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         epoch_metrics = {
             'Losses/train_w_energy_avg': avg_train_w_energy,
             'Losses/train_mse_avg': avg_train_mse,
+            'Losses/reconstruction_energy_avg': avg_recons_energy,
+            'Losses/mmcr_energy_avg': avg_mmcr_energy,
             'LearningRate/weights': current_w_lr,
             'LearningRate/hidden': current_h_lr
         }
@@ -1479,18 +1356,39 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
         # --- Linear Probing ---
         if config.linear_probe_every_n_epochs > 0 and (epoch + 1) % config.linear_probe_every_n_epochs == 0:
             print(f"--- Running Linear Probe at Epoch {epoch+1} ---")
-            # Create dataloaders specifically for probing (no SSL augmentations)
-            train_loader_probe, test_loader_probe, _ = get_debug_dataloaders( # MODIFIED HERE
-                dataset_name=config.dataset,
-                batch_size=config.batch_size, 
-                root_path=config.data_dir,
-                train_subset_n=config.train_subset, 
-                test_subset_n=config.test_subset,   # Probe uses the full test_subset
-                validation_subset_n=None, # Not needed for probe's own dataloaders
-                target_class=config.target_class,
-                use_ssl_augmentations=False, 
-                use_cifar10_norm=config.use_cifar10_norm 
+            # Create dataloaders specifically for probing (no SSL augmentations and with labels)
+            print("Creating dataloaders for linear probing...")
+            probe_train_data, _, probe_test_data = get_datasets(
+                dataset=config.dataset,
+                n_aug=1,
+                batch_transform=False,
+                supervised=True # Linear probe is a supervised task
             )
+
+            # Apply subsetting for probing
+            if config.train_subset is not None:
+                probe_train_data = Subset(probe_train_data, list(range(min(len(probe_train_data), config.train_subset))))
+            if config.test_subset is not None:
+                probe_test_data = Subset(probe_test_data, list(range(min(len(probe_test_data), config.test_subset))))
+
+            train_loader_probe = DataLoader(
+                probe_train_data,
+                batch_size=config.linear_probe_batch_size,
+                shuffle=True,
+                num_workers=2,
+                pin_memory=True,
+                drop_last=True
+            )
+            
+            test_loader_probe = DataLoader(
+                probe_test_data,
+                batch_size=config.linear_probe_batch_size,
+                shuffle=False,
+                num_workers=2,
+                pin_memory=True,
+                drop_last=True
+            )
+            
             print(f"Probe Dataloaders: Train size {len(train_loader_probe.dataset)}, Test size {len(test_loader_probe.dataset)}")
 
             probe_config_overrides_dict = {

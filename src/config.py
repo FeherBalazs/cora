@@ -1,10 +1,106 @@
 from dataclasses import dataclass, field
 from typing import Optional, Tuple, List, Callable, Dict, Any
 import jax
+import jax.numpy as jnp
+from jax.typing import DTypeLike
 
-from src.decoder_transformer import (
-    TransformerConfig,
-)
+
+@dataclass
+class TransformerConfig:
+    """Configuration for the TransformerDecoder model."""
+    # Input/output dimensions
+    latent_dim: int = 512
+    # Image shape format: For images: (channels, height, width)
+    # For videos: (frames, channels, height, width)
+    image_shape: tuple = (3, 32, 32)
+    
+    # Video settings
+    num_frames: int = 16  # Default number of frames for video
+    is_video: bool = False  # Whether to use 3D positional encoding for video
+    
+    # Architecture settings
+    hidden_size: int = 256
+    num_heads: int = 8
+    num_blocks: int = 3
+    mlp_ratio: float = 4.0
+    dropout_rate: float = 0.1
+    mlp_hidden_dim: int = 256
+    act_fn: Callable = jax.nn.swish # Default activation function
+    
+    # Patch settings
+    patch_size: int = 4
+    
+    # Positional embedding settings
+    axes_dim: list[int] = field(default_factory=lambda: [16, 16, 16])  # Default to [temporal_dim, height_dim, width_dim]
+    theta: int = 10_000
+    
+    # Training settings
+    use_noise: bool = False
+    use_lower_half_mask: bool = False
+    param_dtype: DTypeLike = jnp.float32
+
+    # Layer-specific inference LR scaling
+    use_inference_lr_scaling: bool = False # Enable/disable scaling
+    inference_lr_scale_base: Optional[float] = 1.1
+    
+    inference_clamp_alpha: float = 1.0     # Blending factor for soft clamping (1.0 = full clamp, <1.0 = blend)
+    update_weights_during_unmasking: bool = False # New flag
+    update_weights_every_inference_step: bool = True # New flag
+    
+    # Status init settings
+    use_status_init_in_training: bool = True
+    use_status_init_in_unmasking: bool = True
+
+    # New normalization options
+    use_vode_state_layernorm: bool = False # Apply LayerNorm to Vode hidden states (h)
+    use_vode_grad_norm: bool = False       # Normalize Vode h-gradients before optimizer step
+    vode_grad_norm_target: float = 1.0     # Target norm for h-gradient normalization
+
+    # New fields for regularization coefficients
+    intermediate_l1_coeff: float = 0.0
+    intermediate_l2_coeff: float = 0.0
+
+    # MMCR settings
+    use_mmcr_loss: bool = False
+    # List of Vode indices to apply MMCR loss to. E.g., [1, 3, 5] for vodes 1, 3, 5
+    mmcr_vode_indices: Optional[List[int]] = None
+    # Dimension of the projector MLP output
+    mmcr_projector_dim: int = 128
+    # New: Dimension of the projector MLP's hidden layer
+    mmcr_projector_hidden_dim: int = 512
+    # Lambda for the MMCR loss (regularization term)
+    mmcr_lambda: float = 0.0 # Value from MMCR paper, good starting point
+    # Number of views per image (40 for CIFAR-10)
+    num_views_per_image: int = 40
+    # Batch size
+    batch_size: int = 5
+
+    def __post_init__(self):
+        # Determine if we're dealing with video based on the shape of image_shape
+        if len(self.image_shape) == 4:
+            self.is_video = True
+            self.num_frames, c, h, w = self.image_shape
+        else:
+            c, h, w = self.image_shape
+            
+        # Calculate patch dimensions
+        h_patches = h // self.patch_size
+        w_patches = w // self.patch_size
+        
+        # For video, include temporal dimension in patch count
+        if self.is_video:
+            self.num_patches = self.num_frames * h_patches * w_patches
+        else:
+            self.num_patches = h_patches * w_patches
+            
+        self.patch_dim = self.patch_size * self.patch_size * c
+        
+        # Set positional embedding dimensions based on whether we're using video
+        if not self.is_video and len(self.axes_dim) == 3:
+            # If not using video but axes_dim has 3 elements, use only the last 2
+            self.axes_dim = self.axes_dim[1:]
+        
+        self.mlp_hidden_dim = int(self.hidden_size * self.mlp_ratio)
 
 
 @dataclass
@@ -115,6 +211,13 @@ class ModelConfig:
     # Regularization coefficients for intermediate Vodes
     intermediate_l1_coeff: float = 0.0
     intermediate_l2_coeff: float = 0.0
+
+    # MMCR settings
+    use_mmcr_loss: bool = False
+    mmcr_vode_indices: Optional[List[int]] = None
+    mmcr_projector_dim: int = 128
+    mmcr_lambda: float = 0.05
+    num_views_per_image: int = 40
 
 
 MODEL_CONFIGS = {
@@ -533,7 +636,12 @@ def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
                  vode_grad_norm_target: float = 1.0,      # New
                  hidden_momentum: float = 0.1, # New parameter for create_config, not directly used by TransformerConfig
                  intermediate_l1_coeff: float = 0.0, # ADDED
-                 intermediate_l2_coeff: float = 0.0  # ADDED
+                 intermediate_l2_coeff: float = 0.0,  # ADDED
+                 use_mmcr_loss: bool = False,
+                 mmcr_vode_indices: Optional[List[int]] = None,
+                 mmcr_projector_dim: int = 128,
+                 mmcr_lambda: float = 0.05,
+                 num_views_per_image: int = 40
                  ):
     """Create a TransformerConfig based on the dataset name and parameters."""
     axes_dim = axes_dim or [16, 16]
@@ -563,7 +671,12 @@ def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
             use_vode_grad_norm=use_vode_grad_norm,
             vode_grad_norm_target=vode_grad_norm_target,
             intermediate_l1_coeff=intermediate_l1_coeff,
-            intermediate_l2_coeff=intermediate_l2_coeff
+            intermediate_l2_coeff=intermediate_l2_coeff,
+            use_mmcr_loss=use_mmcr_loss,
+            mmcr_vode_indices=mmcr_vode_indices,
+            mmcr_projector_dim=mmcr_projector_dim,
+            mmcr_lambda=mmcr_lambda,
+            num_views_per_image=num_views_per_image
         )
     else:
         raise ValueError(f"Unsupported dataset: {dataset}")
