@@ -148,11 +148,7 @@ class TransformerDecoder(pxc.EnergyModule):
                     else:
                         in_dim = config.hidden_size
                     
-                    # Use a linear layer for the projector; apply activation after call
-                    projector = pxnn.Linear(
-                        in_features=in_dim,
-                        out_features=config.mmcr_projector_dim
-                    )
+                    projector = pxnn.MLP(in_size=in_dim, out_size=128, width_size=512, depth=1)
                     self.projection_heads.append(projector)
                 else:
                     self.projection_heads.append(None)
@@ -176,6 +172,7 @@ class TransformerDecoder(pxc.EnergyModule):
             for _ in range(config.num_blocks):
                 self.vode_output_layernorms.append(pxnn.LayerNorm(shape=(config.hidden_size,)))
     
+
     def __call__(self, y: jax.Array | None = None):        
         # Get the initial sequence of patch embeddings from Vode 0
         x = self.vodes[0](jnp.empty(()))
@@ -270,6 +267,7 @@ def batch_energy(*, model: TransformerDecoder):
     return jnp.mean(e), y_
 
 
+@pxf.jit(static_argnums=0, static_argnames=("b_orig", "n_views"))
 def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.Optim, epoch=None, step=None, b_orig: int = -1, n_views: int = -1):
     model.train()
 
@@ -302,15 +300,14 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
                     else:
                         raise ValueError(f"Unexpected shape for h_i: {h_i.shape}")
                     
-                    # Project to get 'z' and apply activation
+                    # Project to get 'z'
                     z_i = jax.vmap(projector)(h_i_pooled)
-                    z_i = jax.nn.relu(z_i)
 
                     # Calculate MMCR loss for this layer
                     mmcr_loss_i = calculate_mmcr_loss_for_vode(
                         z_i,
-                        b_orig=model.config.batch_size,
-                        n_views=model.config.num_views_per_image,
+                        b_orig=b_orig,
+                        n_views=n_views,
                         mmcr_lambda=model.config.mmcr_lambda
                     )
                     mmcr_energy += mmcr_loss_i
@@ -570,128 +567,6 @@ def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.
     
     # Return all relevant metrics
     return avg_train_w_energy, avg_recons_energy, avg_mmcr_energy, avg_train_mse, h_grad, w_grad
-
-
-# def eval(dl, T, *, model: TransformerDecoder, optim_h: pxu.Optim):
-#     losses = []
-
-#     # TODO: think how having multiple batches modifies training dynamics. The lack of clear params for logging potentialy leads to issues.
-#     for x, y in dl:
-#         e, y_hat = unmask_on_batch(use_corruption=False, corrupt_ratio=0.0, target_T_values=T, x=jnp.array(x), model=model, optim_h=optim_h)
-#         losses.append(e)
-
-#     return jnp.mean(jnp.array(losses))
-
-
-# # @pxf.jit(static_argnums=0)
-# def unmask_on_batch(use_corruption: bool, corrupt_ratio: float, target_T_values: List[int], x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim):
-#     """
-#     Runs inference on a batch (x), potentially corrupted, and returns the final loss
-#     and reconstructed outputs at specified T values.
-#     """
-#     model.eval()
-#     # TODO: in other scripts optim_h is not cleared and not initialised each time, only once. Check behavior.
-#     optim_h.clear()
-#     optim_h.init(pxu.M_hasnot(pxc.VodeParam, frozen=True)(model))
-
-#     # Define inference step with the regular energy function
-#     inference_step = pxf.value_and_grad(pxu.M_hasnot(pxc.VodeParam, frozen=True).to([False, True]), has_aux=True)(energy)
-
-#     max_T = max(target_T_values) if target_T_values else 0
-#     # Store reconstructions at target T values (step t corresponds to T=t+1)
-#     save_steps = {t - 1 for t in target_T_values if t > 0} 
-#     intermediate_recons = {}
-
-#     expected_bs = 1
-#     for vode in model.vodes:
-#         if vode.h._value is not None:
-#             expected_bs = vode.h._value.shape[0]
-#             break
-
-#     # Adjust batch size if needed
-#     if x.shape[0] != expected_bs:
-#         x_batch = jnp.repeat(x, expected_bs, axis=0)
-#     else:
-#         x_batch = x
-
-#     batch_size, channels, H, W = x_batch.shape
-#     assert model.config.image_shape == (channels, H, W), "Image shape mismatch"
-
-#     if use_corruption:
-#         # Create masked image
-#         x_c = x_batch.reshape((-1, 3, 32, 32)).copy()
-#         x_c = x_c.at[:, :, 16:].set(0)
-#         x_c = x_c.reshape((-1, 3, 32, 32))
-        
-#         # Initialize the model with the masked input
-#         with pxu.step(model, clear_params=pxc.VodeParam.Cache):
-#             forward(x_c, model=model)
-#     else:
-#         # Initialize the model with the input
-#         with pxu.step(model, clear_params=pxc.VodeParam.Cache):
-#             forward(x_batch, model=model)
-
-#     # Inference iterations
-#     for t in range(max_T):
-#         if use_corruption:
-#             if t in save_steps:
-#                 # with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
-#                 with pxu.step(model, STATUS_FORWARD):
-#                     intermediate_recons[t + 1] = forward(None, model=model)
-#                 print(f"Saved intermediate reconstruction at T={t+1}")
-
-#             # Unfreeze sensory layer for inference
-#             model.vodes[-1].h.frozen = False
-
-#             # Run inference step
-#             # with pxu.step(model, clear_params=pxc.VodeParam.Cache):
-#             with pxu.step(model):
-#                 h_energy, h_grad = inference_step(model=model)
-            
-#             # Update states
-#             optim_h.step(model, h_grad["model"])
-
-#             model.vodes[-1].h.set(
-#                 model.vodes[-1].h.reshape((-1, 3, 32, 32))
-#                 .at[:, :, :16].set(
-#                     x_batch.reshape((-1, 3, 32, 32))
-#                     [:, :, :16]
-#                 )
-#             )
-
-#         else:
-#             # Standard inference step
-#             # with pxu.step(model, clear_params=pxc.VodeParam.Cache):
-#             with pxu.step(model):
-#                 h_energy, h_grad = inference_step(model=model)
-
-#             # Update states
-#             optim_h.step(model, h_grad["model"])
-
-#             if t in save_steps:
-#                 #   with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
-#                 with pxu.step(model, STATUS_FORWARD):
-#                     intermediate_recons[t + 1] = forward(None, model=model)
-
-#     optim_h.clear()
-
-#     # Final forward pass to get reconstruction
-#     # with pxu.step(model, STATUS_FORWARD, clear_params=pxc.VodeParam.Cache):
-#     # WARNING: Switched to this for vode grad and energy logging
-#     with pxu.step(model, STATUS_FORWARD):
-#         x_hat_batch = forward(None, model=model)
-
-#     loss = jnp.square(jnp.clip(x_hat_batch.reshape(-1), 0.0, 1.0) - x_batch.reshape(-1)).mean()
-
-#     # Refreeze sensory layer
-#     model.vodes[-1].h.frozen = True
-
-#     # WARNING: Commented out for vode grad and energy logging
-#     # # Reset model as the inference could mess up the model state if diverged
-#     # with pxu.step(model, clear_params=pxc.VodeParam.Cache):
-#     #     forward(None, model=model)
-
-#     return loss, intermediate_recons
 
 
 def unmask_on_batch_enhanced(use_corruption: bool, corrupt_ratio: float, target_T_values: List[int], x: jax.Array, *, model: TransformerDecoder, optim_h: pxu.Optim, optim_w: Optional[pxu.Optim] = None, log_inference_grads: bool = False) -> Tuple[jnp.ndarray, List[jnp.ndarray], jnp.ndarray, Dict[int, Dict[str, float]]]:

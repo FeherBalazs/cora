@@ -1,6 +1,7 @@
 __all__ = [
     "Layer",
     "Linear",
+    "MLP",
     "Conv",
     "Conv2d",
     "ConvTranspose",
@@ -85,6 +86,38 @@ class Linear(Layer):
         **kwargs,
     ):
         super().__init__(eqx.nn.Linear, in_features, out_features, bias, key=rkg(), **kwargs)
+
+
+class MLP(Layer):
+    def __init__(
+        self,
+        in_size: int,
+        out_size: int,
+        width_size: int,
+        depth: int,
+        activation: Callable = jax.nn.relu,
+        final_activation: Callable = lambda x: x,
+        use_bias: bool = True,
+        use_final_bias: bool = True,
+        dtype=None,
+        *,
+        rkg: RandomKeyGenerator = RKG,
+        **kwargs,
+    ):
+        super().__init__(
+            eqx.nn.MLP,
+            in_size=in_size,
+            out_size=out_size,
+            width_size=width_size,
+            depth=depth,
+            activation=activation,
+            final_activation=final_activation,
+            use_bias=use_bias,
+            use_final_bias=use_final_bias,
+            dtype=dtype,
+            key=rkg(),
+            **kwargs,
+        )
 
 
 class Conv(Layer):

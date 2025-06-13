@@ -111,7 +111,7 @@ class ModelConfig:
     dataset: str = "cifar10"
     dataset_img_shape: Optional[Tuple[int, ...]] = None # New: (C, H, W) or (F, C, H, W)
     data_dir: str = "../datasets/"
-    train_subset: int = 50000
+    train_subset: int = 5000
     test_subset: int = 200
     validation_subset: Optional[int] = 2000
     target_class: Optional[int] = None
@@ -218,6 +218,9 @@ class ModelConfig:
     mmcr_projector_dim: int = 128
     mmcr_lambda: float = 0.05
     num_views_per_image: int = 40
+
+    # Dataloader arguments
+    num_workers: int = 5
 
 
 MODEL_CONFIGS = {

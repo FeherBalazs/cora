@@ -1,6 +1,7 @@
 __all__ = [
     "Layer",
     "Linear",
+    "MLP",
     "Conv",
     "Conv2d",
     "ConvTranspose",
@@ -25,6 +26,7 @@ __all__ = [
 from ._layer import (
     Layer,
     Linear,
+    MLP,
     Conv,
     Conv2d,
     ConvTranspose,

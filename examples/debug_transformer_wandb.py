@@ -235,7 +235,7 @@ def get_dataloaders(config: ModelConfig):
         train_data,
         batch_size=config.batch_size, # This is now b_orig
         shuffle=True,
-        num_workers=2, # Can increase if I/O is a bottleneck
+        num_workers=config.num_workers, # Can increase if I/O is a bottleneck
         pin_memory=True,
         drop_last=True # Important for MMCR to have consistent batch sizes
     )
@@ -251,7 +251,7 @@ def get_dataloaders(config: ModelConfig):
         val_subset,
         batch_size=effective_val_batch_size,
         shuffle=False,
-        num_workers=2,
+        num_workers=config.num_workers,
         pin_memory=True,
         drop_last=True
     )
@@ -262,7 +262,7 @@ def get_dataloaders(config: ModelConfig):
         test_data_subset, # Use the subsetted or full test data
         batch_size=effective_val_batch_size,
         shuffle=False,
-        num_workers=2,
+        num_workers=config.num_workers,
         pin_memory=True,
         drop_last=True 
     )
@@ -1375,7 +1375,7 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
                 probe_train_data,
                 batch_size=config.linear_probe_batch_size,
                 shuffle=True,
-                num_workers=2,
+                num_workers=config.num_workers,
                 pin_memory=True,
                 drop_last=True
             )
@@ -1384,7 +1384,7 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
                 probe_test_data,
                 batch_size=config.linear_probe_batch_size,
                 shuffle=False,
-                num_workers=2,
+                num_workers=config.num_workers,
                 pin_memory=True,
                 drop_last=True
             )

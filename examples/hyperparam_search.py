@@ -16,14 +16,14 @@ def perform_hyperparameter_search():
 
     # Fixed overrides: Non-searched parameters, taking cues from the "6block" base
     fixed_overrides = {
-        "epochs": 1,
+        "epochs": 5,
         "theta": 10_000,
         "use_ssl_augmentations": True,
         "use_cifar10_norm": True,
         "num_images": 3,
-        "test_subset": 200,
-        "validation_subset": 200,
-        "train_subset": 1000,
+        "test_subset": 1000,
+        "validation_subset": 1000,
+        "train_subset": 2000,
         "peak_lr_weights": 0.001,
         "hidden_lr_inference": 0.095,
         "reconstruction_every_n_epochs": 25,
@@ -65,22 +65,22 @@ def perform_hyperparameter_search():
         "linear_probe_lr": 1e-3,
         "linear_probe_wd": 1e-4,
         "linear_probe_epochs": 20, # A shorter number of epochs for hyperparam search might be wise
-        "linear_probe_batch_size": 200,
+        "linear_probe_batch_size": 640,
         # "linear_probe_h_lr": None, # Will use main config's hidden_lr_inference
         "linear_probe_inference_steps": None, # Will use main config's inference_steps
         "linear_probe_seed": 123,
 
         # MMCR Defaults
-        "use_mmcr_loss": False,
-        "mmcr_vode_indices": "0", # String format, will be parsed by run_experiment
-        "mmcr_projector_dim": 128,
-        "mmcr_lambda": 0.0,
-        "num_views_per_image": 40
+        # "use_mmcr_loss": True,
+        # "mmcr_vode_indices": "0,1,2,3,4,5,6,7", # String format, will be parsed by run_experiment
+        # "mmcr_projector_dim": 128,
+        # "mmcr_lambda": 0.0,
+        "num_views_per_image": 20
     }
 
     # --- Architectural Search Space ---
-    num_blocks_candidates = [0]
-    batch_size_candidates = [5]
+    num_blocks_candidates = [6]
+    batch_size_candidates = [32]
     hidden_size_candidates = [64]
     num_heads_candidates = [1]
 
@@ -101,8 +101,8 @@ def perform_hyperparameter_search():
 
     # --- NEW: MMCR Search Space ---
     use_mmcr_loss_candidates = [True]
-    mmcr_lambda_candidates = [0.0]
-    mmcr_vode_indices_candidates = ["0"] # Only on the final layer's features
+    mmcr_lambda_candidates = [0.05]
+    mmcr_vode_indices_candidates = ["0,1,2,3,4,5,6,7"] # Only on the final layer's features
 
     best_run_info = {
         "num_blocks": None,
