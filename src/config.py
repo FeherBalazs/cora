@@ -133,6 +133,7 @@ class ModelConfig:
     num_heads: int = 6
     num_blocks: int = 1
     mlp_ratio: float = 4.0
+    dropout_rate: float = 0.1
     patch_size: int = 4
     axes_dim: List[int] = field(default_factory=lambda: [16, 16])
     theta: int = 100
@@ -218,6 +219,7 @@ class ModelConfig:
     mmcr_loss_scale_factor: float = 0.01
     mmcr_vode_indices: Optional[List[int]] = None
     mmcr_projector_dim: int = 128
+    mmcr_projector_hidden_dim: int = 512
     mmcr_lambda: float = 0.05
     num_views_per_image: int = 40
 
@@ -631,6 +633,7 @@ DEFAULT_CONFIG = "debug_tiny" # Changed to run the new specific settings
 
 def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
                  mlp_ratio=4.0, patch_size=4, axes_dim=None, theta=10_000, use_noise=True, use_lower_half_mask=False,
+                 dropout_rate: float = 0.1, act_fn: Callable = jax.nn.swish,
                  use_inference_lr_scaling=False, 
                  inference_lr_scale_base=1.1,
                  inference_clamp_alpha=1.0, update_weights_during_unmasking=False,
@@ -646,6 +649,7 @@ def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
                  mmcr_loss_scale_factor: float = 0.01,
                  mmcr_vode_indices: Optional[List[int]] = None,
                  mmcr_projector_dim: int = 128,
+                 mmcr_projector_hidden_dim: int = 512,
                  mmcr_lambda: float = 0.05,
                  num_views_per_image: int = 40
                  ):
@@ -661,6 +665,8 @@ def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
             num_heads=num_heads,
             num_blocks=num_blocks,
             mlp_ratio=mlp_ratio,
+            dropout_rate=dropout_rate,
+            act_fn=act_fn,
             patch_size=patch_size,
             axes_dim=axes_dim,
             theta=theta,
@@ -682,6 +688,7 @@ def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
             mmcr_loss_scale_factor=mmcr_loss_scale_factor,
             mmcr_vode_indices=mmcr_vode_indices,
             mmcr_projector_dim=mmcr_projector_dim,
+            mmcr_projector_hidden_dim=mmcr_projector_hidden_dim,
             mmcr_lambda=mmcr_lambda,
             num_views_per_image=num_views_per_image
         )

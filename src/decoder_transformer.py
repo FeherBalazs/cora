@@ -148,7 +148,12 @@ class TransformerDecoder(pxc.EnergyModule):
                     else:
                         in_dim = config.hidden_size
                     
-                    projector = pxnn.MLP(in_size=in_dim, out_size=128, width_size=512, depth=1)
+                    projector = pxnn.MLP(
+                        in_size=in_dim, 
+                        out_size=self.config.mmcr_projector_dim, 
+                        width_size=self.config.mmcr_projector_hidden_dim, 
+                        depth=1
+                    )
                     self.projection_heads.append(projector)
                 else:
                     self.projection_heads.append(None)
