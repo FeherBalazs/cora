@@ -236,7 +236,7 @@ def get_dataloaders(config: ModelConfig):
         batch_size=config.batch_size, # This is now b_orig
         shuffle=True,
         num_workers=config.num_workers, # Can increase if I/O is a bottleneck
-        pin_memory=True,
+        pin_memory=False,
         drop_last=True # Important for MMCR to have consistent batch sizes
     )
     
@@ -252,7 +252,7 @@ def get_dataloaders(config: ModelConfig):
         batch_size=effective_val_batch_size,
         shuffle=False,
         num_workers=config.num_workers,
-        pin_memory=True,
+        pin_memory=False,
         drop_last=True
     )
     
@@ -263,7 +263,7 @@ def get_dataloaders(config: ModelConfig):
         batch_size=effective_val_batch_size,
         shuffle=False,
         num_workers=config.num_workers,
-        pin_memory=True,
+        pin_memory=False,
         drop_last=True 
     )
     
@@ -1124,10 +1124,40 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
             train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch
         )
         
+        # Initialize epoch_metrics here to store training metrics that will be logged
+        # Also convert metrics from JAX arrays to Python floats for logging and logic
         avg_train_w_energy = float(avg_train_w_energy) if not jnp.isnan(avg_train_w_energy) else float('nan')
         avg_train_mse = float(avg_train_mse) if not jnp.isnan(avg_train_mse) else float('nan')
         avg_recons_energy = float(avg_recons_energy) if not jnp.isnan(avg_recons_energy) else float('nan')
         avg_mmcr_energy = float(avg_mmcr_energy) if not jnp.isnan(avg_mmcr_energy) else float('nan')
+
+        epoch_metrics = {
+            'Losses/train_w_energy_avg': avg_train_w_energy,
+            'Losses/train_mse_avg': avg_train_mse,
+            'Losses/reconstruction_energy_avg': avg_recons_energy,
+            'Losses/mmcr_energy_avg': avg_mmcr_energy,
+            'LearningRate/weights': current_w_lr,
+            'LearningRate/hidden': current_h_lr
+        }
+
+        # --- Adaptive MMCR Loss Scaling ---
+        if config.use_mmcr_loss and config.use_adaptive_mmcr_scaling:
+            if not jnp.isnan(avg_recons_energy) and not jnp.isnan(avg_mmcr_energy) and avg_mmcr_energy != 0:
+                # Formula: new_scale = target_ratio * |recons_energy / mmcr_energy|
+                # This directly calculates the scale factor needed to achieve the target ratio in the next epoch.
+                new_scale = float(config.adaptive_mmcr_target_ratio * jnp.abs(avg_recons_energy / (avg_mmcr_energy / model.mmcr_loss_scale_factor)))
+                
+                # Clamp the new scale to prevent extreme values, which can cause instability
+                new_scale = jnp.clip(new_scale, 1.0, 1e7)
+
+                # Update the model's dynamic scale factor for the next epoch
+                model.mmcr_loss_scale_factor = jnp.array(new_scale, dtype=jnp.float32)
+                
+                print(f"Adaptive MMCR Scaling: Updated scale factor to {model.mmcr_loss_scale_factor:.2f} for next epoch.")
+                # Log the new scale factor to wandb
+                epoch_metrics['MMCR/adaptive_scale_factor'] = model.mmcr_loss_scale_factor
+            else:
+                print("Adaptive MMCR Scaling: Skipping update due to NaN or zero MMCR energy.")
         
         # Check if train MSE is below threshold for enabling model saving
         if not can_save_model_now and config.save_model_train_mse_threshold is not None and \
@@ -1184,16 +1214,6 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
             # Update best_train_mse_this_run if current epoch's avg_train_mse is better and valid
             if not np.isnan(avg_train_mse) and avg_train_mse < best_train_mse_this_run:
                 best_train_mse_this_run = avg_train_mse
-        
-        # Initialize epoch_metrics here to store training metrics
-        epoch_metrics = {
-            'Losses/train_w_energy_avg': avg_train_w_energy,
-            'Losses/train_mse_avg': avg_train_mse,
-            'Losses/reconstruction_energy_avg': avg_recons_energy,
-            'Losses/mmcr_energy_avg': avg_mmcr_energy,
-            'LearningRate/weights': current_w_lr,
-            'LearningRate/hidden': current_h_lr
-        }
 
         # --- Early stopping based on Training MSE (if configured) ---
         if config.use_early_stopping and config.early_stopping_metric == "train_mse" and not training_nan_detected:
@@ -1380,7 +1400,7 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
                 batch_size=config.linear_probe_batch_size,
                 shuffle=True,
                 num_workers=config.num_workers,
-                pin_memory=True,
+                pin_memory=False,
                 drop_last=True
             )
             
@@ -1389,7 +1409,7 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
                 batch_size=config.linear_probe_batch_size,
                 shuffle=False,
                 num_workers=config.num_workers,
-                pin_memory=True,
+                pin_memory=False,
                 drop_last=True
             )
             

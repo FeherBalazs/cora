@@ -598,19 +598,39 @@
     - l1 and l2 coeff of 0.00008 and 0.00003 seems optimal average values
     - Can data augmentation help stabilise training?
 
+- Experiment:
+  - Installed pytorch gpu so Kornia is now enabled, reducing epoch processing times from 73 seconds to 20.
+  - But with this the seeds are not producing the same results anymore
+  - Running sweep with 3 different seeds to see how much new results stack up
+  - In addition testing increasing num heads, and decreasing hidden dim
+  - Running linear probing only until 40 epochs vs previous 100 to speed up runs
+  - Also increased linear probe validation set from 200 to 1000 for more robust results
+  - Also using only top vode index 0
+  - Run: [https://wandb.ai/neural-machines/sweep-kornia/sweeps/lnztshlp](https://wandb.ai/neural-machines/sweep-kornia/sweeps/lnztshlp)
+  - Results:
+    -
 
+
+
+
+docker exec -it practical_thompson /bin/bash
 
 
 TODO: 
+  - optimise first massively
+  - update cuda driver
+  - search how much and what type of data augmentation would help with cifar10
   - Try with one more head, maybe results are more robust. 
   - Try with lower and higher hidden dim.
-  - search how much and what type of data augmentation would help with cifar10
+  - will perhaps have to move on to adding MMCR loss instead of spending so much time optimising a tiny network (but still, this tiny network produces decent results already)
+  
   - try best setting with same seed but with more test samples to see what is really expected. then refine ssl method and decrease learning rate, and extend over more epochs.
   - how much time do I want to spend on tweaking current setup without proper regularisation?
-  - well, the hope is that probe accuracy goes up with most seeds. if we see consistent trend, then it would make sense to test for more epochs. 75 epochs is very little by SSL standards. but it would be better to speed up training first as data augmentation is taking much time.
+  - well, the hope is that probe accuracy goes up with most seeds. if we see consistent trend, then it would make sense to test for more epochs. 75 epochs is very little by SSL standards
 
 
-
+IDEA:
+- Strong Augmentations: The network isn't just predicting one static input; it's predicting x_aug_1, x_aug_2, ..., x_aug_n for the same underlying semantic content. To do this efficiently, the learned representations must become invariant to the augmentations, focusing on the stable underlying factors. This is a strong learning pressure.
 
 
 
@@ -652,7 +672,9 @@ Below experiments were done with refactored code that are now rolled back.
 
   
 
-
+normal-augmentation-1000-n_test-40-probe_epoch
+normal-augmentation-1000-n_test-100-probe_epoch
+strong-augmentation-10000-n_test-100-probe_epoch
 
 - Experiment:
   - This might be silly but running 12 block extensive search locally with 3 agents
@@ -689,9 +711,11 @@ python examples/run_sweep.py --sweep-config sweeps/sweep_focused_search.yaml --p
 nohup python examples/run_sweep.py --sweep-id "oq1mmadp" --project "refine-6blocks" > sweep_agent.log 2>&1 &
 
 
-python examples/run_sweep.py --sweep-config sweeps/sweep_averaged_params.yaml --project "best-6blocks-multiseed" --create-only
+python examples/run_sweep.py --sweep-config sweeps/sweep_kornia.yaml --project "sweep-kornia" --create-only
 
-nohup python examples/run_sweep.py --sweep-id "hw9hruwh" --project "best-6blocks-multiseed" > sweep_agent.log 2>&1 &
+nohup python examples/run_sweep.py --sweep-id "lnztshlp" --project "sweep-kornia" > sweep_agent.log 2>&1 &
+
+nohup python examples/run_sweep.py --sweep-config sweeps/sweep_kornia.yaml --project "sweep-kornia" --sweep-name "strong-aug-10000-n_test-100-probe_epoch" > sweep_agent_strong_aug.log 2>&1 &
 
 
 Experiment:

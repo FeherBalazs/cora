@@ -161,6 +161,8 @@ class TransformerDecoder(pxc.EnergyModule):
         # Add projector heads for MMCR loss
         self.projection_heads = []
         if self.config.use_mmcr_loss:
+            # Add a dynamic, non-static scale factor for MMCR loss
+            self.mmcr_loss_scale_factor = jnp.array(self.config.mmcr_loss_scale_factor, dtype=jnp.float32)
             if self.config.mmcr_vode_indices is None:
                 raise ValueError("mmcr_vode_indices must be specified when use_mmcr_loss is True")
 
@@ -341,7 +343,8 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
                     )
                     mmcr_energy += mmcr_loss_i
         
-        scaled_mmcr_energy = mmcr_energy * model.config.mmcr_loss_scale_factor
+        # Use the dynamic scale factor from the model object
+        scaled_mmcr_energy = mmcr_energy * model.mmcr_loss_scale_factor
         
         total_energy = reconstruction_energy + scaled_mmcr_energy
         

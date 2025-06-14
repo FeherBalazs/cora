@@ -63,14 +63,12 @@ class TransformerConfig:
     # MMCR settings
     use_mmcr_loss: bool = False
     mmcr_loss_scale_factor: float = 0.01
-    # List of Vode indices to apply MMCR loss to. E.g., [1, 3, 5] for vodes 1, 3, 5
+    use_adaptive_mmcr_scaling: bool = True
+    adaptive_mmcr_target_ratio: float = 0.5
     mmcr_vode_indices: Optional[List[int]] = None
-    # Dimension of the projector MLP output
     mmcr_projector_dim: int = 128
-    # New: Dimension of the projector MLP's hidden layer
     mmcr_projector_hidden_dim: int = 512
-    # Lambda for the MMCR loss (regularization term)
-    mmcr_lambda: float = 0.0 # Value from MMCR paper, good starting point
+    mmcr_lambda: float = 0.05
     # Number of views per image (40 for CIFAR-10)
     num_views_per_image: int = 40
     # Batch size
@@ -217,6 +215,8 @@ class ModelConfig:
     # MMCR settings
     use_mmcr_loss: bool = False
     mmcr_loss_scale_factor: float = 0.01
+    use_adaptive_mmcr_scaling: bool = True
+    adaptive_mmcr_target_ratio: float = 0.5
     mmcr_vode_indices: Optional[List[int]] = None
     mmcr_projector_dim: int = 128
     mmcr_projector_hidden_dim: int = 512
@@ -224,7 +224,7 @@ class ModelConfig:
     num_views_per_image: int = 40
 
     # Dataloader arguments
-    num_workers: int = 4
+    num_workers: int = 0
 
 
 MODEL_CONFIGS = {
@@ -647,6 +647,8 @@ def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
                  intermediate_l2_coeff: float = 0.0,  # ADDED
                  use_mmcr_loss: bool = False,
                  mmcr_loss_scale_factor: float = 0.01,
+                 use_adaptive_mmcr_scaling: bool = True,
+                 adaptive_mmcr_target_ratio: float = 0.5,
                  mmcr_vode_indices: Optional[List[int]] = None,
                  mmcr_projector_dim: int = 128,
                  mmcr_projector_hidden_dim: int = 512,
@@ -686,6 +688,8 @@ def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
             intermediate_l2_coeff=intermediate_l2_coeff,
             use_mmcr_loss=use_mmcr_loss,
             mmcr_loss_scale_factor=mmcr_loss_scale_factor,
+            use_adaptive_mmcr_scaling=use_adaptive_mmcr_scaling,
+            adaptive_mmcr_target_ratio=adaptive_mmcr_target_ratio,
             mmcr_vode_indices=mmcr_vode_indices,
             mmcr_projector_dim=mmcr_projector_dim,
             mmcr_projector_hidden_dim=mmcr_projector_hidden_dim,
