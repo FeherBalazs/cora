@@ -612,7 +612,7 @@
 
 
 
-
+docker restart practical_thompson
 docker exec -it practical_thompson /bin/bash
 
 
