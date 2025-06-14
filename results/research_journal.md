@@ -614,6 +614,7 @@
 
 docker restart practical_thompson
 docker exec -it practical_thompson /bin/bash
+sudo apt install nvidia-driver-550 in case there is a problem after upgrade
 
 
 TODO: 
