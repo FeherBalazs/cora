@@ -36,6 +36,7 @@ class TransformerConfig:
     
     # Training settings
     use_noise: bool = False
+    noise_perturbation_level: float = 0.01
     use_lower_half_mask: bool = False
     param_dtype: DTypeLike = jnp.float32
 
@@ -143,6 +144,7 @@ class ModelConfig:
     
     # Training settings
     use_noise: bool = True
+    noise_perturbation_level: float = 0.01
     batch_size: int = 200
     epochs: int = 75
     inference_steps: int = 20
@@ -581,6 +583,7 @@ MODEL_CONFIGS = {
         use_status_init_in_unmasking=False,
         # Training settings
         use_noise=True,
+        noise_perturbation_level=0.01,
         batch_size=200,
         epochs=75,
         inference_steps=20,
@@ -631,13 +634,25 @@ MODEL_CONFIGS = {
 DEFAULT_CONFIG = "debug_tiny" # Changed to run the new specific settings
 
 
-def create_config(dataset="cifar10", hidden_size=48, num_blocks=1, num_heads=6,
-                 mlp_ratio=4.0, patch_size=4, axes_dim=None, theta=10_000, use_noise=True, use_lower_half_mask=False,
-                 dropout_rate: float = 0.1, act_fn: Callable = jax.nn.swish,
+def create_config(dataset="cifar10", 
+                hidden_size=48, 
+                num_blocks=1, 
+                num_heads=6,
+                 mlp_ratio=4.0, 
+                 patch_size=4, 
+                 axes_dim=None, 
+                 theta=10_000, 
+                 use_noise=True, 
+                 noise_perturbation_level=0.01, 
+                 use_lower_half_mask=False,
+                 dropout_rate: float = 0.1, 
+                 act_fn: Callable = jax.nn.swish,
                  use_inference_lr_scaling=False, 
                  inference_lr_scale_base=1.1,
-                 inference_clamp_alpha=1.0, update_weights_during_unmasking=False,
-                 use_status_init_in_training: bool = True, use_status_init_in_unmasking: bool = True,
+                 inference_clamp_alpha=1.0, 
+                 update_weights_during_unmasking=False,
+                 use_status_init_in_training: bool = True, 
+                 use_status_init_in_unmasking: bool = True,
                  update_weights_every_inference_step=False,
                  use_vode_state_layernorm: bool = False, # New
                  use_vode_grad_norm: bool = False,       # New
