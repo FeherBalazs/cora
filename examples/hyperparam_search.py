@@ -107,7 +107,7 @@ def perform_hyperparameter_search():
 
     # --- NEW: MMCR Search Space ---
     use_mmcr_loss_candidates = [True]
-    mmcr_lambda_candidates = [0.05]
+    mmcr_lambda_candidates = [0.0]
     mmcr_vode_indices_candidates = ["1"] # Only on the final layer's features
 
     best_run_info = {
