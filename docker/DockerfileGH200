@@ -3,7 +3,7 @@
 # Make sure to select a CuDNN image!
 # See the compatibility matrix here: https://docs.nvidia.com/deploy/cuda-compatibility/index.html#use-the-right-compat-package
 # Also make sure to change the fix at the very end of this file.
-FROM nvidia/cuda:12.2.2-cudnn8-devel-ubuntu22.04
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
 
 # Prevent interactive prompts during build
 ENV DEBIAN_FRONTEND=noninteractive
@@ -41,7 +41,7 @@ ENV PATH="$PATH:/home/cora/.local/bin" \
     # Prevent JAX from allocating 90% of GPU memory:
     XLA_PYTHON_CLIENT_PREALLOCATE="false" \
     # Set XLA version to match CUDA driver
-    XLA_CUDA_VERSION="12.4.0"
+    XLA_CUDA_VERSION="12.8.1"
 
 # Copy the entire project
 COPY --chown=cora:cora . .
