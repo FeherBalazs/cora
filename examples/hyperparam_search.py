@@ -16,7 +16,7 @@ def perform_hyperparameter_search():
 
     # Fixed overrides: Non-searched parameters, taking cues from the "6block" base
     fixed_overrides = {
-        "epochs": 50,
+        "epochs": 10,
         "theta": 10_000,
         "use_ssl_augmentations": True,
         "use_cifar10_norm": True,
@@ -26,8 +26,8 @@ def perform_hyperparameter_search():
         "train_subset": 10000,
         "peak_lr_weights": 0.001,
         "hidden_lr_inference": 0.095,
-        "reconstruction_every_n_epochs": 10,
-        "validation_every_n_epochs": 10,
+        "reconstruction_every_n_epochs": 5,
+        "validation_every_n_epochs": 5,
         "use_inference_lr_scaling": True,
         "use_lr_schedule_w": True,
         "use_lr_schedule_h": True,
@@ -58,8 +58,8 @@ def perform_hyperparameter_search():
         "lr_schedule_min_lr_factor": 0.5,
 
         # Linear Probing Defaults (can be overridden per run if made searchable)
-        "linear_probe_every_n_epochs": 10, # Disabled by default, enable for specific searches
-        "linear_probe_vode_indices": "1", # Example: probe all layers
+        "linear_probe_every_n_epochs": 5, # Disabled by default, enable for specific searches
+        "linear_probe_vode_indices": "2", # Example: probe all layers
         "linear_probe_concatenate_features": True, # Example: concatenate all specified
         "linear_probe_use_gap": True,
         "linear_probe_lr": 1e-3,
@@ -73,7 +73,7 @@ def perform_hyperparameter_search():
         # MMCR Defaults
         # "use_mmcr_loss": True,
         # "mmcr_vode_indices": "0,1,2,3,4,5,6,7", # String format, will be parsed by run_experiment
-        "mmcr_projector_dim": 256,
+        "mmcr_projector_dim": 128,
         "mmcr_projector_hidden_dim": 512,
         # "mmcr_lambda": 0.0,
         "num_views_per_image": 8,
@@ -85,13 +85,13 @@ def perform_hyperparameter_search():
     }
 
     # --- Architectural Search Space ---
-    num_blocks_candidates = [6]
+    num_blocks_candidates = [1]
     batch_size_candidates = [32]
     hidden_size_candidates = [256]
     num_heads_candidates = [1]
 
     # --- Hyperparameter Search Space ---
-    lr_hidden_candidates = [0.09]
+    lr_hidden_candidates = [0.08]
     inference_lr_scale_base_candidates = [1.25]
     hidden_momentum_candidates = [0.4]
     h_grad_clip_norm_candidates = [2000]
@@ -108,7 +108,7 @@ def perform_hyperparameter_search():
     # --- NEW: MMCR Search Space ---
     use_mmcr_loss_candidates = [True]
     mmcr_lambda_candidates = [0.0]
-    mmcr_vode_indices_candidates = ["1"] # Only on the final layer's features
+    mmcr_vode_indices_candidates = ["2"]
 
     best_run_info = {
         "num_blocks": None,
