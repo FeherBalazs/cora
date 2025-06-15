@@ -15,7 +15,8 @@ __all__ = [
     "LayerNorm",
     "PatchEmbedding",
     "MultiHeadAttention",
-    "TransformerBlock"
+    "TransformerBlock",
+    "Projector"
 ]
 
 
@@ -33,6 +34,7 @@ from ..core._random import RandomKeyGenerator, RKG
 from ..core._parameter import BaseParam
 from ..core._static import StaticParam
 from ._parameter import LayerParam
+from ._stateful import BatchNormPC
 
 
 ########################################################################################################################
@@ -477,5 +479,27 @@ class TransformerBlock(Module):
 
         x = x + input_x
 
+        return x
+
+
+class Projector(Module):
+    """A projector network with Linear -> BatchNorm -> Swish -> Linear."""
+    linear1: Linear
+    batch_norm: "BatchNormPC"
+    linear2: Linear
+
+    def __init__(self, in_dim: int, hidden_dim: int, out_dim: int, *, axis_name: str | None = None, rkg: RandomKeyGenerator = RKG):
+        super().__init__()
+        self.linear1 = Linear(in_dim, hidden_dim, bias=False, rkg=rkg)
+        self.batch_norm = BatchNormPC(input_size=hidden_dim, axis_name=axis_name)
+        self.linear2 = Linear(hidden_dim, out_dim, rkg=rkg)
+
+    def __call__(self, x: jax.Array, *, key: jax.Array | None = None) -> jax.Array:
+        # Linear layers are stateless and operate per-example, so we vmap them.
+        x = jax.vmap(self.linear1)(x)
+        # BatchNorm is stateful and operates on the whole batch.
+        x = self.batch_norm(x, key=key)
+        x = jax.nn.swish(x)
+        x = jax.vmap(self.linear2)(x)
         return x
     
