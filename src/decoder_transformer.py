@@ -42,7 +42,6 @@ import jax.tree_util
 
 from src.mmcr_loss import calculate_mmcr_loss_for_vode
 from src.utils import create_positional_encoding, apply_exponential_layer_scaling, normalize_vode_h_gradients, calculate_psnr
-from pcx.nn._stateful import BatchNorm
 
 # Import moved to avoid circular dependency
 # from src.utils import create_positional_encoding
@@ -60,29 +59,6 @@ try:
 except ImportError as e:
     print(f"Error importing utility functions: {e}")
     raise
-
-
-class Projector(px.Module):
-    """A projector network with Linear -> BatchNorm -> ReLU -> Linear."""
-    linear1: pxnn.Linear
-    # bn: BatchNorm
-    linear2: pxnn.Linear
-
-    def __init__(self, in_dim: int, hidden_dim: int, out_dim: int, *, rkg: px.RandomKeyGenerator):
-        super().__init__()
-        self.linear1 = pxnn.Linear(in_dim, hidden_dim, bias=False, rkg=rkg)
-        # self.bn = BatchNorm(input_size=hidden_dim, axis_name=None)
-        self.linear2 = pxnn.Linear(hidden_dim, out_dim, rkg=rkg)
-
-    def __call__(self, x: jax.Array, *, key: jax.Array | None = None) -> jax.Array:
-        # Linear layers are stateless and operate per-example, so we vmap them.
-        x = jax.vmap(self.linear1)(x)
-        # BatchNorm is stateful and operates on the whole batch.
-        # x = self.bn(x, key=key)
-        x = jax.nn.relu(x)
-        # The second linear layer.
-        x = jax.vmap(self.linear2)(x)
-        return x
 
 
 class TransformerDecoder(pxc.EnergyModule):
@@ -174,7 +150,7 @@ class TransformerDecoder(pxc.EnergyModule):
                     else:
                         in_dim = config.hidden_size
                     
-                    projector = Projector(
+                    projector = pxnn.Projector(
                         in_dim=in_dim,
                         hidden_dim=self.config.mmcr_projector_hidden_dim,
                         out_dim=self.config.mmcr_projector_dim,
