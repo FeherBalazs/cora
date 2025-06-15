@@ -1118,10 +1118,13 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
             with pxu.step(model, pxc.STATUS.INIT, clear_params=pxc.VodeParam.Cache):
                 forward(x_init, model=model)
         
+        # Split the main key to get a unique key for this training epoch
+        main_train_key, train_epoch_key = jax.random.split(main_train_key)
+
         # Train for one epoch
         # The imported train function is now used, which handles the multi-view batch logic
         avg_train_w_energy, avg_recons_energy, avg_mmcr_energy, avg_train_mse, h_grad, w_grad = train(
-            train_loader, config.inference_steps, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch
+            train_loader, config.inference_steps, train_epoch_key, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch
         )
         
         # Initialize epoch_metrics here to store training metrics that will be logged

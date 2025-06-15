@@ -88,26 +88,22 @@ class TransformerDecoder(pxc.EnergyModule):
             }
         )]
 
-        # Add a Vode for patch projection (Vode 1)
-        self.vodes.append(pxc.Vode(
-            energy_fn=None,
-                ruleset={
-                    STATUS_FORWARD: ("h -> u",),
-                    pxc.STATUS.INIT: ("h <- x",)
-                }
-            ))
 
-        # Freeze the top random latent and the patch projection - we shall not update them,
-        # the network shall learn to generate images from random latents.
-        self.vodes[0].h.frozen = True
-        self.vodes[1].h.frozen = True
-        
         # Intermediate Vodes energy function (Transformer Block Vodes)
         intermediate_vodes_energy_fn = functools.partial(
             regularized_plus_se_energy,
             l1_coeff=self.config.intermediate_l1_coeff,
             l2_coeff=self.config.intermediate_l2_coeff
         )
+        
+        # Add a Vode for patch projection (Vode 1)
+        self.vodes.append(pxc.Vode(
+            energy_fn=intermediate_vodes_energy_fn,
+                ruleset={
+                    STATUS_FORWARD: ("h -> u",)
+                }
+            ))
+
 
         # Create Vodes for each transformer block output (Vodes 2 to num_blocks + 1)
         for _ in range(config.num_blocks):
@@ -280,7 +276,7 @@ def batch_energy(*, model: TransformerDecoder):
 
 
 @pxf.jit(static_argnums=0, static_argnames=("b_orig", "n_views"))
-def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.Optim, epoch=None, step=None, b_orig: int = -1, n_views: int = -1):
+def train_on_batch(T: int, x: jax.Array, key: jax.random.PRNGKey, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.Optim, epoch=None, step=None, b_orig: int = -1, n_views: int = -1):
     model.train()
 
     # Perform checks outside JIT-ted functions
@@ -343,6 +339,18 @@ def train_on_batch(T: int, x: jax.Array, *, model: TransformerDecoder, optim_w: 
         grad_fn = pxf.value_and_grad(pxu.M_hasnot(pxnn.LayerParam).to([False, True]), has_aux=True)(total_energy_fn)
         (total_and_aux, grads) = grad_fn(model=model_for_grad)
         return total_and_aux, grads
+
+
+    # --- Perturbation Step ---
+    # Manually perturb the top-level Vode's hidden state.
+    # This allows latents to carry over, providing stability, but adds noise
+    # to prevent overfitting and force the learning of a more general function.
+    noise_perturbation_level = model.config.noise_perturbation_level
+    if model.vodes[0].h._value is not None and noise_perturbation_level > 0:
+        current_h = model.vodes[0].get("h")
+        noise = jax.random.normal(key, shape=current_h.shape) * noise_perturbation_level
+        model.vodes[0].set("h", current_h + noise)
+    # --- End Perturbation Step ---
 
 
     # Initial forward pass and optimizer init
@@ -516,7 +524,7 @@ def eval_pretext_metrics(dataloader, T_values, use_corruption, corrupt_ratio, *,
     return avg_metrics
 
 
-def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.Optim, epoch=None):
+def train(dl, T, key: jax.random.PRNGKey, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.Optim, epoch=None):
     batch_w_energies = []
     batch_recons_energies = []
     batch_mmcr_energies = []
@@ -530,6 +538,9 @@ def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.
     pbar = tqdm(dl, desc=f"Epoch {epoch+1 if epoch is not None else 'N/A'}", leave=True, mininterval=1.0)
     
     for x, y in pbar:
+        # Split the key for each batch to ensure different noise
+        key, subkey = jax.random.split(key)
+
         # x is now a batch of multi-view augmentations, shape (b_orig, n_views, C, H, W)
         b_orig, n_views, c, h, w = x.shape
         # Reshape for the model: (b_orig * n_views, C, H, W)
@@ -537,7 +548,7 @@ def train(dl, T, *, model: TransformerDecoder, optim_w: pxu.Optim, optim_h: pxu.
         
         # The new train_on_batch returns more energy components
         h_energy, w_energy, recons_energy, mmcr_energy, h_grad, w_grad, train_mse = train_on_batch(
-            T, jnp.array(x_reshaped), model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch, step=step,
+            T, jnp.array(x_reshaped), subkey, model=model, optim_w=optim_w, optim_h=optim_h, epoch=epoch, step=step,
             b_orig=b_orig, n_views=n_views
         )
         
