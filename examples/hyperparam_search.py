@@ -53,7 +53,7 @@ def perform_hyperparameter_search():
         "save_reconstruction_video": True,
         "video_fps": 5,
         "reinitialize_model_for_each_epoch": False,
-        "use_status_init_in_training": False,
+        "use_status_init_in_training": True,
         "use_status_init_in_unmasking": False,
         "lr_schedule_min_lr_factor": 0.5,
 

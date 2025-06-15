@@ -84,13 +84,11 @@ class TransformerDecoder(pxc.EnergyModule):
             tforms={
                 "to_init": lambda n, k, v, rkg: jax.random.normal(
                     px.RKG(), (config.num_patches, config.patch_dim)
-                ) * 0.01 if config.use_noise else jnp.zeros((config.num_patches, config.patch_dim))
+                ) * 0.01
             }
         )]
 
         # Intermediate Vodes energy function (Patch Projection Vode and Transformer Block Vodes)
-        # If intermediate_l1_coeff and intermediate_l2_coeff are 0, 
-        # regularized_plus_se_energy will effectively just compute its SE term.
         intermediate_vodes_energy_fn = functools.partial(
             regularized_plus_se_energy,
             l1_coeff=self.config.intermediate_l1_coeff,
@@ -99,15 +97,20 @@ class TransformerDecoder(pxc.EnergyModule):
 
         # Add a Vode for patch projection (Vode 1)
         self.vodes.append(pxc.Vode(
-            energy_fn=intermediate_vodes_energy_fn, # Use the prepared partial function
+            energy_fn=intermediate_vodes_energy_fn,
                 ruleset={ 
                     STATUS_FORWARD: ("h -> u",)}
             ))
+
+        # Freeze the top random latent and the patch projection - we shall not update them,
+        # the network shall learn to generate images from random latents.
+        self.vodes[0].h.frozen = True
+        self.vodes[1].h.frozen = True
         
         # Create Vodes for each transformer block output (Vodes 2 to num_blocks + 1)
         for _ in range(config.num_blocks):
             self.vodes.append(pxc.Vode(
-                energy_fn=intermediate_vodes_energy_fn, # Use the same prepared partial function
+                energy_fn=intermediate_vodes_energy_fn,
                 ruleset={
                     STATUS_FORWARD: ("h -> u",)}
             ))
