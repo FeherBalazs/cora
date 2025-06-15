@@ -35,6 +35,7 @@ def perform_hyperparameter_search():
         "mlp_ratio": 4.0,
         "patch_size": 4,
         "use_noise": True,
+        "noise_perturbation_level": 1.0,
         "update_weights_every_inference_step": False,
 
         "use_early_stopping": True,
