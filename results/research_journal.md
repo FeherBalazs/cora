@@ -610,33 +610,6 @@
   - Results:
     -
 
-
-
-docker restart practical_thompson
-docker exec -it practical_thompson /bin/bash
-sudo apt install nvidia-driver-550 in case there is a problem after upgrade
-
-
-TODO: 
-  - optimise first massively
-  - update cuda driver
-  - search how much and what type of data augmentation would help with cifar10
-  - Try with one more head, maybe results are more robust. 
-  - Try with lower and higher hidden dim.
-  - will perhaps have to move on to adding MMCR loss instead of spending so much time optimising a tiny network (but still, this tiny network produces decent results already)
-  
-  - try best setting with same seed but with more test samples to see what is really expected. then refine ssl method and decrease learning rate, and extend over more epochs.
-  - how much time do I want to spend on tweaking current setup without proper regularisation?
-  - well, the hope is that probe accuracy goes up with most seeds. if we see consistent trend, then it would make sense to test for more epochs. 75 epochs is very little by SSL standards
-
-
-IDEA:
-- Strong Augmentations: The network isn't just predicting one static input; it's predicting x_aug_1, x_aug_2, ..., x_aug_n for the same underlying semantic content. To do this efficiently, the learned representations must become invariant to the augmentations, focusing on the stable underlying factors. This is a strong learning pressure.
-
-
-
-
-
 ####################################
 Below experiments were done with refactored code that are now rolled back. 
 
@@ -671,39 +644,45 @@ Below experiments were done with refactored code that are now rolled back.
   
 ####################################
 
-  
-
-normal-augmentation-1000-n_test-40-probe_epoch
-normal-augmentation-1000-n_test-100-probe_epoch
-strong-augmentation-10000-n_test-100-probe_epoch
-
 - Experiment:
-  - This might be silly but running 12 block extensive search locally with 3 agents
-  - sweep_12block_comprehensive.yaml
-  - Run: [https://wandb.ai/neural-machines/12-blocks/sweeps/c1pmzydl?nw=nwusergradientracer](https://wandb.ai/neural-machines/12-blocks/sweeps/c1pmzydl?nw=nwusergradientracer)
-  - Results:
-    - It has crashed. I dont think it got far, but let's analyse.
-
-Current:
-
   - run for 500 epochs - bayesian search around best params - with data augmentation - more test data => 1000 - ES based on probe accuracy checked every 10 epochs with 3 patience.
     - https://wandb.ai/neural-machines/6blocks-long/sweeps/45zt6sl5?nw=nwusergradientracer
 
-TODO:
-smaller run locally with just block6 - but what settings?
-    
+- Experiment:
+  - First large wandb sweep.
+  - Run: [https://wandb.ai/neural-machines/mse-vs-probe-search/sweeps/85slx9fu?nw=nwusergradientracer](https://wandb.ai/neural-machines/mse-vs-probe-search/sweeps/85slx9fu?nw=nwusergradientracer)
+  - Results:
+    - I had to stop it because of ssl_augmentation bottleneck.
 
-              - Experiment:
-                - First large wandb sweep.
-                - Run: [https://wandb.ai/neural-machines/mse-vs-probe-search/sweeps/85slx9fu?nw=nwusergradientracer](https://wandb.ai/neural-machines/mse-vs-probe-search/sweeps/85slx9fu?nw=nwusergradientracer)
-                - Results:
-                  - I had to stop it because of ssl_augmentation bottleneck.
+- Experiment:
+  - Second large sweep without SSL augmentation
+  - Run: [https://wandb.ai/neural-machines/6block-search/sweeps/6wrc9jid?nw=nwusergradientracer](https://wandb.ai/neural-machines/6block-search/sweeps/6wrc9jid?nw=nwusergradientracer)
+  Results:
+    - I had to stop this as I added too many agents and memory bottlenecked.
 
-              - Experiment:
-                - Second large sweep without SSL augmentation
-                - Run: [https://wandb.ai/neural-machines/6block-search/sweeps/6wrc9jid?nw=nwusergradientracer](https://wandb.ai/neural-machines/6block-search/sweeps/6wrc9jid?nw=nwusergradientracer)
-                Results:
-                  - I had to stop this as I added too many agents and memory bottlenecked.
+
+MMCR Experiments:
+
+TODO: 
+
+Criticism:
+  - normal ViT with the same architecture as my 6 block 1 head, 64 dim model reaches 76% accuracy in 64 epochs
+  - this means it has the representational capacity for good features. Good enough for this classification. So with MMCR loss I shall be able to reach at least 50% easily
+
+Ideas to test:
+ - what is the effect of decreasing batch size? can we do training like starting from 256 batches, then reduce to 128, 64, 32, 16, 8, 4, 2, 1? would it improve reconstruction and linear probing results?
+ - add dropout
+ - lower weight updates to 0.0001
+ - experiment with converging up to a certain energy during inference, instead for a fixed number of steps
+ - experiment with muzero like regularisation as planned. start small. commit first initial probing results.
+
+
+
+
+
+
+
+  
 
 
 
@@ -739,26 +718,6 @@ Experiment:
   - Interpretation and next steps:
     - It seems like with increasing depth the top latent generates less and less separable features.
 
-
-
-- Try next: 
-  - start refactoring the code to make it simpler
-  - Get back to block1 - and iterate quicly with linear probing as direct feedback on how data augmentation, and regularisation can improve representations; I could also experiment faster with more hidden dim and num heads
-  - Block6:
-    - oscillation reduction: lower learning rate from 0.0005 ro 0.0003
-    - maybe need to revisit iPC
-    - have to revisit latent resetting
-
-Criticism:
-  - normal ViT with the same architecture as my 6 block 1 head, 64 dim model reaches 76% accuracy in 64 epochs
-  - this means it has the representational capacity for good features. Good enough for this classification.
-
-Ideas to test:
- - what is the effect of decreasing batch size? can we do training like starting from 256 batches, then reduce to 128, 64, 32, 16, 8, 4, 2, 1? would it improve reconstruction and linear probing results?
- - add dropout
- - lower weight updates to 0.0001
- - experiment with converging up to a certain energy during inference, instead for a fixed number of steps
- - experiment with muzero like regularisation as planned. start small. commit first initial probing results.
 
 
 
