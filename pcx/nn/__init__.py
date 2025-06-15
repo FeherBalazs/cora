@@ -13,16 +13,22 @@ __all__ = [
     "AdaptiveMaxPool2d",
     "Dropout",
     "LayerNorm",
+    "PatchEmbedding",
+    "MultiHeadAttention",
+    "TransformerBlock",
+    "Projector",
     "LayerParam",
     "LayerState",
     "shared",
     "StateParam",
     "StatefulLayer",
     "BatchNorm",
-    "MultiHeadAttention",
-    "TransformerBlock",
+    "BatchNormPC"
 ]
 
+
+from ._parameter import LayerParam
+from ._stateful import StateParam, StatefulLayer, BatchNorm, BatchNormPC
 from ._layer import (
     Layer,
     Linear,
@@ -31,15 +37,17 @@ from ._layer import (
     Conv2d,
     ConvTranspose,
     Pool,
-    AvgPool2d,
     MaxPool2d,
+    AvgPool2d,
     AdaptivePool,
     AdaptiveAvgPool2d,
     AdaptiveMaxPool2d,
     Dropout,
     LayerNorm,
+    PatchEmbedding,
     MultiHeadAttention,
     TransformerBlock,
+    Projector
 )
 
 

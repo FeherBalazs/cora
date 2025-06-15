@@ -485,20 +485,26 @@ class TransformerBlock(Module):
 class Projector(Module):
     """A projector network with Linear -> BatchNorm -> Swish -> Linear."""
     linear1: Linear
-    batch_norm: "BatchNormPC"
+    # batch_norm: "BatchNormPC"
     linear2: Linear
 
     def __init__(self, in_dim: int, hidden_dim: int, out_dim: int, *, axis_name: str | None = None, rkg: RandomKeyGenerator = RKG):
         super().__init__()
         self.linear1 = Linear(in_dim, hidden_dim, bias=False, rkg=rkg)
-        self.batch_norm = BatchNormPC(input_size=hidden_dim, axis_name=axis_name)
+        # self.batch_norm = BatchNormPC(input_size=hidden_dim, axis_name=axis_name)
         self.linear2 = Linear(hidden_dim, out_dim, rkg=rkg)
 
     def __call__(self, x: jax.Array, *, key: jax.Array | None = None) -> jax.Array:
         # Linear layers are stateless and operate per-example, so we vmap them.
         x = jax.vmap(self.linear1)(x)
-        # BatchNorm is stateful and operates on the whole batch.
-        x = self.batch_norm(x, key=key)
+        # # BatchNormPC is now functional and returns (output, new_state)
+        # x, new_bn_state = self.batch_norm(x, key=key)
+        
+        # # Update the state of the BatchNormPC layer if new state is returned
+        # if new_bn_state:
+        #     self.batch_norm.running_mean.set(new_bn_state['running_mean'])
+        #     self.batch_norm.running_var.set(new_bn_state['running_var'])
+
         x = jax.nn.swish(x)
         x = jax.vmap(self.linear2)(x)
         return x
