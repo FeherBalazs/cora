@@ -77,7 +77,7 @@ class TransformerDecoder(pxc.EnergyModule):
         # Define Vodes for predictive coding
         # Top-level latent Vode
         self.vodes = [pxc.Vode(
-            energy_fn=None, # Vode 0 does not have local energy term for regularization
+            energy_fn=None,
             ruleset={
                 pxc.STATUS.INIT: ("h, u <- u:to_init",)
                 },
@@ -88,18 +88,13 @@ class TransformerDecoder(pxc.EnergyModule):
             }
         )]
 
-        # Intermediate Vodes energy function (Patch Projection Vode and Transformer Block Vodes)
-        intermediate_vodes_energy_fn = functools.partial(
-            regularized_plus_se_energy,
-            l1_coeff=self.config.intermediate_l1_coeff,
-            l2_coeff=self.config.intermediate_l2_coeff
-        )
-
         # Add a Vode for patch projection (Vode 1)
         self.vodes.append(pxc.Vode(
-            energy_fn=intermediate_vodes_energy_fn,
-                ruleset={ 
-                    STATUS_FORWARD: ("h -> u",)}
+            energy_fn=None,
+                ruleset={
+                    STATUS_FORWARD: ("h -> u",),
+                    pxc.STATUS.INIT: ("h <- x",)
+                }
             ))
 
         # Freeze the top random latent and the patch projection - we shall not update them,
@@ -107,6 +102,13 @@ class TransformerDecoder(pxc.EnergyModule):
         self.vodes[0].h.frozen = True
         self.vodes[1].h.frozen = True
         
+        # Intermediate Vodes energy function (Transformer Block Vodes)
+        intermediate_vodes_energy_fn = functools.partial(
+            regularized_plus_se_energy,
+            l1_coeff=self.config.intermediate_l1_coeff,
+            l2_coeff=self.config.intermediate_l2_coeff
+        )
+
         # Create Vodes for each transformer block output (Vodes 2 to num_blocks + 1)
         for _ in range(config.num_blocks):
             self.vodes.append(pxc.Vode(
