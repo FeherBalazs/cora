@@ -16,7 +16,7 @@ def perform_hyperparameter_search():
 
     # Fixed overrides: Non-searched parameters, taking cues from the "6block" base
     fixed_overrides = {
-        "epochs": 20,
+        "epochs": 50,
         "theta": 10_000,
         "use_ssl_augmentations": True,
         "use_cifar10_norm": True,
@@ -26,8 +26,8 @@ def perform_hyperparameter_search():
         "train_subset": 10000,
         "peak_lr_weights": 0.001,
         "hidden_lr_inference": 0.095,
-        "reconstruction_every_n_epochs": 5,
-        "validation_every_n_epochs": 5,
+        "reconstruction_every_n_epochs": 10,
+        "validation_every_n_epochs": 10,
         "use_inference_lr_scaling": True,
         "use_lr_schedule_w": True,
         "use_lr_schedule_h": True,
@@ -58,8 +58,8 @@ def perform_hyperparameter_search():
         "lr_schedule_min_lr_factor": 0.5,
 
         # Linear Probing Defaults (can be overridden per run if made searchable)
-        "linear_probe_every_n_epochs": 1, # Disabled by default, enable for specific searches
-        "linear_probe_vode_indices": "0", # Example: probe all layers
+        "linear_probe_every_n_epochs": 10, # Disabled by default, enable for specific searches
+        "linear_probe_vode_indices": "1", # Example: probe all layers
         "linear_probe_concatenate_features": True, # Example: concatenate all specified
         "linear_probe_use_gap": True,
         "linear_probe_lr": 1e-3,
@@ -81,7 +81,7 @@ def perform_hyperparameter_search():
         # Adaptive scaling settings
         "use_adaptive_mmcr_scaling": True,
         "adaptive_mmcr_target_ratio": 0.5,
-        "mmcr_loss_scale_factor": 2000, # Initial scale factor, will be adapted.
+        "mmcr_loss_scale_factor": 10, # Initial scale factor, will be adapted.
     }
 
     # --- Architectural Search Space ---
@@ -108,7 +108,7 @@ def perform_hyperparameter_search():
     # --- NEW: MMCR Search Space ---
     use_mmcr_loss_candidates = [True]
     mmcr_lambda_candidates = [0.05]
-    mmcr_vode_indices_candidates = ["0"] # Only on the final layer's features
+    mmcr_vode_indices_candidates = ["1"] # Only on the final layer's features
 
     best_run_info = {
         "num_blocks": None,

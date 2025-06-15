@@ -1148,7 +1148,7 @@ def run_experiment(base_config_name: str = DEFAULT_CONFIG,
                 new_scale = float(config.adaptive_mmcr_target_ratio * jnp.abs(avg_recons_energy / (avg_mmcr_energy / model.mmcr_loss_scale_factor)))
                 
                 # Clamp the new scale to prevent extreme values, which can cause instability
-                new_scale = jnp.clip(new_scale, 1.0, 1e7)
+                new_scale = jnp.clip(new_scale, 1.0, 100.0)
 
                 # Update the model's dynamic scale factor for the next epoch
                 model.mmcr_loss_scale_factor = jnp.array(new_scale, dtype=jnp.float32)
